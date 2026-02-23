@@ -1,5 +1,7 @@
 """Tests for TargetPerceptionService: tick, lifecycle, plausibility gates, events."""
 
+import asyncio
+
 import pytest
 
 from halo.contracts.enums import PerceptionFailureCode, TrackingStatus
@@ -10,6 +12,7 @@ from halo.services.target_perception_service.config import TargetPerceptionServi
 from halo.services.target_perception_service.service import (
     ObserveFn,
     TargetPerceptionService,
+    VlmFn,
 )
 
 ARM = "arm0"
@@ -61,6 +64,7 @@ async def _null_observe(arm_id: str, target_handle: str) -> None:
 def _make_svc(
     rt: HALORuntime,
     observe_fn: ObserveFn = None,
+    vlm_fn: VlmFn | None = None,
     cfg: TargetPerceptionServiceConfig | None = None,
 ) -> TargetPerceptionService:
     if observe_fn is None:
@@ -69,6 +73,7 @@ def _make_svc(
         arm_id=ARM,
         runtime=rt,
         observe_fn=observe_fn,
+        vlm_fn=vlm_fn,
         config=cfg or _cfg(),
     )
 
@@ -296,3 +301,162 @@ async def test_start_stop_lifecycle(rt: HALORuntime):
 
     await svc.stop()
     assert svc._loop_task is None
+
+
+# ─── VLM async path ───────────────────────────────────────────────────────────
+
+async def test_vlm_triggered_on_set_tracking_target(rt: HALORuntime):
+    called: list[str] = []
+
+    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        called.append(handle)
+        return _good_hint()
+
+    svc = _make_svc(rt, vlm_fn=vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)  # yield so the VLM task can run
+
+    assert called == ["cube-1"]
+
+
+async def test_vlm_triggered_on_request_refresh(rt: HALORuntime):
+    called: list[str] = []
+
+    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        called.append(handle)
+        return _good_hint()
+
+    svc = _make_svc(rt, vlm_fn=vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)  # drain initial VLM from set_tracking_target
+    called.clear()
+
+    await svc.request_refresh()
+    await asyncio.sleep(0.05)
+
+    assert len(called) == 1
+
+
+async def test_vlm_triggered_on_reacquire_fail_limit(rt: HALORuntime):
+    called: list[str] = []
+
+    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        called.append(handle)
+        return None  # VLM also fails; we just check it was called
+
+    cfg = _cfg(reacquire_fail_limit=2)
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, cfg=cfg)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)  # drain initial VLM
+    called.clear()
+
+    await svc.tick()  # fail 1 — not at limit yet
+    await svc.tick()  # fail 2 — hits limit, spawns VLM
+    await asyncio.sleep(0.05)  # let VLM task run
+
+    assert len(called) == 1
+
+
+async def test_vlm_seed_used_when_observe_returns_none(rt: HALORuntime):
+    seed = _good_hint(distance_m=0.15)
+
+    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        return seed
+
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)  # VLM completes and places seed
+
+    await svc.tick()  # observe=None but seed available → TRACKING
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.TRACKING
+    assert snap.target is not None
+    assert snap.target.distance_m == pytest.approx(0.15)
+
+
+async def test_vlm_does_not_block_tick(rt: HALORuntime):
+    """tick() must return promptly even when VLM is still running."""
+    vlm_started = asyncio.Event()
+
+    async def slow_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        vlm_started.set()
+        await asyncio.sleep(60.0)  # intentionally very slow
+        return _good_hint()
+
+    svc = _make_svc(rt, vlm_fn=slow_vlm)
+    await svc.set_tracking_target("cube-1")
+    await vlm_started.wait()  # VLM is now blocked inside sleep
+
+    t0 = asyncio.get_event_loop().time()
+    await svc.tick()  # must not wait for VLM
+    elapsed = asyncio.get_event_loop().time() - t0
+
+    assert elapsed < 0.5
+    await svc.stop()  # cancels the slow VLM task
+
+
+async def test_vlm_job_pending_while_task_running(rt: HALORuntime):
+    vlm_proceed = asyncio.Event()
+
+    async def blocking_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        await vlm_proceed.wait()
+        return _good_hint()
+
+    svc = _make_svc(rt, vlm_fn=blocking_vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0)  # let VLM task start
+
+    assert svc._vlm_job_pending is True
+
+    vlm_proceed.set()
+    await asyncio.sleep(0.05)  # let VLM finish
+
+    assert svc._vlm_job_pending is False
+
+
+async def test_vlm_not_stacked(rt: HALORuntime):
+    """A second trigger while VLM is running must not spawn a second task."""
+    call_count = 0
+    vlm_proceed = asyncio.Event()
+
+    async def counting_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        nonlocal call_count
+        call_count += 1
+        await vlm_proceed.wait()
+        return _good_hint()
+
+    svc = _make_svc(rt, vlm_fn=counting_vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0)  # VLM task is now running
+
+    # Two more triggers while the first is still in progress
+    await svc.request_refresh()
+    await svc.request_refresh()
+
+    assert call_count == 1  # only the initial VLM from set_tracking_target
+
+    vlm_proceed.set()
+    await asyncio.sleep(0.05)
+
+
+async def test_stop_cancels_vlm_task(rt: HALORuntime):
+    cancelled = False
+
+    async def long_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(60.0)
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        return None
+
+    svc = _make_svc(rt, vlm_fn=long_vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0)  # let VLM task start
+
+    await svc.stop()  # must cancel the VLM task and await it
+
+    assert cancelled is True
+    assert svc._vlm_task is None

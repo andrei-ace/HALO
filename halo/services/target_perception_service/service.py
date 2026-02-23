@@ -12,34 +12,45 @@ from halo.runtime.runtime import HALORuntime
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 
 # observe_fn(arm_id, target_handle) -> TargetInfo | None
-# Returns None when the target cannot be observed (lost, occluded, etc.).
-# Mock implementations return fixed/computed data; real implementations
-# call tracker + depth fusion + plausibility pre-filter.
+# Wraps the tracker + depth fusion steady-state path (10–30 Hz).
+# Returns None when the target is momentarily lost.
 ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]
+
+# vlm_fn(arm_id, target_handle) -> TargetInfo | None
+# Runs asynchronously, outside the fast loop. Returns a coarse seed hint
+# (position/confidence) used to re-initialise the tracker after loss.
+# Expected latency: hundreds of ms to several seconds.
+VlmFn = Callable[[str, str], Awaitable[TargetInfo | None]]
 
 
 class TargetPerceptionService:
     """
-    Fast-loop perception service (default 10 Hz). Maintains a track on the
-    active target and publishes fused TargetInfo + PerceptionInfo to
-    RuntimeStateStore.
+    Fast-loop perception service (default 10 Hz) with async VLM reacquisition.
 
-    Pipeline (one tick):
+    Fast-loop pipeline (one tick):
         1. If no target handle: publish LOST, no hint.
-        2. Call observe_fn(arm_id, target_handle).
-        3. Apply plausibility gates (obs_age, time_skew) → may invalidate hint.
-        4. Update tracking status and failure code.
-        5. Write TargetInfo + PerceptionInfo to store.
-        6. Emit PERCEPTION_FAILURE / PERCEPTION_RECOVERED on state transitions.
+        2. Call observe_fn(arm_id, target_handle) — tracker steady-state.
+        3. If observe returns None and a VLM seed is waiting: use the seed
+           (simulates tracker picking up after VLM re-init). Consume seed.
+        4. Apply plausibility gates (obs_age, time_skew) → may invalidate hint.
+        5. Update tracking status and failure code.
+        6. Write TargetInfo + PerceptionInfo to store.
+        7. Emit PERCEPTION_FAILURE / PERCEPTION_RECOVERED on state transitions.
 
-    observe_fn is the only coupling to the sensor/model stack:
-        async def observe_fn(arm_id: str, handle: str) -> TargetInfo | None: ...
+    VLM path (async, never on the fast-loop critical path):
+        - Triggered by set_tracking_target(), request_refresh(), or hitting
+          reacquire_fail_limit consecutive observe=None results.
+        - At most one VLM task runs at a time; duplicate triggers are dropped.
+        - On completion the result is stored in _vlm_seed; tick() consumes it
+          on the next pass where observe_fn returns None.
+        - vlm_fn is optional — omitting it disables VLM reacquisition entirely.
 
-    For v0, inject a mock that returns fixed data. Real implementations wire in
-    ZED capture + SAM tracker + depth fusion.
+    Injected callables:
+        async def observe_fn(arm_id, handle) -> TargetInfo | None
+        async def vlm_fn(arm_id, handle) -> TargetInfo | None   # optional
 
     Lifecycle:
-        svc = TargetPerceptionService(arm_id, runtime, observe_fn)
+        svc = TargetPerceptionService(arm_id, runtime, observe_fn, vlm_fn=vlm_fn)
         await svc.set_tracking_target("cube-1")
         await svc.start()
         ...
@@ -51,11 +62,13 @@ class TargetPerceptionService:
         arm_id: str,
         runtime: HALORuntime,
         observe_fn: ObserveFn,
+        vlm_fn: VlmFn | None = None,
         config: TargetPerceptionServiceConfig = TargetPerceptionServiceConfig(),
     ) -> None:
         self._arm_id = arm_id
         self._runtime = runtime
         self._observe_fn = observe_fn
+        self._vlm_fn = vlm_fn
         self._config = config
 
         self._target_handle: str | None = None
@@ -63,6 +76,10 @@ class TargetPerceptionService:
         self._failure_code = PerceptionFailureCode.OK
         self._reacquire_fail_count = 0
         self._vlm_job_pending = False
+
+        # VLM async state
+        self._vlm_task: asyncio.Task | None = None
+        self._vlm_seed: TargetInfo | None = None  # latest VLM result, consumed by tick()
 
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -75,33 +92,50 @@ class TargetPerceptionService:
         self._loop_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
-        """Signal the loop to stop and await clean shutdown."""
+        """Signal the loop to stop, cancel any running VLM job, await shutdown."""
         self._stop_event.set()
         if self._loop_task is not None:
             await self._loop_task
             self._loop_task = None
+        # Cancel VLM task and await its termination to avoid dangling tasks.
+        if self._vlm_task is not None:
+            if not self._vlm_task.done():
+                self._vlm_task.cancel()
+                try:
+                    await self._vlm_task
+                except asyncio.CancelledError:
+                    pass
+            self._vlm_task = None
 
     async def set_tracking_target(self, target_handle: str) -> None:
-        """Set the active target. Resets failure state and fail counter."""
+        """
+        Set the active target. Resets failure state and triggers VLM for
+        initial acquisition (if vlm_fn is provided).
+        """
         self._target_handle = target_handle
         self._reacquire_fail_count = 0
         self._failure_code = PerceptionFailureCode.OK
-        self._vlm_job_pending = False
+        self._vlm_seed = None
+        self._cancel_vlm()
+        self._spawn_vlm(target_handle)
 
     async def clear_tracking_target(self) -> None:
-        """Stop tracking. Next tick publishes LOST with no hint."""
+        """Stop tracking. Cancels any running VLM job. Next tick publishes LOST."""
+        self._cancel_vlm()
+        self._vlm_seed = None
         self._target_handle = None
         self._tracking_status = TrackingStatus.LOST
         self._reacquire_fail_count = 0
 
     async def request_refresh(self, mode: str = "reacquire", reason: str = "") -> None:
         """
-        Request a forced reacquisition (e.g. planner suspects target has moved).
-        Sets status to REACQUIRING and marks a VLM job pending.
-        The next successful observe clears both flags.
+        Request a forced reacquisition (e.g. planner suspects target moved).
+        Sets status to REACQUIRING, marks VLM job pending, and spawns a VLM
+        task if vlm_fn is configured.
         """
         self._tracking_status = TrackingStatus.REACQUIRING
         self._vlm_job_pending = True
+        self._spawn_vlm(self._target_handle)
 
     # --- Testable internal ---
 
@@ -120,9 +154,17 @@ class TargetPerceptionService:
 
         obs = await self._observe_fn(self._arm_id, self._target_handle)
 
+        # If tracker lost the target but a VLM seed just arrived, use it.
+        # This simulates the tracker being re-initialised by the VLM result.
+        if obs is None and self._vlm_seed is not None:
+            obs = self._vlm_seed
+            self._vlm_seed = None
+
         if obs is None:
             self._reacquire_fail_count += 1
             if self._reacquire_fail_count >= self._config.reacquire_fail_limit:
+                # Trigger VLM reacquire if not already running
+                self._spawn_vlm(self._target_handle)
                 await self._update_failure(
                     tracking_status=TrackingStatus.REACQUIRING,
                     failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
@@ -166,7 +208,7 @@ class TargetPerceptionService:
         else:
             await self._update_success(tracking_status=tracking_status, target=obs)
 
-    # --- Private ---
+    # --- Private: fast loop ---
 
     async def _run_loop(self) -> None:
         period = 1.0 / self._config.fast_loop_hz
@@ -234,3 +276,37 @@ class TargetPerceptionService:
             data=data,
         )
         await self._runtime.bus.publish(event)
+
+    # --- Private: VLM async path ---
+
+    def _spawn_vlm(self, target_handle: str | None) -> None:
+        """Spawn a VLM task if vlm_fn is configured and none is already running."""
+        if self._vlm_fn is None or target_handle is None:
+            return
+        if self._vlm_task is not None and not self._vlm_task.done():
+            return  # already running — do not stack
+        self._vlm_job_pending = True
+        self._vlm_task = asyncio.create_task(self._run_vlm(target_handle))
+
+    def _cancel_vlm(self) -> None:
+        """Cancel the running VLM task (fire-and-forget; stop() awaits it properly)."""
+        if self._vlm_task is not None and not self._vlm_task.done():
+            self._vlm_task.cancel()
+        self._vlm_task = None
+
+    async def _run_vlm(self, target_handle: str) -> None:
+        """
+        Background VLM coroutine. Runs asynchronously — never awaited by tick().
+        On success, stores the seed hint in _vlm_seed for consumption by tick().
+        """
+        if self._vlm_fn is None:
+            return
+        try:
+            seed = await self._vlm_fn(self._arm_id, target_handle)
+            if seed is not None:
+                self._vlm_seed = seed
+                self._reacquire_fail_count = 0
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._vlm_job_pending = False
