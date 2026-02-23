@@ -6,12 +6,12 @@ build-backend = "hatchling.build"
 name = "halo"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["textual>=0.70"]
 
 [project.optional-dependencies]
 dev     = ["pytest>=8", "pytest-asyncio>=0.24"]
 planner = ["langgraph>=0.2", "langchain>=0.3", "langchain-ollama>=0.2", "langchain-core>=0.3"]
-tui     = ["textual>=0.70"]
+tui     = []  # textual is now a core dependency
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
