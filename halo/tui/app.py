@@ -26,6 +26,7 @@ def _copy_text(text: str) -> bool:
     """Copy text to OS clipboard. Returns True on success."""
     import platform
     import subprocess
+
     sys = platform.system()
     try:
         if sys == "Darwin":
@@ -76,12 +77,12 @@ _DATA = dict(
     ctrl_action_xyz=(0.12, -0.05, 0.08),
     ctrl_gripper=0.0,
     servos=[
-        ("J1", "base_yaw",    "OK", 42, 0.35),
-        ("J2", "shoulder",    "OK", 45, 0.55),
-        ("J3", "elbow",       "OK", 46, 0.55),
+        ("J1", "base_yaw", "OK", 42, 0.35),
+        ("J2", "shoulder", "OK", 45, 0.55),
+        ("J3", "elbow", "OK", 46, 0.55),
         ("J4", "wrist_pitch", "OK", 44, 0.50),
-        ("J5", "wrist_yaw",   "OK", 42, 0.25),
-        ("J6", "wrist_roll",  "OK", 41, 0.30),
+        ("J5", "wrist_yaw", "OK", 42, 0.25),
+        ("J6", "wrist_roll", "OK", 41, 0.30),
     ],
     # Prompt history — shown newest-at-bottom inside the Talk panel
     prompt_history=[
@@ -98,13 +99,13 @@ _DATA = dict(
     ],
     services=[
         ("TargetPerception", "TRACKING", "bright_green"),
-        ("SkillRunner",      "RUNNING",  "bright_green"),
-        ("ControlService",   "RUNNING",  "bright_green"),
-        ("Safety",           "OK",       "yellow"),
+        ("SkillRunner", "RUNNING", "bright_green"),
+        ("ControlService", "RUNNING", "bright_green"),
+        ("Safety", "OK", "yellow"),
     ],
     target_info=[
-        ("Target",     "cube-1"),
-        ("Distance",   "9 cm"),
+        ("Target", "cube-1"),
+        ("Distance", "9 cm"),
         ("Confidence", "86%"),
     ],
     events=[
@@ -117,28 +118,42 @@ _DATA = dict(
 
 _EMPTY_DATA = dict(
     arm_id="arm0",
-    skill_name=None, skill_run_id=None, skill_phase=None,
-    act_status=None, act_buffer_ms=None, act_buffer_low=False,
-    outcome_state=None, outcome_reason=None, elapsed_ms=None,
-    perc_tracking=None, perc_target=None, perc_distance_m=None,
-    perc_confidence=None, perc_obs_age_ms=None, perc_failure=None, perc_hint_valid=None,
-    ctrl_status=None, ctrl_safety=None, ctrl_reflex=None,
-    ctrl_action_xyz=None, ctrl_gripper=None,
+    skill_name=None,
+    skill_run_id=None,
+    skill_phase=None,
+    act_status=None,
+    act_buffer_ms=None,
+    act_buffer_low=False,
+    outcome_state=None,
+    outcome_reason=None,
+    elapsed_ms=None,
+    perc_tracking=None,
+    perc_target=None,
+    perc_distance_m=None,
+    perc_confidence=None,
+    perc_obs_age_ms=None,
+    perc_failure=None,
+    perc_hint_valid=None,
+    ctrl_status=None,
+    ctrl_safety=None,
+    ctrl_reflex=None,
+    ctrl_action_xyz=None,
+    ctrl_gripper=None,
     servos=[
-        ("J1", "base_yaw",    "NC", None, None),
-        ("J2", "shoulder",    "NC", None, None),
-        ("J3", "elbow",       "NC", None, None),
+        ("J1", "base_yaw", "NC", None, None),
+        ("J2", "shoulder", "NC", None, None),
+        ("J3", "elbow", "NC", None, None),
         ("J4", "wrist_pitch", "NC", None, None),
-        ("J5", "wrist_yaw",   "NC", None, None),
-        ("J6", "wrist_roll",  "NC", None, None),
+        ("J5", "wrist_yaw", "NC", None, None),
+        ("J6", "wrist_roll", "NC", None, None),
     ],
     prompt_history=[],
     suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
     services=[
         ("TargetPerception", "—", "#9e9e9e"),
-        ("SkillRunner",      "—", "#9e9e9e"),
-        ("ControlService",   "—", "#9e9e9e"),
-        ("Safety",           "—", "#9e9e9e"),
+        ("SkillRunner", "—", "#9e9e9e"),
+        ("ControlService", "—", "#9e9e9e"),
+        ("Safety", "—", "#9e9e9e"),
     ],
     target_info=[],
     events=[],
@@ -146,19 +161,19 @@ _EMPTY_DATA = dict(
 
 _LEGEND = [
     ("Tab / Shift+Tab", "Navigate between input and buttons"),
-    ("T",               "Focus the message input directly"),
-    ("Enter",       "Send message to planner"),
-    ("Esc",         "Clear input and return to monitoring mode"),
-    ("R",           "Show full planner reasoning (Ctrl+Y to copy inside)"),
-    ("Y",           "Yank — copy last reasoning to clipboard instantly"),
-    ("A",           "Emergency abort — always fires (even while typing)"),
-    ("Ctrl+Q",      "Quit"),
-    ("?",           "Show / hide this legend"),
+    ("T", "Focus the message input directly"),
+    ("Enter", "Send message to planner"),
+    ("Esc", "Clear input and return to monitoring mode"),
+    ("R", "Show full planner reasoning (Ctrl+Y to copy inside)"),
+    ("Y", "Yank — copy last reasoning to clipboard instantly"),
+    ("A", "Emergency abort — always fires (even while typing)"),
+    ("Ctrl+Q", "Quit"),
+    ("?", "Show / hide this legend"),
 ]
 
 
-
 # ── Helpers ───────────────────────────────────────────────────────
+
 
 def _bar(value: float, width: int = 8) -> Text:
     """Colored Unicode load bar (█ filled, ░ empty)."""
@@ -178,6 +193,7 @@ def _format_cmd(cmd: object) -> str:
         RequestPerceptionRefreshPayload,
         StartSkillPayload,
     )
+
     p = cmd.payload  # type: ignore[attr-defined]
     if isinstance(p, StartSkillPayload):
         return f"START_SKILL({p.skill_name.value}, {p.target_handle})"
@@ -209,10 +225,52 @@ def _format_event(evt: object) -> str:
     if name == "VLM_RESULT":
         handle = data.get("target_handle", "?")
         conf = int(data.get("confidence", 0) * 100)
-        dist = data.get("distance_m", 0)
+        ms = data.get("inference_ms", 0)
         valid = data.get("hint_valid", False)
-        return f"VLM_RESULT {handle} conf={conf}% dist={dist:.2f}m{'' if valid else ' invalid'}"
+        return f"VLM_RESULT {handle} conf={conf}%{'' if valid else ' invalid'}  ({ms} ms)"
     return name
+
+
+def _snap_to_panel_data(snap: object, base: dict) -> dict:
+    """Overlay live snapshot values onto *base* (typically _EMPTY_DATA)."""
+    data = dict(base)
+
+    skill = getattr(snap, "skill", None)
+    act = getattr(snap, "act", None)
+    progress = getattr(snap, "progress", None)
+    outcome = getattr(snap, "outcome", None)
+    target = getattr(snap, "target", None)
+    perc = getattr(snap, "perception", None)
+
+    # Planner / SkillRunner fields
+    if skill is not None:
+        data["skill_name"] = str(getattr(getattr(skill, "name", None), "value", ""))
+        data["skill_run_id"] = getattr(skill, "skill_run_id", None)
+        phase = getattr(skill, "phase", None)
+        data["skill_phase"] = phase.name if phase is not None else None
+    if act is not None:
+        data["act_status"] = str(getattr(getattr(act, "status", None), "value", ""))
+        data["act_buffer_ms"] = getattr(act, "buffer_fill_ms", None)
+        data["act_buffer_low"] = getattr(act, "buffer_low", False)
+    if progress is not None:
+        data["elapsed_ms"] = getattr(progress, "elapsed_ms", None)
+    if outcome is not None:
+        data["outcome_state"] = str(getattr(getattr(outcome, "state", None), "value", ""))
+        rc = getattr(outcome, "reason_code", None)
+        data["outcome_reason"] = str(rc.value) if rc is not None else None
+
+    # Target Perception fields
+    if perc is not None:
+        data["perc_tracking"] = str(getattr(getattr(perc, "tracking_status", None), "value", ""))
+        data["perc_failure"] = str(getattr(getattr(perc, "failure_code", None), "value", ""))
+    if target is not None:
+        data["perc_target"] = getattr(target, "handle", None)
+        data["perc_distance_m"] = getattr(target, "distance_m", None)
+        data["perc_confidence"] = getattr(target, "confidence", None)
+        data["perc_obs_age_ms"] = getattr(target, "obs_age_ms", None)
+        data["perc_hint_valid"] = getattr(target, "hint_valid", None)
+
+    return data
 
 
 def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
@@ -223,9 +281,9 @@ def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
     if perc is not None:
         ts = getattr(perc, "tracking_status", None)
         status = str(ts.value) if ts else "UNKNOWN"
-        color = ("bright_green" if status == "TRACKING"
-                 else "yellow" if status in ("RELOCALIZING", "REACQUIRING")
-                 else "red")
+        color = (
+            "bright_green" if status == "TRACKING" else "yellow" if status in ("RELOCALIZING", "REACQUIRING") else "red"
+        )
         rows.append(("TargetPerception", status, color))
 
     skill = getattr(snap, "skill", None)
@@ -255,8 +313,8 @@ def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
         dist_cm = int(getattr(target, "distance_m", 0) * 100)
         conf = int(getattr(target, "confidence", 0) * 100)
         target_info = [
-            ("Target",     handle or "—"),
-            ("Distance",   f"{dist_cm} cm"),
+            ("Target", handle or "—"),
+            ("Distance", f"{dist_cm} cm"),
             ("Confidence", f"{conf}%"),
         ]
 
@@ -264,6 +322,7 @@ def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
 
 
 # ── Panel widgets ─────────────────────────────────────────────────
+
 
 class PlannerPanel(Container):
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
@@ -273,62 +332,70 @@ class PlannerPanel(Container):
     def on_mount(self) -> None:
         self.border_title = "Skill Runner"
 
-    def compose(self) -> ComposeResult:
-        no_data = self._data["skill_name"] is None
+    @staticmethod
+    def _build_rows(data: dict) -> list[Static]:
+        rows: list[Static] = []
+        no_data = data["skill_name"] is None
         # Skill + run id
         t = Text()
         t.append("Skill:    ", style="bold white")
         if no_data:
             t.append("—", style="#9e9e9e")
         else:
-            t.append(self._data["skill_name"], style="bold #4fc3f7")
-            t.append(f"  {self._data['skill_run_id']}", style="#9e9e9e")
-        yield Static(t)
+            t.append(data["skill_name"], style="bold #4fc3f7")
+            t.append(f"  {data['skill_run_id']}", style="#9e9e9e")
+        rows.append(Static(t))
         # Phase
         t2 = Text()
         t2.append("Phase:    ", style="bold white")
-        t2.append("—" if no_data else self._data["skill_phase"], style="#9e9e9e" if no_data else "bold white")
-        yield Static(t2)
+        t2.append("—" if no_data else data["skill_phase"], style="#9e9e9e" if no_data else "bold white")
+        rows.append(Static(t2))
         # ACT buffer
         t3 = Text()
         t3.append("ACT:      ", style="bold white")
         if no_data:
             t3.append("—", style="#9e9e9e")
         else:
-            buf = self._data["act_buffer_ms"]
-            low = self._data["act_buffer_low"]
+            buf = data["act_buffer_ms"]
+            low = data["act_buffer_low"]
             buf_color = "yellow" if low else "bright_green"
-            t3.append(self._data["act_status"], style=f"bold {buf_color}")
+            t3.append(data["act_status"], style=f"bold {buf_color}")
             if buf is not None:
                 t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
             if low:
                 t3.append("  !", style="bold yellow")
-        yield Static(t3)
+        rows.append(Static(t3))
         # Outcome
         t4 = Text()
         t4.append("Outcome:  ", style="bold white")
         if no_data:
             t4.append("—", style="#9e9e9e")
         else:
-            outcome = self._data["outcome_state"]
-            outcome_color = (
-                "bright_green" if outcome == "SUCCESS"
-                else "red" if outcome == "FAILURE"
-                else "#b0bcd0"
-            )
+            outcome = data["outcome_state"]
+            outcome_color = "bright_green" if outcome == "SUCCESS" else "red" if outcome == "FAILURE" else "#b0bcd0"
             t4.append(outcome, style=f"bold {outcome_color}")
-            if self._data["outcome_reason"]:
-                t4.append(f"  ({self._data['outcome_reason']})", style="yellow")
-        yield Static(t4)
+            if data["outcome_reason"]:
+                t4.append(f"  ({data['outcome_reason']})", style="yellow")
+        rows.append(Static(t4))
         # Elapsed
         t5 = Text()
         t5.append("Elapsed:  ", style="bold white")
         if no_data:
             t5.append("—", style="#9e9e9e")
         else:
-            elapsed_s = (self._data["elapsed_ms"] or 0) / 1000
+            elapsed_s = (data["elapsed_ms"] or 0) / 1000
             t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
-        yield Static(t5)
+        rows.append(Static(t5))
+        return rows
+
+    def compose(self) -> ComposeResult:
+        yield from self._build_rows(self._data)
+
+    async def refresh_live(self, data: dict) -> None:
+        self._data = data
+        await self.query("Static").remove()
+        for widget in self._build_rows(data):
+            await self.mount(widget)
 
 
 class TargetPerceptionPanel(Container):
@@ -339,54 +406,79 @@ class TargetPerceptionPanel(Container):
     def on_mount(self) -> None:
         self.border_title = "Target Perception"
 
-    def compose(self) -> ComposeResult:
+    @staticmethod
+    def _build_rows(data: dict) -> list[Static]:
         def row(label: str, value: str, value_style: str) -> Static:
             t = Text()
             t.append(f"{label:<12}", style="bold white")
             t.append(value, style=value_style)
             return Static(t)
 
-        tracking = self._data["perc_tracking"]
+        rows: list[Static] = []
+        tracking = data["perc_tracking"]
         no_data = tracking is None
 
         # Status
         if no_data:
-            yield row("Status:", "—", "#9e9e9e")
+            rows.append(row("Status:", "—", "#9e9e9e"))
         else:
             track_color = (
-                "bright_green" if tracking == "TRACKING"
-                else "yellow" if tracking == "RELOCALIZING"
+                "bright_green"
+                if tracking == "TRACKING"
+                else "yellow"
+                if tracking in ("RELOCALIZING", "REACQUIRING")
                 else "red"
             )
             t = Text()
             t.append(f"{'Status:':<12}", style="bold white")
             t.append(tracking, style=f"bold {track_color}")
-            if self._data["perc_hint_valid"] is False:
+            if data["perc_hint_valid"] is False:
                 t.append("  invalid", style="bold red")
-            yield Static(t)
+            rows.append(Static(t))
 
         # Target
-        target = self._data["perc_target"]
-        yield row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e")
+        target = data["perc_target"]
+        rows.append(row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e"))
 
         # Distance
-        dist = self._data["perc_distance_m"]
-        yield row("Distance:", f"{dist * 100:.0f} cm" if dist is not None else "—",
-                  "white" if dist is not None else "#9e9e9e")
+        dist = data["perc_distance_m"]
+        rows.append(
+            row(
+                "Distance:",
+                f"{dist * 100:.0f} cm" if dist is not None else "—",
+                "white" if dist is not None else "#9e9e9e",
+            )
+        )
 
         # Confidence
-        conf = self._data["perc_confidence"]
-        yield row("Confidence:", f"{conf * 100:.0f}%" if conf is not None else "—",
-                  "white" if conf is not None else "#9e9e9e")
+        conf = data["perc_confidence"]
+        rows.append(
+            row(
+                "Confidence:",
+                f"{conf * 100:.0f}%" if conf is not None else "—",
+                "white" if conf is not None else "#9e9e9e",
+            )
+        )
 
         # Obs age
-        age = self._data["perc_obs_age_ms"]
-        yield row("Obs age:", f"{age} ms" if age is not None else "—", "#9e9e9e")
+        age = data["perc_obs_age_ms"]
+        rows.append(row("Obs age:", f"{age} ms" if age is not None else "—", "#9e9e9e"))
 
         # Failure code
-        failure = self._data["perc_failure"]
+        failure = data["perc_failure"]
         fail_color = "bright_green" if failure == "OK" else ("yellow" if failure else "#9e9e9e")
-        yield row("Code:", failure or "—", fail_color)
+        rows.append(row("Code:", failure or "—", fail_color))
+
+        return rows
+
+    def compose(self) -> ComposeResult:
+        yield from self._build_rows(self._data)
+
+    async def refresh_live(self, data: dict) -> None:
+        self._data = data
+        await self.query("Static").remove()
+        for widget in self._build_rows(data):
+            await self.mount(widget)
 
 
 class ControlServicePanel(Container):
@@ -461,9 +553,7 @@ class TalkPanel(Container):
     def on_mount(self) -> None:
         self.border_title = "Talk to Planner"
         # scroll history to bottom after layout settles
-        self.call_after_refresh(
-            lambda: self.query_one("#prompt-history", VerticalScroll).scroll_end(animate=False)
-        )
+        self.call_after_refresh(lambda: self.query_one("#prompt-history", VerticalScroll).scroll_end(animate=False))
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="prompt-history"):
@@ -552,6 +642,7 @@ class EventsPanel(Container):
     def append_event(self, evt: object) -> None:
         """Prepend a live EventEnvelope row (newest at top). Trims to 8 rows."""
         from datetime import datetime
+
         ts_ms = getattr(evt, "ts_ms", 0)
         ts = datetime.fromtimestamp(ts_ms / 1000).strftime("%H:%M:%S")
         t = Text()
@@ -577,6 +668,7 @@ class PanicPanel(Container):
 
 # ── Chrome ────────────────────────────────────────────────────────
 
+
 class TitleBar(Static):
     def __init__(self, arm_id: str = _DATA["arm_id"], **kwargs) -> None:
         super().__init__(**kwargs)
@@ -590,16 +682,17 @@ class TitleBar(Static):
 
 class HintBar(Static):
     """Single-line keybinding hint that spans the full width."""
+
     def render(self) -> Text:
         t = Text(justify="center")
         t.append("[ ? ] legend", style="#4fc3f7")
         for key, desc in (
-            ("Tab",   "navigate"),
-            ("T",     "type"),
+            ("Tab", "navigate"),
+            ("T", "type"),
             ("Enter", "send"),
-            ("Esc",   "cancel"),
-            ("A",     "abort"),
-            ("Ctrl+Q","quit"),
+            ("Esc", "cancel"),
+            ("A", "abort"),
+            ("Ctrl+Q", "quit"),
         ):
             t.append("  ·  ", style="#3a4060")
             t.append(f"[ {key} ]", style="#4fc3f7")
@@ -608,6 +701,7 @@ class HintBar(Static):
 
 
 # ── Legend modal ──────────────────────────────────────────────────
+
 
 class LegendScreen(ModalScreen):
     BINDINGS = [
@@ -631,6 +725,7 @@ class LegendScreen(ModalScreen):
 
 
 # ── Reasoning modal ───────────────────────────────────────────────
+
 
 class ReasoningScreen(ModalScreen):
     """Full LLM reasoning text for the last planner response."""
@@ -667,6 +762,7 @@ class ReasoningScreen(ModalScreen):
 
 
 # ── App ───────────────────────────────────────────────────────────
+
 
 class HALOApp(App):
     CSS = """
@@ -893,9 +989,7 @@ class HALOApp(App):
         self._arm_id = arm_id
         self._perception_svc = perception_svc
         self._initial_target = initial_target
-        self._panel_data = (
-            {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
-        )
+        self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
         if run_logger is not None:
@@ -961,6 +1055,7 @@ class HALOApp(App):
 
     def action_emergency_abort(self) -> None:
         import time
+
         now = time.monotonic()
         if now - self._abort_cooldown < 3.0:
             return
@@ -976,6 +1071,7 @@ class HALOApp(App):
 
     def action_send_message(self) -> None:
         from datetime import datetime
+
         inp = self.query_one("#planner-input", Input)
         msg = inp.value.strip()
         if not msg:
@@ -1026,17 +1122,21 @@ class HALOApp(App):
     # ── Live workers ──
 
     async def _poll_system_panel(self) -> None:
-        """Refresh SystemPanel with live service statuses every 2 s."""
+        """Refresh all live panels from the latest snapshot every 2 s."""
         try:
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
             services, target_info = _derive_services(snap)
+            panel_data = _snap_to_panel_data(snap, self._panel_data)
             await self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
+            await self.query_one("#planner-panel", PlannerPanel).refresh_live(panel_data)
+            await self.query_one("#perception-panel", TargetPerceptionPanel).refresh_live(panel_data)
         except Exception:
             pass
 
     async def _listen_events(self) -> None:
         """Forward EventBus events to EventsPanel in real time."""
         import asyncio
+
         events_panel = self.query_one("#events-panel", EventsPanel)
         try:
             while True:
@@ -1047,6 +1147,7 @@ class HALOApp(App):
 
     async def _do_agent_call(self, msg: str) -> None:
         from datetime import datetime
+
         ts = datetime.now().strftime("%H:%M:%S")
         history = self.query_one("#prompt-history", VerticalScroll)
 
@@ -1062,6 +1163,7 @@ class HALOApp(App):
         try:
             import time as _time
             from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
+
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
             _t0 = _time.monotonic()
             commands = await self._agent.decide(snap, operator_cmd=msg)  # type: ignore[union-attr]
@@ -1177,8 +1279,8 @@ def _run_live(args: list[str]) -> None:
 
     # Parse --arm, --model, --vlm-model, --base-url from args
     arm_id = "arm0"
-    model = "gpt-oss:20B"
-    vlm_model = "qwen3-vl:30B"
+    model = "gpt-oss"
+    vlm_model = "qwen2.5vl"
     base_url = "http://localhost:11434"
 
     for i, arg in enumerate(args):
@@ -1218,6 +1320,7 @@ def _run_live(args: list[str]) -> None:
 
 def main() -> None:
     import sys
+
     args = sys.argv[1:]
     if "--screenshot" in args:
         idx = args.index("--screenshot")

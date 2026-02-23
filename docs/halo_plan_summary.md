@@ -15,7 +15,7 @@ Scope: HALO — v1: Isaac Sim/Lab, single-arm pick/place, local models via Ollam
 
 ### Core modules
 1) **Planner (agentic, stateful)**
-   - Model: `gpt-oss:20B` (Ollama)
+   - Model: `gpt-oss` (Ollama)
    - Responsibilities:
      - Task-level orchestration (choose next skill / handle failures / retries / target selection).
      - Tool use via commands + cached-state queries.
@@ -26,7 +26,7 @@ Scope: HALO — v1: Isaac Sim/Lab, single-arm pick/place, local models via Ollam
 
 2) **TargetPerceptionService (unified perception subsystem)**
    - Internals (hidden from planner):
-     - VLM grounding: `qwen3-vl:30B` (scene camera only by default)
+     - VLM grounding: `qwen2.5vl` (scene camera only by default)
      - Segmentation: SAM/SAM2 (mask init/refinement)
      - Tracking: fast tracker (mask/points), continuous updates
      - Depth fusion: ZED X depth + mask → 3D target estimate

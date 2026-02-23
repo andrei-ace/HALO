@@ -19,12 +19,12 @@ tui-mock:
 	uv run python -m halo.tui.app
 
 PLANNER_MODEL  ?= gpt-oss:20B
-VLM_MODEL      ?= qwen3-vl:30B
+VLM_MODEL      ?= qwen2.5vl:3b
 OLLAMA_URL     ?= http://localhost:11434
 ARM_ID         ?= arm0
 
 tui-live:
-	uv run --extra planner python -m halo.tui.app --live \
+	uv run python -m halo.tui.app --live \
 		--arm $(ARM_ID) \
 		--model $(PLANNER_MODEL) \
 		--vlm-model $(VLM_MODEL) \
