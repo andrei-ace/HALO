@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+dist/
+build/
+*.egg-info/
+
+# uv
+.uv/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# editors
+.idea/
+.vscode/
+*.swp
