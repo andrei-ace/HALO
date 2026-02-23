@@ -1,35 +1,30 @@
 {
-  "_comment": "Raw VLM inference output for mock.png (qwen3-vl:30B via Ollama). Coordinates are in 0-1000 space as returned by the model. Normalisation to 0-1 is done in vlm_parser.py.",
-  "model": "qwen3-vl:30B",
+  "_comment": "Raw VLM inference output for mock.png (qwen3-vl via Ollama). Coordinates are in 0-1000 space as returned by the model. Normalisation to 0-1 is done in vlm_parser.py.",
+  "model": "qwen3-vl",
   "image": "docs/data/mock/mock.png",
-  "prompt": "Locate all graspable objects on the workspace. For each object provide: label, bounding_box [x1,y1,x2,y2] in 0-1000 coordinates, centroid_xy in 0-1000 coordinates, estimated_depth_m from the scene camera, confidence 0-1, is_graspable.",
+  "scene": "A wooden workbench with a red plastic cube on the left and a green rectangular storage container on the right. A robotic gripper is visible at the top of the frame, hovering above the workspace.",
   "detections": [
     {
-      "label": "red_cube",
-      "handle": "cube-red-01",
-      "bounding_box": [80, 150, 420, 780],
-      "centroid_xy": [250, 470],
-      "estimated_depth_m": 0.52,
-      "confidence": 0.94,
-      "is_graspable": true,
-      "color": "red",
-      "shape": "cube",
-      "notes": "Solid red plastic cube, clearly isolated on workbench surface. Good grasp candidate — flat top face visible."
+      "handle": "red_cube_01",
+      "label": "red cube",
+      "bounding_box": [
+        80,
+        150,
+        420,
+        780
+      ]
     },
     {
-      "label": "green_container",
-      "handle": "container-green-01",
-      "bounding_box": [530, 220, 830, 730],
-      "centroid_xy": [680, 480],
-      "estimated_depth_m": 0.55,
-      "confidence": 0.87,
-      "is_graspable": false,
-      "color": "green",
-      "shape": "rectangular_container_with_handle",
-      "notes": "Green plastic storage container with side handle. Intended place target — open top visible."
+      "handle": "green_container_01",
+      "label": "green container",
+      "bounding_box": [
+        530,
+        220,
+        830,
+        730
+      ]
     }
   ],
-  "scene_description": "Wooden workbench under workshop lighting. Red plastic cube on the left (~52 cm from camera). Green rectangular storage container on the right (~55 cm from camera). Robotic gripper partially visible at top frame edge — arm is in approach/hover position above the cube. No significant occlusions. Background: wire rack and tools on pegboard.",
   "latency_ms": 847,
   "timestamp_ms": 1708694400000
 }
