@@ -71,13 +71,15 @@ _DATA = dict(
 )
 
 _LEGEND = [
-    ("click / Tab", "Focus the message input (enter typing mode)"),
+    ("Tab / Shift+Tab", "Navigate between input and buttons"),
+    ("T",               "Focus the message input directly"),
     ("Enter",       "Send message to planner"),
     ("Esc",         "Clear input and return to monitoring mode"),
     ("A",           "Emergency abort — always fires (even while typing)"),
     ("Ctrl+Q",      "Quit"),
     ("?",           "Show / hide this legend"),
 ]
+
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -259,6 +261,8 @@ class HintBar(Static):
         t = Text(justify="center")
         t.append("[ ? ] legend", style="#4fc3f7")
         for key, desc in (
+            ("Tab",   "navigate"),
+            ("T",     "type"),
             ("Enter", "send"),
             ("Esc",   "cancel"),
             ("A",     "abort"),
@@ -416,6 +420,12 @@ class HALOApp(App):
         background: #e53935;
     }
 
+    #abort-btn:focus {
+        background: #e53935;
+        border: tall #ff8a80;
+        text-style: bold reverse;
+    }
+
     #abort-hint {
         content-align: center middle;
         color: #8a8a8a;
@@ -447,6 +457,7 @@ class HALOApp(App):
 
     BINDINGS = [
         Binding("a", "emergency_abort", "ABORT", priority=True, show=False),
+        Binding("t", "focus_input", "type", show=False),
         Binding("enter", "send_message", "send", show=False),
         Binding("escape", "cancel_input", "cancel", show=False),
         Binding("question_mark", "show_legend", "legend", show=False),
@@ -462,14 +473,14 @@ class HALOApp(App):
         with Vertical(id="body"):
             with Horizontal(id="main-row"):
                 with Vertical(id="left-col"):
-                    yield PlannerPanel()
-                    yield ActionsPanel()
-                    yield TalkPanel()
+                    yield PlannerPanel(id="planner-panel")
+                    yield ActionsPanel(id="actions-panel")
+                    yield TalkPanel(id="talk-panel")
                 with Vertical(id="right-col"):
-                    yield SystemPanel()
-                    yield ServosPanel()
-                    yield EventsPanel()
-                    yield PanicPanel()
+                    yield SystemPanel(id="system-panel")
+                    yield ServosPanel(id="servos-panel")
+                    yield EventsPanel(id="events-panel")
+                    yield PanicPanel(id="panic-panel")
             yield HintBar()
 
     # ── Event handlers ──
@@ -525,8 +536,12 @@ class HALOApp(App):
         inp.value = ""
         self.set_focus(None)
 
+    def action_focus_input(self) -> None:
+        self.query_one("#planner-input", Input).focus()
+
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
+
 
 
 def _take_screenshot(path: str = "halo_tui.svg") -> None:
