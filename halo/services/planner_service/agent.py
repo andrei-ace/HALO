@@ -91,11 +91,11 @@ class PlannerAgent:
     ) -> None:
         self._system_prompt = _load_prompts(prompts_dir)
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
-        tools = build_tools(self._ctx)
+        self._tools = build_tools(self._ctx)
         llm = ChatOllama(model=model_name, base_url=base_url)
         self._agent = create_agent(
             llm,
-            tools,
+            self._tools,
             middleware=[_DeprecateOldSnapshotsMiddleware()],
         )
         self._last_reasoning: str = ""
