@@ -15,3 +15,6 @@ planner = ["langgraph>=0.2", "langchain>=0.3", "langchain-ollama>=0.2", "langcha
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: LLM integration tests — require a running Ollama instance",
+]
