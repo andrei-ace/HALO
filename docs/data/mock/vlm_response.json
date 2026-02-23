@@ -1,6 +1,6 @@
 {
-  "_comment": "Raw VLM inference output for mock.png (qwen3-vl via Ollama). Coordinates are in 0-1000 space as returned by the model. Normalisation to 0-1 is done in vlm_parser.py.",
-  "model": "qwen3-vl",
+  "_comment": "Raw VLM inference output for mock.png (qwen2.5vl via Ollama). Coordinates are in 0-1000 space as returned by the model. Normalisation to 0-1 is done in vlm_parser.py.",
+  "model": "qwen2.5vl",
   "image": "docs/data/mock/mock.png",
   "scene": "A wooden workbench with a red plastic cube on the left and a green rectangular storage container on the right. A robotic gripper is visible at the top of the frame, hovering above the workspace.",
   "detections": [

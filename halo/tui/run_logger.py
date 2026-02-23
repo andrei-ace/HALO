@@ -37,7 +37,7 @@ class RunLogger:
           "ts":             "2026-02-23T14:32:09.123456+00:00",
           "arm_id":         "arm0",
           "target_handle":  "cube-red-01",
-          "model":          "qwen3-vl:30B",
+          "model":          "qwen2.5vl",
           "raw_response":   { … },    // full Ollama response dict
           "target_info":    { … },    // serialised TargetInfo or null
           "inference_ms":   2150,

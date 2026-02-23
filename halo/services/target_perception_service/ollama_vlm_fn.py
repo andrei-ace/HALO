@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import re
 import time
@@ -9,8 +10,15 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from PIL import Image
+
 from halo.contracts.snapshots import TargetInfo
 from halo.services.target_perception_service.vlm_parser import parse_vlm_response
+
+# Resize input images to this width before sending to Ollama.
+# Height is computed to preserve aspect ratio.  All model bbox
+# coordinates will be in this known pixel space.
+_VLM_INPUT_WIDTH = 1024
 
 if TYPE_CHECKING:
     from halo.tui.run_logger import RunLogger
@@ -68,7 +76,7 @@ def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) ->
 
 def make_ollama_vlm_fn(
     base_url: str = "http://localhost:11434",
-    model: str = "qwen3-vl",
+    model: str = "qwen2.5vl",
     image_path: Path = _DEFAULT_IMAGE,
     prompt_path: Path = _DEFAULT_PROMPT,
     run_logger: RunLogger | None = None,
@@ -86,7 +94,16 @@ def make_ollama_vlm_fn(
     If *run_logger* is provided every inference (success or failure) is
     appended to the session JSONL log alongside the full raw Ollama response.
     """
-    image_b64 = base64.b64encode(image_path.read_bytes()).decode()
+    # Resize to a known width so model bbox coords map to a known pixel space.
+    img = Image.open(image_path)
+    aspect = img.height / img.width
+    new_w = _VLM_INPUT_WIDTH
+    new_h = int(new_w * aspect)
+    img = img.resize((new_w, new_h), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    image_b64 = base64.b64encode(buf.getvalue()).decode()
+
     prompt = prompt_path.read_text(encoding="utf-8")
 
     async def vlm_fn(arm_id: str, target_handle: str) -> TargetInfo | None:

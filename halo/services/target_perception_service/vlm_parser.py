@@ -2,11 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# VLM models (e.g. qwen3-vl) emit coordinates as integers in [0, 1000].
-# This module normalises them to [0.0, 1.0] before any downstream use.
-
-_VLM_COORD_MAX = 1000.0
-
 
 @dataclass(frozen=True)
 class VlmScene:
@@ -18,9 +13,9 @@ class VlmScene:
 class VlmDetection:
     handle: str
     label: str
-    # Normalised [0, 1] bounding box: (x1, y1, x2, y2)
+    # Raw bounding box as returned by the model: (x1, y1, x2, y2)
     bbox: tuple[float, float, float, float]
-    # Normalised [0, 1] centroid derived from bbox midpoint
+    # Centroid derived from bbox midpoint
     centroid: tuple[float, float]
     is_graspable: bool
 
@@ -29,7 +24,7 @@ def parse_vlm_response(response: dict) -> VlmScene:
     """
     Parse a raw VLM JSON response into a VlmScene.
 
-    Coordinates are expected in [0, 1000] and normalised to [0.0, 1.0].
+    Coordinates are stored as-is from the model (no normalisation).
     Centroid is computed from the bounding box midpoint.
     """
     scene = response.get("scene", "")
@@ -40,15 +35,10 @@ def parse_vlm_response(response: dict) -> VlmScene:
             VlmDetection(
                 handle=det["handle"],
                 label=det["label"],
-                bbox=(
-                    x1 / _VLM_COORD_MAX,
-                    y1 / _VLM_COORD_MAX,
-                    x2 / _VLM_COORD_MAX,
-                    y2 / _VLM_COORD_MAX,
-                ),
+                bbox=(float(x1), float(y1), float(x2), float(y2)),
                 centroid=(
-                    (x1 + x2) / 2 / _VLM_COORD_MAX,
-                    (y1 + y2) / 2 / _VLM_COORD_MAX,
+                    (x1 + x2) / 2,
+                    (y1 + y2) / 2,
                 ),
                 is_graspable=det.get("is_graspable", True),
             )

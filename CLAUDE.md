@@ -21,7 +21,7 @@ make test-integration  # run LLM integration tests (requires Ollama); saves resu
 
 **Note:** `uv run pytest` fails if `uv sync --extra dev` hasn't been run yet; use `uv run python -m pytest` to be safe.
 
-**Integration tests** require `uv sync --extra planner` and a running Ollama instance with `gpt-oss:20B` loaded. They are auto-skipped if Ollama is unreachable. Configure via env vars: `HALO_OLLAMA_URL` (default `http://localhost:11434`) and `HALO_MODEL_NAME` (default `gpt-oss:20B`).
+**Integration tests** require `uv sync --extra planner` and a running Ollama instance with `gpt-oss` loaded. They are auto-skipped if Ollama is unreachable. Configure via env vars: `HALO_OLLAMA_URL` (default `http://localhost:11434`) and `HALO_MODEL_NAME` (default `gpt-oss`).
 
 ## Implementation Status
 
@@ -90,8 +90,8 @@ integration/        # LLM integration tests (require Ollama)
 
 | Service | Rate | Owns |
 |---|---|---|
-| **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss:20B` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
-| **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen3-vl:30B` via Ollama (scene camera only). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion. |
+| **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
+| **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen2.5vl` via Ollama (scene camera only). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion. |
 | **SkillRunnerService** | 10–20 Hz (ACT inference) | Pick FSM, phase transitions, ACT chunk buffering, buffer trimming on phase switch, fast success/failure checks. |
 | **ControlService** | 50–100 Hz | Real-time action streaming, smoothing, clamps (vel/acc/jerk), safety interlocks. Never waits on LLM or VLM. |
 | **SafetyGuard / ReflexLayer** | Hard real-time | Joint/workspace/velocity limits, immediate stop/retract/open-gripper overrides. LLM cannot bypass. |
@@ -146,7 +146,7 @@ Do **not** integrate and play back whole chunks open-loop. Temporal ensembling b
 v1 uses Isaac Sim/Lab only. The real hardware target is SO-ARM101 with:
 - **Scene camera**: ZED X (VLM grounding, global target discovery, depth-based 3D, `T_base<-scene_cam`)
 - **Wrist camera**: 1080p USB2 UVC (ACT observation, local visual servoing, `T_ee<-wrist_cam`)
-- **LLM/VLM**: local via Ollama — planner uses `gpt-oss:20B`, perception uses `qwen3-vl:30B`
+- **LLM/VLM**: local via Ollama — planner uses `gpt-oss`, perception uses `qwen2.5vl`
 
 ## Timing Budgets
 
