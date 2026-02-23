@@ -25,7 +25,7 @@ make test-integration  # run LLM integration tests (requires Ollama); saves resu
 
 ## Implementation Status
 
-All v0 backbone services are implemented and tested (206 tests passing):
+All v0 backbone services are implemented and tested (207 tests passing):
 
 | Layer | Status | Tests |
 |---|---|---|
@@ -34,8 +34,8 @@ All v0 backbone services are implemented and tested (206 tests passing):
 | ControlService + TemporalEnsemblingBuffer + SafetyGuard | ✅ done | 104 |
 | SkillRunnerService + PickFSM | ✅ done | 143 |
 | PlannerService | ✅ done | 177 |
-| TargetPerceptionService (mocked observe_fn) | ✅ done | 192 |
-| PlannerAgent (LangGraph ReAct + tools) | ✅ done | 206 |
+| TargetPerceptionService (mock + VLM pipeline) | ✅ done | 192 |
+| PlannerAgent (LangGraph ReAct + tools) | ✅ done | 207 |
 | TUI (`halo/tui/app.py`) | ✅ done | — |
 | RunLogger + observability | ✅ done | — |
 | Integration tests (`integration/`) | ✅ done | requires Ollama |
@@ -61,13 +61,14 @@ halo/
     control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
     skill_runner_service/      # config.py, fsm.py, service.py
     planner_service/           # config.py, snapshot_serializer.py, tools.py, agent.py, service.py
-    target_perception_service/ # config.py, service.py
+    target_perception_service/ # config.py, service.py, vlm_parser.py, ollama_vlm_fn.py, mock_fns.py
   tui/
     app.py          # Textual TUI — mock + live modes
     run_logger.py   # RunLogger: writes JSONL session logs to runs/
   models/           # (planned) act/, vlm/
   configs/
     planner/        # system_prompt.md, skills/pick.md, skills/place.md
+    perception/     # scene_analysis.md (VLM prompt for qwen2.5vl)
     calib/          # (planned)
     skills/         # (planned)
     safety/         # (planned)
@@ -76,7 +77,7 @@ halo/
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
   halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
-  data/mock/             # mock screenshots for documentation
+  data/mock/             # mock data: observe_fn_result.json, vlm_response.json, perception_info.json, mock.png
 runs/               # live TUI session logs (JSONL, one file per session; git-ignored except .gitkeep)
 tests/
 integration/        # LLM integration tests (require Ollama)
@@ -91,7 +92,7 @@ integration/        # LLM integration tests (require Ollama)
 | Service | Rate | Owns |
 |---|---|---|
 | **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
-| **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen2.5vl` via Ollama (scene camera only). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion. |
+| **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen2.5vl` via Ollama (scene camera only, async reacquire). Includes VLM parser (`vlm_parser.py`), Ollama VLM client (`ollama_vlm_fn.py`), mock fns (`mock_fns.py`). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion (planned). |
 | **SkillRunnerService** | 10–20 Hz (ACT inference) | Pick FSM, phase transitions, ACT chunk buffering, buffer trimming on phase switch, fast success/failure checks. |
 | **ControlService** | 50–100 Hz | Real-time action streaming, smoothing, clamps (vel/acc/jerk), safety interlocks. Never waits on LLM or VLM. |
 | **SafetyGuard / ReflexLayer** | Hard real-time | Joint/workspace/velocity limits, immediate stop/retract/open-gripper overrides. LLM cannot bypass. |
