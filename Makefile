@@ -1,4 +1,4 @@
-.PHONY: install test test-v test-file test-k test-integration help
+.PHONY: install test test-v test-file test-k test-integration tui help
 
 install:
 	uv sync --extra dev
@@ -15,6 +15,9 @@ test-file:
 test-k:
 	uv run pytest -k "$(K)"
 
+tui:
+	uv run python -m halo.tui.app
+
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
 	mkdir -p $(RUN_DIR)
@@ -30,3 +33,4 @@ help:
 	@echo "test-file  run one file:  make test-file FILE=tests/test_foo.py"
 	@echo "test-k     run by name:   make test-k K=test_snapshot_ids_increment"
 	@echo "test-integration  run LLM integration tests (requires Ollama)"
+	@echo "tui               launch the HALO terminal dashboard"
