@@ -10,15 +10,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync --extra dev                   # install + dev deps (first time or after pyproject.toml changes)
-uv run python -m pytest               # run all tests
+uv run python -m pytest               # run all unit tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
-make tui-mock     # launch TUI in mock mode (no Ollama needed)
-make tui-live     # launch TUI wired to HALORuntime + PlannerAgent (requires Ollama)
+make tui-mock          # launch TUI in mock mode (no Ollama needed)
+make tui-live          # launch TUI wired to HALORuntime + PlannerAgent (requires Ollama)
+make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
 
 **Note:** `uv run pytest` fails if `uv sync --extra dev` hasn't been run yet; use `uv run python -m pytest` to be safe.
+
+**Integration tests** require `uv sync --extra planner` and a running Ollama instance with `gpt-oss:20B` loaded. They are auto-skipped if Ollama is unreachable. Configure via env vars: `HALO_OLLAMA_URL` (default `http://localhost:11434`) and `HALO_MODEL_NAME` (default `gpt-oss:20B`).
 
 ## Implementation Status
 
@@ -34,10 +37,12 @@ All v0 backbone services are implemented and tested (206 tests passing):
 | TargetPerceptionService (mocked observe_fn) | ✅ done | 192 |
 | PlannerAgent (LangGraph ReAct + tools) | ✅ done | 206 |
 | TUI (`halo/tui/app.py`) | ✅ done | — |
+| RunLogger + observability | ✅ done | — |
+| Integration tests (`integration/`) | ✅ done | requires Ollama |
 
 The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
-- **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel.
+- **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` (via `halo/tui/run_logger.py`).
 
 To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot halo_tui.svg`
 
@@ -52,6 +57,7 @@ HALO is a robotic manipulation system. **v1 runs entirely in Isaac Sim/Lab** (no
 ```
 halo/
   contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
+                    # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
   services/
     control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
@@ -60,6 +66,7 @@ halo/
     target_perception_service/ # config.py, service.py
   tui/
     app.py          # Textual TUI — mock + live modes
+    run_logger.py   # RunLogger: writes JSONL session logs to runs/
   models/           # (planned) act/, vlm/
   configs/
     planner/        # system_prompt.md, skills/pick.md, skills/place.md
@@ -71,8 +78,12 @@ halo/
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
   halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
+  data/mock/             # mock screenshots for documentation
+runs/               # live TUI session logs (JSONL, one file per session; git-ignored except .gitkeep)
 tests/
 integration/        # LLM integration tests (require Ollama)
+  conftest.py       # Ollama health-check; auto-skips if model unavailable
+  runs/             # timestamped result folders from make test-integration
 ```
 
 ## Architecture
