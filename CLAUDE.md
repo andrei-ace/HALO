@@ -39,6 +39,10 @@ The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
 - **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel.
 
+To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot halo_tui.svg`
+
+![HALO TUI](halo_tui.svg)
+
 ## Project Overview
 
 HALO is a robotic manipulation system. **v1 runs entirely in Isaac Sim/Lab** (no hardware required). Real SO-ARM101 arm support is a later phase. The core design principle is **continuous control decoupled from LLM reasoning**: the robot never pauses motion waiting for the planner. Perception and control are machine-to-machine; numeric control hints never flow through LLM context.
