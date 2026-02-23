@@ -156,7 +156,7 @@ class RuntimeStateStore:
             snap_num = next(self._snap_counter[arm_id])
             snapshot = PlannerSnapshot(
                 snapshot_id=f"snap-{arm_id}-{snap_num}",
-                ts_ms=int(time.monotonic() * 1000),
+                ts_ms=int(time.time() * 1000),
                 arm_id=arm_id,
                 skill=self._skill[arm_id],
                 target=self._target[arm_id],

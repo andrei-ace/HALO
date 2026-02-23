@@ -29,10 +29,9 @@ class _DeprecateOldSnapshotsMiddleware(AgentMiddleware):
     @staticmethod
     def _deprecate(messages: list) -> list:
         indices = [
-            i for i, m in enumerate(messages)
-            if isinstance(m, HumanMessage)
-            and isinstance(m.content, str)
-            and m.content.startswith(_SNAPSHOT_PREFIX)
+            i
+            for i, m in enumerate(messages)
+            if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content.startswith(_SNAPSHOT_PREFIX)
         ]
         for i in indices[:-1]:
             messages[i] = HumanMessage(content=_DEPRECATED_CONTENT)
@@ -133,7 +132,7 @@ class PlannerAgent:
 
 
 def make_decide_fn(
-    model_name: str = "gpt-oss:20B",
+    model_name: str = "gpt-oss",
     base_url: str = "http://localhost:11434",
     prompts_dir: Path | str | None = None,
 ) -> DecideFn:
