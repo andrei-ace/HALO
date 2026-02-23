@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "halo/contracts/snapshot.json",
+  "title": "HALO Planner Snapshot",
+  "description": "Compact, planner-grade runtime snapshot. The planner must always see exactly one snapshot — the latest. Older snapshots must be replaced, never appended.",
+  "$defs": {
+    "SkillInfo": {
+      "type": "object",
+      "required": ["name", "skill_run_id", "phase"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "enums.json#/$defs/SkillName" },
+        "skill_run_id": { "type": "string" },
+        "phase": { "$ref": "enums.json#/$defs/PhaseId" }
+      }
+    },
+    "TargetInfo": {
+      "type": "object",
+      "required": ["handle", "hint_valid", "confidence", "obs_age_ms", "time_skew_ms", "delta_xyz_ee", "distance_m"],
+      "additionalProperties": false,
+      "properties": {
+        "handle": { "type": "string" },
+        "hint_valid": { "type": "boolean" },
+        "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "obs_age_ms": {
+          "description": "Age of the observation: now - hint_ts (ms). Safety gate: if too high, hint_valid must be false.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "time_skew_ms": {
+          "description": "Skew between hint timestamp and robot state timestamp: hint_ts - robot_state_ts (ms).",
+          "type": "integer"
+        },
+        "delta_xyz_ee": {
+          "description": "Target position relative to end-effector frame [dx, dy, dz] in metres.",
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "distance_m": {
+          "description": "Euclidean distance from EE to target in metres.",
+          "type": "number",
+          "minimum": 0.0
+        }
+      }
+    },
+    "PerceptionInfo": {
+      "type": "object",
+      "required": ["tracking_status", "failure_code", "reacquire_fail_count", "vlm_job_pending"],
+      "additionalProperties": false,
+      "properties": {
+        "tracking_status": { "$ref": "enums.json#/$defs/TrackingStatus" },
+        "failure_code": { "$ref": "enums.json#/$defs/PerceptionFailureCode" },
+        "reacquire_fail_count": { "type": "integer", "minimum": 0 },
+        "vlm_job_pending": { "type": "boolean" }
+      }
+    },
+    "ActInfo": {
+      "type": "object",
+      "required": ["status", "buffer_fill_ms", "buffer_low"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "$ref": "enums.json#/$defs/ActStatus" },
+        "buffer_fill_ms": {
+          "description": "Remaining buffered action time in milliseconds.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "buffer_low": { "type": "boolean" }
+      }
+    },
+    "ProgressInfo": {
+      "type": "object",
+      "required": ["elapsed_ms", "no_progress_ms", "delta_distance"],
+      "additionalProperties": false,
+      "properties": {
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "no_progress_ms": {
+          "description": "Milliseconds since meaningful progress was last detected.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "delta_distance": {
+          "description": "Change in distance to target since last snapshot (metres, negative = approaching).",
+          "type": "number"
+        }
+      }
+    },
+    "OutcomeInfo": {
+      "type": "object",
+      "required": ["state", "reason_code", "needs_verify"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "$ref": "enums.json#/$defs/SkillOutcomeState" },
+        "reason_code": {
+          "oneOf": [
+            { "$ref": "enums.json#/$defs/SkillFailureCode" },
+            { "type": "null" }
+          ]
+        },
+        "needs_verify": { "type": "boolean" }
+      }
+    },
+    "SafetyInfo": {
+      "type": "object",
+      "required": ["state", "reflex_active", "reason_codes"],
+      "additionalProperties": false,
+      "properties": {
+        "state": { "$ref": "enums.json#/$defs/SafetyState" },
+        "reflex_active": { "type": "boolean" },
+        "reason_codes": {
+          "type": "array",
+          "items": { "$ref": "enums.json#/$defs/SafetyReflexReason" }
+        }
+      }
+    },
+    "PlannerSnapshot": {
+      "description": "The single planner-facing read payload returned by get_latest_runtime_snapshot(). Built from current RuntimeStateStore state plus the EventBus recent-events ring. Replaces (never appends) the previous snapshot in the planner context.",
+      "type": "object",
+      "required": ["snapshot_id", "ts_ms", "arm_id", "perception", "act", "progress", "outcome", "safety", "command_acks", "recent_events"],
+      "additionalProperties": false,
+      "properties": {
+        "snapshot_id": {
+          "description": "Monotonically incrementing snapshot identifier, e.g. 'snap-arm0-7'.",
+          "type": "string"
+        },
+        "ts_ms": {
+          "description": "Snapshot build timestamp in milliseconds (monotonic clock).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "arm_id": { "type": "string" },
+        "skill": {
+          "description": "Current skill and phase. Null when no skill is running.",
+          "oneOf": [
+            { "$ref": "#/$defs/SkillInfo" },
+            { "type": "null" }
+          ]
+        },
+        "target": {
+          "description": "Current tracking target. Null when no target is set.",
+          "oneOf": [
+            { "$ref": "#/$defs/TargetInfo" },
+            { "type": "null" }
+          ]
+        },
+        "perception": { "$ref": "#/$defs/PerceptionInfo" },
+        "act": { "$ref": "#/$defs/ActInfo" },
+        "progress": { "$ref": "#/$defs/ProgressInfo" },
+        "outcome": { "$ref": "#/$defs/OutcomeInfo" },
+        "safety": { "$ref": "#/$defs/SafetyInfo" },
+        "command_acks": {
+          "description": "Ring of recent command acknowledgements (max 10). Most recent last.",
+          "type": "array",
+          "items": { "$ref": "commands.json#/$defs/CommandAck" },
+          "maxItems": 10
+        },
+        "recent_events": {
+          "description": "Ring of recent events from the EventBus (max 8). Most recent last.",
+          "type": "array",
+          "items": { "$ref": "events.json#/$defs/EventEnvelope" },
+          "maxItems": 8
+        }
+      }
+    }
+  }
+}

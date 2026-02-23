@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "halo/contracts/events.json",
+  "title": "HALO Event Contracts",
+  "$defs": {
+    "EventEnvelope": {
+      "description": "Canonical event envelope published on the EventBus. All services produce and consume this shape.",
+      "type": "object",
+      "required": ["event_id", "type", "ts_ms", "arm_id"],
+      "additionalProperties": false,
+      "properties": {
+        "event_id": {
+          "description": "Monotonically incrementing event identifier, e.g. 'evt-42'.",
+          "type": "string"
+        },
+        "type": { "$ref": "enums.json#/$defs/EventType" },
+        "ts_ms": {
+          "description": "Event timestamp in milliseconds (monotonic clock).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "arm_id": {
+          "description": "Identifies which arm this event pertains to.",
+          "type": "string"
+        },
+        "data": {
+          "description": "Arbitrary event payload. Schema is event-type-specific.",
+          "type": "object"
+        }
+      }
+    }
+  }
+}

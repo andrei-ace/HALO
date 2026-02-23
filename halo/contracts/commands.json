@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "halo/contracts/commands.json",
+  "title": "HALO Command Contracts",
+  "description": "Command envelope and payload types issued by the PlannerService. All commands are async and idempotent.",
+  "$defs": {
+    "StartSkillPayload": {
+      "type": "object",
+      "required": ["skill_name", "target_handle"],
+      "additionalProperties": false,
+      "properties": {
+        "skill_name": { "$ref": "enums.json#/$defs/SkillName" },
+        "target_handle": { "type": "string" },
+        "options": {
+          "description": "Optional skill-specific parameters (speed profile, tolerances, etc.).",
+          "type": "object"
+        }
+      }
+    },
+    "AbortSkillPayload": {
+      "type": "object",
+      "required": ["skill_run_id", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "skill_run_id": {
+          "description": "Must match the currently running skill_run_id; rejected otherwise.",
+          "type": "string"
+        },
+        "reason": { "type": "string" }
+      }
+    },
+    "OverrideTargetPayload": {
+      "type": "object",
+      "required": ["skill_run_id", "target_handle"],
+      "additionalProperties": false,
+      "properties": {
+        "skill_run_id": {
+          "description": "Must match the currently running skill_run_id; rejected otherwise.",
+          "type": "string"
+        },
+        "target_handle": { "type": "string" }
+      }
+    },
+    "RequestPerceptionRefreshPayload": {
+      "type": "object",
+      "required": ["mode", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "description": "Refresh mode, e.g. 'full' or 'reseed'.",
+          "type": "string"
+        },
+        "reason": { "type": "string" }
+      }
+    },
+    "CommandEnvelope": {
+      "description": "All planner commands must use this envelope. command_id enforces idempotency; precondition_snapshot_id guards against stale state.",
+      "type": "object",
+      "required": ["command_id", "arm_id", "issued_at_ms", "type", "payload"],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": {
+          "description": "UUID. Duplicate command_id always returns ALREADY_APPLIED.",
+          "type": "string",
+          "format": "uuid"
+        },
+        "arm_id": { "type": "string" },
+        "issued_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "type": { "$ref": "enums.json#/$defs/CommandType" },
+        "payload": {
+          "oneOf": [
+            { "$ref": "#/$defs/StartSkillPayload" },
+            { "$ref": "#/$defs/AbortSkillPayload" },
+            { "$ref": "#/$defs/OverrideTargetPayload" },
+            { "$ref": "#/$defs/RequestPerceptionRefreshPayload" }
+          ]
+        },
+        "precondition_snapshot_id": {
+          "description": "If set, the router rejects the command if the current snapshot_id does not match. Omit to skip the check.",
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "CommandAck": {
+      "type": "object",
+      "required": ["command_id", "status"],
+      "additionalProperties": false,
+      "properties": {
+        "command_id": { "type": "string" },
+        "status": { "$ref": "enums.json#/$defs/CommandAckStatus" },
+        "reason": {
+          "description": "Human-readable rejection reason. Present on non-ACCEPTED statuses.",
+          "type": ["string", "null"]
+        }
+      }
+    }
+  }
+}
