@@ -43,6 +43,7 @@ class RunLogger:
         snapshot: Any,
         commands: list[dict],
         acks: list[dict],
+        reasoning: str = "",
         error: str | None = None,
     ) -> None:
         entry: dict[str, Any] = {
@@ -52,6 +53,7 @@ class RunLogger:
             "snapshot": snapshot,
             "commands": commands,
             "acks": acks,
+            "reasoning": reasoning,
             "error": error,
         }
         self._file.write(json.dumps(entry, default=str) + "\n")
