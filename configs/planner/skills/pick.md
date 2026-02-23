@@ -1,40 +1,44 @@
-## PICK Skill
+---
+name: PICK
+description: Pick up a tracked target object. Start when the arm is idle and the target is visible; abort on repeated perception failure or safety fault.
+version: 1.0.0
+---
 
-### When to start
+## Goal
 
-- `skill` is null (arm is idle)
-- `perception.tracking_status` == "TRACKING"
-- `target.hint_valid` == true
-- `safety.state` == "OK" and `safety.reflex_active` == false
+Move the arm to the target object and grasp it. The SkillRunner handles all
+motion phases (approach, align, descend, grasp, lift) automatically — you only
+decide when to start, when to give up, and how to recover.
 
-Call `start_skill(skill_name="PICK", target_handle=<target.handle>)`.
+## When to start
 
-### When to abort
+- No skill is currently running (`skill` is null).
+- The target is being tracked (`perception.tracking_status` == "TRACKING").
+- No safety fault is active.
 
-Abort the PICK skill (call `abort_skill`) if any of the following are true:
+```
+start_skill(skill_name="PICK", target_handle=<target.handle>)
+```
 
-- `perception.failure_code` == "REACQUIRE_FAILED" — target permanently lost
-- `progress.no_progress_ms` > 8000 — arm is stuck (timeout)
-- `safety.reflex_active` == true — safety override in progress
+## When to abort
 
-### Recovery hints
+Stop PICK early if the situation is clearly unrecoverable this attempt:
 
-After aborting, decide based on `outcome.reason_code`:
+- Perception has given up reacquiring the target (`reacquire_fail_count >= 3`).
+- A safety fault has triggered and the arm must hold still.
 
-| reason_code | Recommended action |
-|---|---|
-| `NO_GRASP` | Start PICK again with `options={"recovery": "RECOVER_REGRASP"}` |
-| `NO_PROGRESS` | Start PICK again with `options={"recovery": "RECOVER_RETRY_DESCEND"}` |
-| `TIMEOUT` | Request perception refresh, then retry PICK on next tick |
-| `UNSAFE_ABORT` | Wait for safety state to clear (no-op this tick) |
+For transient perception hiccups (RELOCALIZING, single REACQUIRE_FAILED), let
+the skill continue — the SkillRunner and perception subsystem will resolve them.
 
-### Phase progression (for context only — not controlled by planner)
+## Recovery after failure
 
-The SkillRunnerService drives FSM transitions automatically:
+Choose the recovery action based on `outcome.reason_code`:
 
-`RESET → APPROACH_PREGRASP → ALIGN → DESCEND_GRASP → CLOSE → LIFT → SUCCESS_PICK`
+| reason_code | What happened | Recommended action |
+|---|---|---|
+| `NO_GRASP` | Arm reached the object but failed to grip it | Retry PICK |
+| `NO_PROGRESS` | Arm stopped moving toward the target | Retry PICK |
+| `TIMEOUT` | Skill ran too long without completing | Request perception refresh, then retry on next tick |
+| `UNSAFE_ABORT` | Safety system intervened | Wait for safety to clear (no-op) |
 
-Recovery states: `RECOVER_RETRY_APPROACH (20)`, `RECOVER_RETRY_DESCEND (21)`, `RECOVER_REGRASP (22)`
-
-`GRASP_CLOSE` is triggered deterministically by distance + persistence threshold,
-never by the planner.
+If the same failure repeats 3 times, stop retrying and wait for operator.
