@@ -14,7 +14,7 @@ uv run python -m pytest               # run all tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
-make tui          # launch TUI in mock mode (no Ollama needed)
+make tui-mock     # launch TUI in mock mode (no Ollama needed)
 make tui-live     # launch TUI wired to HALORuntime + PlannerAgent (requires Ollama)
 ```
 
@@ -36,7 +36,7 @@ All v0 backbone services are implemented and tested (206 tests passing):
 | TUI (`halo/tui/app.py`) | ✅ done | — |
 
 The TUI supports two modes:
-- **Mock mode** (`make tui`): static fixture data, no services needed.
+- **Mock mode** (`make tui-mock`): static fixture data, no services needed.
 - **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel.
 
 ## Project Overview

@@ -1,4 +1,4 @@
-.PHONY: install test test-v test-file test-k test-integration tui tui-live help
+.PHONY: install test test-v test-file test-k test-integration tui-mock tui-live help
 
 install:
 	uv sync --extra dev
@@ -15,11 +15,11 @@ test-file:
 test-k:
 	uv run pytest -k "$(K)"
 
-tui:
+tui-mock:
 	uv run python -m halo.tui.app
 
 tui-live:
-	uv run python -m halo.tui.app --live --arm arm0 --model llama3.2:3b --base-url http://localhost:11434
+	uv run --extra planner python -m halo.tui.app --live --arm arm0 --model llama3.2:3b --base-url http://localhost:11434
 
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
@@ -36,5 +36,5 @@ help:
 	@echo "test-file  run one file:  make test-file FILE=tests/test_foo.py"
 	@echo "test-k     run by name:   make test-k K=test_snapshot_ids_increment"
 	@echo "test-integration  run LLM integration tests (requires Ollama)"
-	@echo "tui               launch the HALO terminal dashboard (mock mode)"
+	@echo "tui-mock          launch the HALO terminal dashboard (mock mode, no Ollama needed)"
 	@echo "tui-live          launch the TUI wired to HALORuntime + PlannerAgent (requires Ollama)"
