@@ -452,6 +452,8 @@ class HALOApp(App):
         Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
+    _abort_cooldown: float = 0.0  # monotonic time of last abort
+
     def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
 
@@ -489,14 +491,23 @@ class HALOApp(App):
     # ── Actions ──
 
     def action_emergency_abort(self) -> None:
-        self.notify("EMERGENCY STOP triggered!", severity="error", timeout=5)
+        import time
+        now = time.monotonic()
+        if now - self._abort_cooldown < 3.0:
+            return
+        self._abort_cooldown = now
+        self.notify(
+            "⚠ EMERGENCY STOP triggered!",
+            severity="error",
+            timeout=10,
+            title="ABORT",
+        )
 
     def action_send_message(self) -> None:
         from datetime import datetime
         inp = self.query_one("#planner-input", Input)
         msg = inp.value.strip()
         if msg:
-            self.notify(f"→ Planner: {msg!r}", timeout=3)
             inp.value = ""
             # append to history
             ts = datetime.now().strftime("%H:%M:%S")
