@@ -38,7 +38,7 @@ def build_tools(ctx: AgentContext) -> list:
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
-            issued_at_ms=int(time.monotonic() * 1000),
+            issued_at_ms=int(time.time() * 1000),
             type=CommandType.START_SKILL,
             payload=StartSkillPayload(
                 skill_name=SkillName(skill_name),
@@ -61,7 +61,7 @@ def build_tools(ctx: AgentContext) -> list:
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
-            issued_at_ms=int(time.monotonic() * 1000),
+            issued_at_ms=int(time.time() * 1000),
             type=CommandType.ABORT_SKILL,
             payload=AbortSkillPayload(
                 skill_run_id=skill_run_id,
@@ -83,7 +83,7 @@ def build_tools(ctx: AgentContext) -> list:
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
-            issued_at_ms=int(time.monotonic() * 1000),
+            issued_at_ms=int(time.time() * 1000),
             type=CommandType.OVERRIDE_TARGET,
             payload=OverrideTargetPayload(
                 skill_run_id=skill_run_id,
@@ -105,7 +105,7 @@ def build_tools(ctx: AgentContext) -> list:
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
-            issued_at_ms=int(time.monotonic() * 1000),
+            issued_at_ms=int(time.time() * 1000),
             type=CommandType.REQUEST_PERCEPTION_REFRESH,
             payload=RequestPerceptionRefreshPayload(
                 mode=mode,

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Awaitable, Callable
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -11,10 +10,9 @@ from langchain_ollama import ChatOllama
 
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
+from halo.services.planner_service.service import DecideFn
 from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
 from halo.services.planner_service.tools import AgentContext, build_tools
-
-DecideFn = Callable[[PlannerSnapshot], Awaitable[list[CommandEnvelope]]]
 
 _SNAPSHOT_PREFIX = "Current robot state:"
 _DEPRECATED_CONTENT = "[DEPRECATED - superseded by a more recent snapshot]"
