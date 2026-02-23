@@ -80,9 +80,9 @@ _DATA = dict(
 
 _EMPTY_DATA = dict(
     arm_id="arm0",
-    skill_name="—", skill_run_id="—", skill_phase="—",
-    act_status="—", act_buffer_ms=0, act_buffer_low=False,
-    outcome_state="—", outcome_reason=None, elapsed_ms=0,
+    skill_name=None, skill_run_id=None, skill_phase=None,
+    act_status=None, act_buffer_ms=None, act_buffer_low=False,
+    outcome_state=None, outcome_reason=None, elapsed_ms=None,
     actions=[],
     servos=[],
     prompt_history=[],
@@ -148,6 +148,9 @@ class PlannerPanel(Container):
         self.border_title = "Skill Runner"
 
     def compose(self) -> ComposeResult:
+        if self._data["skill_name"] is None:
+            yield Static(Text("no active skill", style="#9e9e9e"))
+            return
         # Skill + run id
         t = Text()
         t.append("Skill:    ", style="bold white")
@@ -166,7 +169,8 @@ class PlannerPanel(Container):
         t3 = Text()
         t3.append("ACT:      ", style="bold white")
         t3.append(self._data["act_status"], style=f"bold {buf_color}")
-        t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
+        if buf is not None:
+            t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
         if low:
             t3.append("  !", style="bold yellow")
         yield Static(t3)
@@ -184,7 +188,7 @@ class PlannerPanel(Container):
             t4.append(f"  ({self._data['outcome_reason']})", style="yellow")
         yield Static(t4)
         # Elapsed
-        elapsed_s = self._data["elapsed_ms"] / 1000
+        elapsed_s = (self._data["elapsed_ms"] or 0) / 1000
         t5 = Text()
         t5.append("Elapsed:  ", style="bold white")
         t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
