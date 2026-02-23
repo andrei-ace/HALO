@@ -1,0 +1,19 @@
+{
+  "_comment": "Mocked PerceptionInfo written by TargetPerceptionService to RuntimeStateStore after a successful tick(). Maps directly to halo.contracts.snapshots.PerceptionInfo.",
+
+  "tracking_status": "TRACKING",
+  "failure_code": "OK",
+  "reacquire_fail_count": 0,
+  "vlm_job_pending": false,
+
+  "_context": {
+    "arm_id": "arm0",
+    "target_handle": "cube-red-01",
+    "skill_phase": "APPROACH_PREGRASP",
+    "tick_hz": 10,
+    "obs_age_limit_ms": 150,
+    "time_skew_limit_ms": 50,
+    "reacquire_fail_limit": 3,
+    "notes": "Steady-state tracking. obs_age_ms=45 < 150 limit; time_skew_ms=8 < 50 limit. Both plausibility gates pass — hint_valid=true, status=TRACKING."
+  }
+}

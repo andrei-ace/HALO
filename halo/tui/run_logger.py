@@ -1,4 +1,4 @@
-"""Logs live TUI run interactions (planner prompts + responses) as JSONL."""
+"""Logs live TUI run interactions (planner prompts + VLM responses) as JSONL."""
 
 from __future__ import annotations
 
@@ -13,16 +13,35 @@ class RunLogger:
 
     File name: ``runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl``
 
-    Each line is a JSON object describing one planner interaction::
+    Two entry kinds, distinguished by the ``kind`` field:
+
+    Planner interaction::
 
         {
+          "kind":         "planner",
           "ts":           "2026-02-23T14:32:09.123456+00:00",
           "arm_id":       "arm0",
           "operator_msg": "Retry the grasp once.",
-          "snapshot":     { … },   // snapshot_to_dict() output
+          "snapshot":     { … },
           "commands":     [{"id": "…", "str": "START_SKILL(PICK, cube-1)"}],
           "acks":         [{"id": "…", "status": "ACCEPTED"}],
-          "error":        null     // or error string on failure
+          "reasoning":    "…",
+          "inference_ms": 1240,
+          "error":        null
+        }
+
+    VLM inference::
+
+        {
+          "kind":           "vlm",
+          "ts":             "2026-02-23T14:32:09.123456+00:00",
+          "arm_id":         "arm0",
+          "target_handle":  "cube-red-01",
+          "model":          "qwen3-vl:30B",
+          "raw_response":   { … },    // full Ollama response dict
+          "target_info":    { … },    // serialised TargetInfo or null
+          "inference_ms":   2150,
+          "error":          null
         }
     """
 
@@ -48,6 +67,7 @@ class RunLogger:
         error: str | None = None,
     ) -> None:
         entry: dict[str, Any] = {
+            "kind": "planner",
             "ts": datetime.now(timezone.utc).isoformat(),
             "arm_id": arm_id,
             "operator_msg": operator_msg,
@@ -55,6 +75,31 @@ class RunLogger:
             "commands": commands,
             "acks": acks,
             "reasoning": reasoning,
+            "inference_ms": inference_ms,
+            "error": error,
+        }
+        self._file.write(json.dumps(entry, default=str) + "\n")
+        self._file.flush()
+
+    def log_vlm_inference(
+        self,
+        *,
+        arm_id: str,
+        target_handle: str,
+        model: str,
+        raw_response: Any,
+        target_info: Any,
+        inference_ms: int = 0,
+        error: str | None = None,
+    ) -> None:
+        entry: dict[str, Any] = {
+            "kind": "vlm",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "arm_id": arm_id,
+            "target_handle": target_handle,
+            "model": model,
+            "raw_response": raw_response,
+            "target_info": target_info,
             "inference_ms": inference_ms,
             "error": error,
         }

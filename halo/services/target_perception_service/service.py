@@ -5,7 +5,7 @@ import dataclasses
 import time
 from typing import Awaitable, Callable
 
-from halo.contracts.enums import PerceptionFailureCode, TrackingStatus
+from halo.contracts.enums import CommandType, PerceptionFailureCode, TrackingStatus
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
@@ -83,12 +83,16 @@ class TargetPerceptionService:
 
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
+        self._cmd_task: asyncio.Task | None = None
+        self._cmd_queue: asyncio.Queue | None = None
 
     # --- Public API ---
 
     async def start(self) -> None:
-        """Spawn the fast perception loop."""
+        """Spawn the fast perception loop and command listener."""
         self._stop_event.clear()
+        self._cmd_queue = self._runtime.bus.subscribe(self._arm_id)
+        self._cmd_task = asyncio.create_task(self._drain_commands())
         self._loop_task = asyncio.create_task(self._run_loop())
 
     async def stop(self) -> None:
@@ -97,6 +101,16 @@ class TargetPerceptionService:
         if self._loop_task is not None:
             await self._loop_task
             self._loop_task = None
+        if self._cmd_task is not None:
+            self._cmd_task.cancel()
+            try:
+                await self._cmd_task
+            except asyncio.CancelledError:
+                pass
+            self._cmd_task = None
+        if self._cmd_queue is not None:
+            self._runtime.bus.unsubscribe(self._arm_id, self._cmd_queue)
+            self._cmd_queue = None
         # Cancel VLM task and await its termination to avoid dangling tasks.
         if self._vlm_task is not None:
             if not self._vlm_task.done():
@@ -208,6 +222,26 @@ class TargetPerceptionService:
         else:
             await self._update_success(tracking_status=tracking_status, target=obs)
 
+    # --- Private: command listener ---
+
+    async def _drain_commands(self) -> None:
+        """
+        Listen for COMMAND_ACCEPTED events and trigger VLM reacquisition when
+        a REQUEST_PERCEPTION_REFRESH command is accepted by the router.
+        """
+        while not self._stop_event.is_set():
+            try:
+                event: EventEnvelope = await asyncio.wait_for(
+                    self._cmd_queue.get(), timeout=0.05
+                )
+                if (
+                    event.type == EventType.COMMAND_ACCEPTED
+                    and event.data.get("command_type") == CommandType.REQUEST_PERCEPTION_REFRESH
+                ):
+                    await self.request_refresh(reason="command:REQUEST_PERCEPTION_REFRESH")
+            except asyncio.TimeoutError:
+                continue
+
     # --- Private: fast loop ---
 
     async def _run_loop(self) -> None:
@@ -306,6 +340,15 @@ class TargetPerceptionService:
             if seed is not None:
                 self._vlm_seed = seed
                 self._reacquire_fail_count = 0
+                await self._emit_event(
+                    EventType.VLM_RESULT,
+                    {
+                        "target_handle": target_handle,
+                        "confidence": seed.confidence,
+                        "distance_m": seed.distance_m,
+                        "hint_valid": seed.hint_valid,
+                    },
+                )
         except asyncio.CancelledError:
             raise
         finally:

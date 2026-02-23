@@ -18,8 +18,17 @@ test-k:
 tui-mock:
 	uv run python -m halo.tui.app
 
+PLANNER_MODEL  ?= gpt-oss:20B
+VLM_MODEL      ?= qwen3-vl:30B
+OLLAMA_URL     ?= http://localhost:11434
+ARM_ID         ?= arm0
+
 tui-live:
-	uv run --extra planner python -m halo.tui.app --live --arm arm0 --model gpt-oss --base-url http://localhost:11434
+	uv run --extra planner python -m halo.tui.app --live \
+		--arm $(ARM_ID) \
+		--model $(PLANNER_MODEL) \
+		--vlm-model $(VLM_MODEL) \
+		--base-url $(OLLAMA_URL)
 
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
