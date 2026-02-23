@@ -19,8 +19,16 @@ from rich.text import Text
 
 _DATA = dict(
     arm_id="arm0",
-    goal="pick cube → bin",
-    phase="PREGRASP_ALIGN",
+    # ── Skill Runner state ──
+    skill_name="PICK",
+    skill_run_id="run-9",
+    skill_phase="PREGRASP_ALIGN",
+    act_status="RUNNING",
+    act_buffer_ms=240,
+    act_buffer_low=False,
+    outcome_state="IN_PROGRESS",
+    outcome_reason=None,
+    elapsed_ms=3200,
     actions=[
         ("14:32:09", "snapshot → snap-1843"),
         ("14:32:09", "start_skill(place_into_bin) → cmd-7a21"),
@@ -84,14 +92,47 @@ class PlannerPanel(Container):
         self.border_title = "Skill Runner"
 
     def compose(self) -> ComposeResult:
+        # Skill + run id
         t = Text()
-        t.append("Goal:   ", style="bold white")
-        t.append(_DATA["goal"])
+        t.append("Skill:    ", style="bold white")
+        t.append(_DATA["skill_name"], style="bold #4fc3f7")
+        t.append(f"  {_DATA['skill_run_id']}", style="#9e9e9e")
         yield Static(t)
+        # Phase
         t2 = Text()
-        t2.append("Phase:  ", style="bold white")
-        t2.append(_DATA["phase"], style="bold white")
+        t2.append("Phase:    ", style="bold white")
+        t2.append(_DATA["skill_phase"], style="bold white")
         yield Static(t2)
+        # ACT buffer
+        buf = _DATA["act_buffer_ms"]
+        low = _DATA["act_buffer_low"]
+        buf_color = "yellow" if low else "bright_green"
+        t3 = Text()
+        t3.append("ACT:      ", style="bold white")
+        t3.append(_DATA["act_status"], style=f"bold {buf_color}")
+        t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
+        if low:
+            t3.append("  !", style="bold yellow")
+        yield Static(t3)
+        # Outcome
+        outcome = _DATA["outcome_state"]
+        outcome_color = (
+            "bright_green" if outcome == "SUCCESS"
+            else "red" if outcome == "FAILURE"
+            else "#b0bcd0"
+        )
+        t4 = Text()
+        t4.append("Outcome:  ", style="bold white")
+        t4.append(outcome, style=f"bold {outcome_color}")
+        if _DATA["outcome_reason"]:
+            t4.append(f"  ({_DATA['outcome_reason']})", style="yellow")
+        yield Static(t4)
+        # Elapsed
+        elapsed_s = _DATA["elapsed_ms"] / 1000
+        t5 = Text()
+        t5.append("Elapsed:  ", style="bold white")
+        t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
+        yield Static(t5)
 
 
 class ActionsPanel(Container):
