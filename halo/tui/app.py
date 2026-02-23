@@ -81,7 +81,7 @@ def _bar(value: float, width: int = 8) -> Text:
 
 class PlannerPanel(Container):
     def on_mount(self) -> None:
-        self.border_title = "Planner"
+        self.border_title = "Skill Runner"
 
     def compose(self) -> ComposeResult:
         t = Text()
