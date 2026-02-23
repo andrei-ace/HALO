@@ -25,7 +25,7 @@ class HALORuntime:
     def __init__(self) -> None:
         self.store = RuntimeStateStore()
         self.bus = EventBus()
-        self.router = CommandRouter(self.store)
+        self.router = CommandRouter(self.store, self.bus)
 
     def register_arm(self, arm_id: str) -> None:
         """Register an arm. Must be called before any arm-specific operations."""

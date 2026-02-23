@@ -189,6 +189,25 @@ def _format_cmd(cmd: object) -> str:
     return str(cmd.type)  # type: ignore[attr-defined]
 
 
+def _format_event(evt: object) -> str:
+    """Convert an EventEnvelope to a concise display string."""
+    name = str(getattr(evt, "type", "?"))
+    data = getattr(evt, "data", {}) or {}
+    phase = data.get("phase", "")
+    run_id = data.get("skill_run_id", "")
+    reason = data.get("reason", "")
+    cmd_type = data.get("command_type", "")
+    if name in ("PHASE_ENTER", "PHASE_EXIT") and phase:
+        return f"{name} {phase}"
+    if name == "SKILL_STARTED" and run_id:
+        return f"{name} {run_id}"
+    if name in ("SKILL_FAILED", "SAFETY_REFLEX_TRIGGERED") and reason:
+        return f"{name} {reason}"
+    if name in ("COMMAND_ACCEPTED", "COMMAND_REJECTED") and cmd_type:
+        return f"{name} {cmd_type}"
+    return name
+
+
 def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
     """Return (service_rows, target_info_str) from a PlannerSnapshot."""
     rows: list[tuple[str, str, str]] = []
@@ -523,6 +542,21 @@ class EventsPanel(Container):
             t.append(desc)
             yield Static(t)
 
+    def append_event(self, evt: object) -> None:
+        """Prepend a live EventEnvelope row (newest at top). Trims to 8 rows."""
+        from datetime import datetime
+        ts_ms = getattr(evt, "ts_ms", 0)
+        ts = datetime.fromtimestamp(ts_ms / 1000).strftime("%H:%M:%S")
+        t = Text()
+        t.append(ts, style="grey62")
+        t.append("  ")
+        t.append(_format_event(evt))
+        first = next(iter(self.query("Static")), None)
+        self.mount(Static(t), before=first)
+        children = list(self.query("Static"))
+        if len(children) > 8:
+            children[-1].remove()
+
 
 class PanicPanel(Container):
     def on_mount(self) -> None:
@@ -835,6 +869,7 @@ class HALOApp(App):
 
     _abort_cooldown: float = 0.0  # monotonic time of last abort
     _last_reasoning: str = ""
+    _event_queue: object | None = None  # asyncio.Queue[EventEnvelope] in live mode
 
     def __init__(
         self,
@@ -855,10 +890,14 @@ class HALOApp(App):
         self.call_after_refresh(self.set_focus, None)
         if self._runtime:
             self.set_interval(2.0, self._poll_system_panel)
+            self._event_queue = self._runtime.bus.subscribe(self._arm_id)  # type: ignore[union-attr]
+            self.run_worker(self._listen_events(), name="event_listener")
 
     def on_unmount(self) -> None:
         if self._run_logger:
             self._run_logger.close()
+        if self._runtime and self._event_queue is not None:
+            self._runtime.bus.unsubscribe(self._arm_id, self._event_queue)  # type: ignore[union-attr]
 
     def compose(self) -> ComposeResult:
         d = self._panel_data
@@ -970,6 +1009,17 @@ class HALOApp(App):
             services, target_info = _derive_services(snap)
             await self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
         except Exception:
+            pass
+
+    async def _listen_events(self) -> None:
+        """Forward EventBus events to EventsPanel in real time."""
+        import asyncio
+        events_panel = self.query_one("#events-panel", EventsPanel)
+        try:
+            while True:
+                evt = await self._event_queue.get()  # type: ignore[union-attr]
+                events_panel.append_event(evt)
+        except asyncio.CancelledError:
             pass
 
     async def _do_agent_call(self, msg: str) -> None:
