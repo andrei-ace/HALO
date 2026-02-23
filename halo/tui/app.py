@@ -110,6 +110,7 @@ _DATA = dict(
     events=[
         ("14:32:08", "PHASE_ENTER PREGRASP_ALIGN"),
         ("14:32:08", "PERCEPTION_RECOVERED"),
+        ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
         ("14:32:06", "SKILL_STARTED run-9"),
     ],
 )
