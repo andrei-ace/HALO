@@ -47,8 +47,19 @@ class PlannerAgent:
         llm = ChatOllama(model=model_name, base_url=base_url)
         self._agent = create_react_agent(llm, tools)
 
-    async def decide(self, snap: PlannerSnapshot) -> list[CommandEnvelope]:
-        """DecideFn implementation. Thread-safe per design (never called concurrently)."""
+    async def decide(
+        self,
+        snap: PlannerSnapshot,
+        operator_cmd: str | None = None,
+    ) -> list[CommandEnvelope]:
+        """DecideFn implementation. Thread-safe per design (never called concurrently).
+
+        Args:
+            snap: Current runtime snapshot.
+            operator_cmd: Optional natural-language instruction from the operator.
+                          When provided it is appended as a second HumanMessage so
+                          the agent can act on it in the context of the current state.
+        """
         self._ctx.arm_id = snap.arm_id
         self._ctx.snapshot_id = snap.snapshot_id
         self._ctx.commands.clear()
@@ -58,6 +69,8 @@ class PlannerAgent:
             SystemMessage(content=self._system_prompt),
             HumanMessage(content=f"Current robot state:\n```json\n{snap_json}\n```"),
         ]
+        if operator_cmd:
+            messages.append(HumanMessage(content=f"Operator: {operator_cmd}"))
         await self._agent.ainvoke({"messages": messages})
         return list(self._ctx.commands)
 
