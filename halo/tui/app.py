@@ -61,13 +61,20 @@ _DATA = dict(
     outcome_state="IN_PROGRESS",
     outcome_reason=None,
     elapsed_ms=3200,
-    # Planner commands issued + acks (command_id abbreviated to last 4 chars)
-    actions=[
-        ("14:32:09", "START_SKILL(pick, cube-1)",          "cmd", "7a21"),
-        ("14:32:09", "ACCEPTED",                            "ack", "7a21"),
-        ("14:32:01", "REQUEST_PERCEPTION_REFRESH(fast)",   "cmd", "7a20"),
-        ("14:32:01", "ACCEPTED",                            "ack", "7a20"),
-    ],
+    # ── Target Perception state ──
+    perc_tracking="TRACKING",
+    perc_target="cube-1",
+    perc_distance_m=0.09,
+    perc_confidence=0.86,
+    perc_obs_age_ms=45,
+    perc_failure="OK",
+    perc_hint_valid=True,
+    # ── Control Service state ──
+    ctrl_status="RUNNING",
+    ctrl_safety="OK",
+    ctrl_reflex=None,
+    ctrl_action_xyz=(0.12, -0.05, 0.08),
+    ctrl_gripper=0.0,
     servos=[
         ("J1", "base_yaw",    "OK", 42, 0.35),
         ("J2", "shoulder",    "OK", 45, 0.55),
@@ -108,7 +115,10 @@ _EMPTY_DATA = dict(
     skill_name=None, skill_run_id=None, skill_phase=None,
     act_status=None, act_buffer_ms=None, act_buffer_low=False,
     outcome_state=None, outcome_reason=None, elapsed_ms=None,
-    actions=[],
+    perc_tracking=None, perc_target=None, perc_distance_m=None,
+    perc_confidence=None, perc_obs_age_ms=None, perc_failure=None, perc_hint_valid=None,
+    ctrl_status=None, ctrl_safety=None, ctrl_reflex=None,
+    ctrl_action_xyz=None, ctrl_gripper=None,
     servos=[],
     prompt_history=[],
     suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
@@ -221,44 +231,97 @@ class PlannerPanel(Container):
         yield Static(t5)
 
 
-class ActionsPanel(Container):
+class TargetPerceptionPanel(Container):
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = data
 
     def on_mount(self) -> None:
-        self.border_title = "Planner Actions"
+        self.border_title = "Target Perception"
 
     def compose(self) -> ComposeResult:
-        for ts, desc, kind, cmd_id in self._data["actions"]:
-            t = Text()
-            t.append(ts, style="grey62")
-            t.append("  ")
-            if kind == "cmd":
-                t.append(desc, style="white")
-                t.append(f"  →{cmd_id}", style="#4fc3f7")
-            else:  # ack
-                color = "bright_green" if desc == "ACCEPTED" else "red"
-                t.append(f"  {cmd_id} ", style="#4fc3f7")
-                t.append(desc, style=f"bold {color}")
-            yield Static(t)
-
-    def append_cmd(self, ts: str, desc: str, short_id: str) -> None:
+        tracking = self._data["perc_tracking"]
+        if tracking is None:
+            yield Static(Text("no tracking data", style="#9e9e9e"))
+            return
+        track_color = (
+            "bright_green" if tracking == "TRACKING"
+            else "yellow" if tracking == "RELOCALIZING"
+            else "red"
+        )
         t = Text()
-        t.append(ts, style="grey62")
-        t.append("  ")
-        t.append(desc, style="white")
-        t.append(f"  →{short_id}", style="#4fc3f7")
-        self.mount(Static(t))
+        t.append("Status:   ", style="bold white")
+        t.append(tracking, style=f"bold {track_color}")
+        hint_valid = self._data["perc_hint_valid"]
+        if hint_valid is False:
+            t.append("  invalid", style="bold red")
+        yield Static(t)
 
-    def append_ack(self, ts: str, status: str, short_id: str) -> None:
+        target = self._data["perc_target"]
+        t2 = Text()
+        t2.append("Target:   ", style="bold white")
+        t2.append(target or "—", style="#4fc3f7" if target else "#9e9e9e")
+        yield Static(t2)
+
+        dist = self._data["perc_distance_m"]
+        conf = self._data["perc_confidence"]
+        t3 = Text()
+        t3.append("Distance: ", style="bold white")
+        t3.append(f"{dist * 100:.0f} cm" if dist is not None else "—", style="white")
+        t3.append("   Conf: ", style="bold white")
+        t3.append(f"{conf * 100:.0f}%" if conf is not None else "—", style="white")
+        yield Static(t3)
+
+        age = self._data["perc_obs_age_ms"]
+        failure = self._data["perc_failure"]
+        t4 = Text()
+        t4.append("Obs age:  ", style="bold white")
+        t4.append(f"{age} ms" if age is not None else "—", style="#9e9e9e")
+        t4.append("   Code: ", style="bold white")
+        fail_color = "bright_green" if failure == "OK" else "yellow"
+        t4.append(failure or "—", style=fail_color)
+        yield Static(t4)
+
+
+class ControlServicePanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
+    def on_mount(self) -> None:
+        self.border_title = "Control Service"
+
+    def compose(self) -> ComposeResult:
+        status = self._data["ctrl_status"]
+        if status is None:
+            yield Static(Text("no control data", style="#9e9e9e"))
+            return
+        status_color = "bright_green" if status == "RUNNING" else "red"
         t = Text()
-        t.append(ts, style="grey62")
-        t.append("  ")
-        color = "bright_green" if status == "ACCEPTED" else "red"
-        t.append(f"  {short_id} ", style="#4fc3f7")
-        t.append(status, style=f"bold {color}")
-        self.mount(Static(t))
+        t.append("Status:   ", style="bold white")
+        t.append(status, style=f"bold {status_color}")
+        yield Static(t)
+
+        safety = self._data["ctrl_safety"]
+        reflex = self._data["ctrl_reflex"]
+        t2 = Text()
+        t2.append("Safety:   ", style="bold white")
+        safety_color = "bright_green" if safety == "OK" else "red"
+        t2.append(safety or "—", style=f"bold {safety_color}")
+        if reflex:
+            t2.append(f"  reflex: {reflex}", style="bold red")
+        yield Static(t2)
+
+        xyz = self._data["ctrl_action_xyz"]
+        gripper = self._data["ctrl_gripper"]
+        t3 = Text()
+        t3.append("Δ EE:     ", style="bold white")
+        if xyz is not None:
+            t3.append(f"{xyz[0]:+.2f}  {xyz[1]:+.2f}  {xyz[2]:+.2f}", style="#b0bcd0")
+            t3.append(f"   grip: {gripper:+.2f}" if gripper is not None else "", style="#9e9e9e")
+        else:
+            t3.append("—", style="#9e9e9e")
+        yield Static(t3)
 
 
 class ServosPanel(Container):
@@ -496,7 +559,8 @@ class HALOApp(App):
 
     /* ── Panel borders ── */
     PlannerPanel,
-    ActionsPanel,
+    TargetPerceptionPanel,
+    ControlServicePanel,
     ServosPanel,
     TalkPanel,
     SystemPanel,
@@ -509,11 +573,12 @@ class HALOApp(App):
         height: auto;
     }
 
-    PlannerPanel { height: 1fr; min-height: 9;  }
-    ActionsPanel { height: 1fr; min-height: 8;  }
-    TalkPanel    { height: 2fr; min-height: 14; }
-    EventsPanel  { height: 1fr; min-height: 8;  }
-    PanicPanel   { min-height: 8; }
+    PlannerPanel          { height: 1fr; min-height: 9;  }
+    TargetPerceptionPanel { height: 1fr; min-height: 8;  }
+    TalkPanel             { height: 2fr; min-height: 14; }
+    ControlServicePanel   { height: 1fr; min-height: 7;  }
+    EventsPanel           { height: 1fr; min-height: 7;  }
+    PanicPanel            { min-height: 8; }
 
     /* ── Talk to Planner internals ── */
     #prompt-history {
@@ -685,12 +750,13 @@ class HALOApp(App):
             with Horizontal(id="main-row"):
                 with Vertical(id="left-col"):
                     yield PlannerPanel(data=d, id="planner-panel")
-                    yield ActionsPanel(data=d, id="actions-panel")
+                    yield TargetPerceptionPanel(data=d, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
                 with Vertical(id="right-col"):
-                    yield SystemPanel(data=d, id="system-panel")
+                    yield ControlServicePanel(data=d, id="control-panel")
                     yield ServosPanel(data=d, id="servos-panel")
                     yield EventsPanel(data=d, id="events-panel")
+                    yield SystemPanel(data=d, id="system-panel")
                     yield PanicPanel(id="panic-panel")
             yield HintBar()
 
@@ -832,14 +898,6 @@ class HALOApp(App):
             thinking_widget.update(result_text)
             history.scroll_end(animate=False)
 
-            # Append to ActionsPanel
-            actions_panel = self.query_one("#actions-panel", ActionsPanel)
-            for cmd, ack in acks:
-                cmd_ts = datetime.now().strftime("%H:%M:%S")
-                short_id = cmd.command_id[-4:]
-                actions_panel.append_cmd(cmd_ts, _format_cmd(cmd), short_id)
-                actions_panel.append_ack(cmd_ts, ack.status.value, short_id)
-
         except Exception as exc:
             if self._run_logger:
                 self._run_logger.log_interaction(
@@ -859,7 +917,6 @@ class HALOApp(App):
             self.notify(str(exc), severity="error", title="Agent error")
 
     async def _do_abort(self) -> None:
-        from datetime import datetime
         from uuid import uuid4
         import time
         from halo.contracts.commands import AbortSkillPayload, CommandEnvelope, CommandType
@@ -880,12 +937,11 @@ class HALOApp(App):
             ),
         )
         ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
-
-        actions_panel = self.query_one("#actions-panel", ActionsPanel)
-        ts = datetime.now().strftime("%H:%M:%S")
-        short_id = cmd.command_id[-4:]
-        actions_panel.append_cmd(ts, _format_cmd(cmd), short_id)
-        actions_panel.append_ack(ts, ack.status.value, short_id)
+        self.notify(
+            f"ABORT_SKILL → {ack.status.value}",
+            severity="information" if ack.status.value == "ACCEPTED" else "warning",
+            timeout=5,
+        )
 
 
 def _take_screenshot(path: str = "halo_tui.svg") -> None:
