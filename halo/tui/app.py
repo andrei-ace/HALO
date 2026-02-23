@@ -223,7 +223,7 @@ class FooterBar(Static):
     def render(self) -> Text:
         t = Text(justify="center")
         t.append(
-            "[ Enter ] send  |  [ Esc ] cancel  |  [ A ] ABORT  |  [ ? ] toggle legend",
+            "[ ? ] legend  |  [ Enter ] send  |  [ Esc ] cancel  |  [ A ] ABORT",
             style="#9e9e9e",
         )
         return t
