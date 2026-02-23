@@ -22,6 +22,31 @@ from halo.tui.run_logger import RunLogger
 _RUNS_DIR = Path(__file__).parents[2] / "runs"
 
 
+def _copy_text(text: str) -> bool:
+    """Copy text to OS clipboard. Returns True on success."""
+    import platform
+    import subprocess
+    sys = platform.system()
+    try:
+        if sys == "Darwin":
+            subprocess.run(["pbcopy"], input=text.encode(), check=True)
+        elif sys == "Linux":
+            for cmd in [["xclip", "-selection", "clipboard"], ["xsel", "-bi"], ["wl-copy"]]:
+                try:
+                    subprocess.run(cmd, input=text.encode(), check=True)
+                    return True
+                except (FileNotFoundError, subprocess.CalledProcessError):
+                    continue
+            return False
+        elif sys == "Windows":
+            subprocess.run(["clip"], input=text.encode("utf-16"), check=True)
+        else:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # ── Static fixtures ───────────────────────────────────────────────
 
 _DATA = dict(
@@ -97,7 +122,8 @@ _LEGEND = [
     ("T",               "Focus the message input directly"),
     ("Enter",       "Send message to planner"),
     ("Esc",         "Clear input and return to monitoring mode"),
-    ("R",           "Show full planner reasoning for last response"),
+    ("R",           "Show full planner reasoning (Ctrl+Y to copy inside)"),
+    ("Y",           "Yank — copy last reasoning to clipboard instantly"),
     ("A",           "Emergency abort — always fires (even while typing)"),
     ("Ctrl+Q",      "Quit"),
     ("?",           "Show / hide this legend"),
@@ -397,6 +423,7 @@ class ReasoningScreen(ModalScreen):
     BINDINGS = [
         Binding("r", "close", show=False),
         Binding("escape", "close", show=False),
+        Binding("ctrl+y", "copy_all", "copy all", show=False),
     ]
 
     def __init__(self, reasoning: str, **kwargs) -> None:
@@ -406,18 +433,22 @@ class ReasoningScreen(ModalScreen):
     def action_close(self) -> None:
         self.dismiss()
 
+    def action_copy_all(self) -> None:
+        if _copy_text(self._reasoning):
+            self.notify("Copied to clipboard")
+        else:
+            self.notify("Copy failed — check clipboard tool", severity="warning")
+
     def compose(self) -> ComposeResult:
         with Container(id="reasoning-box"):
             yield Static(" Planner reasoning (last response)", id="reasoning-heading")
-            yield Static("")
-            if self._reasoning:
-                # Word-wrap long lines by splitting on newlines first
-                for line in self._reasoning.splitlines():
-                    yield Static(line or " ", classes="reasoning-line")
-            else:
-                yield Static("  (no reasoning captured yet)", classes="reasoning-line")
-            yield Static("")
-            yield Static(" Press R or Esc to close", id="reasoning-close-hint")
+            with VerticalScroll(id="reasoning-scroll"):
+                if self._reasoning:
+                    for line in self._reasoning.splitlines():
+                        yield Static(line or " ", classes="reasoning-line")
+                else:
+                    yield Static("  (no reasoning captured yet)", classes="reasoning-line")
+            yield Static(" Ctrl+Y copy all  ·  R or Esc close", id="reasoning-close-hint")
 
 
 # ── App ───────────────────────────────────────────────────────────
@@ -583,28 +614,32 @@ class HALOApp(App):
     }
 
     #reasoning-box {
-        width: 80;
-        height: auto;
-        max-height: 40;
+        width: 90;
+        height: 36;
         background: #141d30;
         border: solid #4fc3f7;
         padding: 1 0;
-        overflow-y: auto;
+        layout: vertical;
     }
 
     #reasoning-heading {
         color: #4fc3f7;
         text-style: bold;
-        margin-bottom: 0;
+        height: 1;
+    }
+
+    #reasoning-scroll {
+        height: 1fr;
+        padding: 0 2;
     }
 
     .reasoning-line {
-        padding: 0 2;
         color: #b0bcd0;
     }
 
     #reasoning-close-hint {
         color: #8a8a8a;
+        height: 1;
     }
     """
 
@@ -614,6 +649,7 @@ class HALOApp(App):
         Binding("enter", "send_message", "send", show=False),
         Binding("escape", "cancel_input", "cancel", show=False),
         Binding("r", "show_reasoning", "reasoning", show=False),
+        Binding("y", "yank_reasoning", "yank", show=False),
         Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
@@ -727,6 +763,15 @@ class HALOApp(App):
 
     def action_show_reasoning(self) -> None:
         self.push_screen(ReasoningScreen(self._last_reasoning), callback=lambda _: self.set_focus(None))
+
+    def action_yank_reasoning(self) -> None:
+        if not self._last_reasoning:
+            self.notify("No reasoning to copy yet", severity="warning", timeout=3)
+            return
+        if _copy_text(self._last_reasoning):
+            self.notify("Reasoning copied to clipboard", timeout=3)
+        else:
+            self.notify("Copy failed — check clipboard tool", severity="warning", timeout=3)
 
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
