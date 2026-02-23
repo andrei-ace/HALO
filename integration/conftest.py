@@ -7,6 +7,7 @@ Integration test configuration.
 - Health-checks Ollama at session start; skips all @pytest.mark.integration
   tests if the server is unreachable or the required model is not loaded.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,7 @@ from langchain_core.globals import set_debug
 set_debug(True)
 
 OLLAMA_URL = os.getenv("HALO_OLLAMA_URL", "http://localhost:11434")
-MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss:20B")
+MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss")
 
 
 def _ollama_skip_reason() -> str | None:
@@ -49,9 +50,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     skip_reason = _ollama_skip_reason()
     if skip_reason is None:
         return

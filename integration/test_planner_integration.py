@@ -12,8 +12,9 @@ Run explicitly:
 
 Environment:
     HALO_OLLAMA_URL    Ollama base URL  (default: http://localhost:11434)
-    HALO_MODEL_NAME    Model to use     (default: gpt-oss:20B)
+    HALO_MODEL_NAME    Model to use     (default: gpt-oss)
 """
+
 from __future__ import annotations
 
 import os
@@ -55,7 +56,7 @@ pytestmark = [pytest.mark.integration]
 # ---------------------------------------------------------------------------
 
 OLLAMA_URL = os.getenv("HALO_OLLAMA_URL", "http://localhost:11434")
-MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss:20B")
+MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss")
 
 # Fixed timestamp — avoids nondeterminism if the agent ever reasons about
 # time deltas and makes failure reproduction easier.
@@ -71,6 +72,7 @@ def _make_agent() -> PlannerAgent:
 # Assertion helpers
 # ---------------------------------------------------------------------------
 
+
 def _assert_single_command(
     cmds: list[CommandEnvelope],
     expected_type: CommandType,
@@ -79,12 +81,8 @@ def _assert_single_command(
     """Assert exactly one command of the expected type was returned."""
     suffix = f" ({context})" if context else ""
     types = [c.type for c in cmds]
-    assert len(cmds) == 1, (
-        f"Expected exactly 1 command{suffix}, got {len(cmds)}: {types}"
-    )
-    assert cmds[0].type == expected_type, (
-        f"Expected {expected_type}{suffix}, got {types[0]}"
-    )
+    assert len(cmds) == 1, f"Expected exactly 1 command{suffix}, got {len(cmds)}: {types}"
+    assert cmds[0].type == expected_type, f"Expected {expected_type}{suffix}, got {types[0]}"
     return cmds[0]
 
 
@@ -92,23 +90,20 @@ def _assert_no_commands(cmds: list[CommandEnvelope], context: str = "") -> None:
     """Assert the agent issued no commands."""
     suffix = f" ({context})" if context else ""
     types = [c.type for c in cmds]
-    assert len(cmds) == 0, (
-        f"Expected 0 commands{suffix}, got {len(cmds)}: {types}"
-    )
+    assert len(cmds) == 0, f"Expected 0 commands{suffix}, got {len(cmds)}: {types}"
 
 
 def _assert_no_start_skill(cmds: list[CommandEnvelope], context: str = "") -> None:
     """Assert no START_SKILL command was issued (other commands are allowed)."""
     suffix = f" ({context})" if context else ""
     starts = [c for c in cmds if c.type == CommandType.START_SKILL]
-    assert len(starts) == 0, (
-        f"Expected no START_SKILL{suffix}, got: {starts}"
-    )
+    assert len(starts) == 0, f"Expected no START_SKILL{suffix}, got: {starts}"
 
 
 # ---------------------------------------------------------------------------
 # Snapshot factories — realistic but fully synthetic, fixed timestamps
 # ---------------------------------------------------------------------------
+
 
 def _idle_snap_target_tracked() -> PlannerSnapshot:
     """Arm idle, cube-1 confidently tracked, safety OK."""
@@ -342,6 +337,7 @@ def _safety_reflex_snap() -> PlannerSnapshot:
 # Tests — existing scenarios (tightened assertions)
 # ---------------------------------------------------------------------------
 
+
 async def test_pick_command_starts_skill() -> None:
     """
     Scenario: arm idle, target tracked.
@@ -419,6 +415,7 @@ async def test_no_command_when_safety_reflex_active() -> None:
 # Tests — important gaps
 # ---------------------------------------------------------------------------
 
+
 async def test_no_op_without_operator_instruction() -> None:
     """
     Scenario: arm idle, target tracked — but no operator instruction.
@@ -482,9 +479,7 @@ async def test_no_refresh_when_reacquire_exhausted() -> None:
     cmds = await agent.decide(snap, operator_cmd="Find the cube again.")
 
     refresh_cmds = [c for c in cmds if c.type == CommandType.REQUEST_PERCEPTION_REFRESH]
-    assert len(refresh_cmds) == 0, (
-        f"Agent must not request refresh when reacquire_fail_count >= 3, got: {cmds}"
-    )
+    assert len(refresh_cmds) == 0, f"Agent must not request refresh when reacquire_fail_count >= 3, got: {cmds}"
 
 
 async def test_no_op_on_safety_fault_without_reflex() -> None:
@@ -595,14 +590,8 @@ async def test_place_not_issued_in_v0() -> None:
 
     cmds = await agent.decide(snap, operator_cmd="Great, now place it on the table.")
 
-    place_cmds = [
-        c for c in cmds
-        if c.type == CommandType.START_SKILL
-        and c.payload.skill_name == SkillName.PLACE
-    ]
-    assert len(place_cmds) == 0, (
-        f"Agent must not issue START_SKILL(PLACE) in v0, got: {place_cmds}"
-    )
+    place_cmds = [c for c in cmds if c.type == CommandType.START_SKILL and c.payload.skill_name == SkillName.PLACE]
+    assert len(place_cmds) == 0, f"Agent must not issue START_SKILL(PLACE) in v0, got: {place_cmds}"
 
 
 async def test_no_start_skill_while_already_running() -> None:

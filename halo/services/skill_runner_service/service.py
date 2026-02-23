@@ -248,7 +248,7 @@ class SkillRunnerService:
         event = EventEnvelope(
             event_id=self._runtime.bus.make_event_id(),
             type=event_type,
-            ts_ms=int(time.monotonic() * 1000),
+            ts_ms=int(time.time() * 1000),
             arm_id=self._arm_id,
             data=data,
         )
