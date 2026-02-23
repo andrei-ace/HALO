@@ -6,7 +6,6 @@ Run with:
 
 from __future__ import annotations
 
-from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
@@ -274,6 +273,14 @@ class HintBar(Static):
 # ── Legend modal ──────────────────────────────────────────────────
 
 class LegendScreen(ModalScreen):
+    BINDINGS = [
+        Binding("question_mark", "close", show=False),
+        Binding("escape", "close", show=False),
+    ]
+
+    def action_close(self) -> None:
+        self.dismiss()
+
     def compose(self) -> ComposeResult:
         with Container(id="legend-box"):
             yield Static(" Keyboard shortcuts", id="legend-heading")
@@ -284,10 +291,6 @@ class LegendScreen(ModalScreen):
                 yield Static(t)
             yield Static("")
             yield Static(" Press ? or Esc to close", id="legend-close-hint")
-
-    def on_key(self, event: events.Key) -> None:
-        if event.key in ("question_mark", "escape"):
-            self.dismiss()
 
 
 # ── App ───────────────────────────────────────────────────────────
