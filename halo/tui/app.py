@@ -1037,9 +1037,12 @@ class HALOApp(App):
         history.scroll_end(animate=False)
 
         try:
+            import time as _time
             from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
+            _t0 = _time.monotonic()
             commands = await self._agent.decide(snap, operator_cmd=msg)  # type: ignore[union-attr]
+            inference_ms = int((_time.monotonic() - _t0) * 1000)
             reasoning = getattr(self._agent, "last_reasoning", "") or ""
             self._last_reasoning = reasoning
 
@@ -1058,6 +1061,7 @@ class HALOApp(App):
                     commands=[{"id": c.command_id, "str": _format_cmd(c)} for c, _ in acks],
                     acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
                     reasoning=reasoning,
+                    inference_ms=inference_ms,
                 )
 
             # Update thinking widget
@@ -1073,6 +1077,7 @@ class HALOApp(App):
                 if snippet:
                     result_text.append(f" — {snippet}", style="#9e9e9e")
                 result_text.append("  [R]", style="#4fc3f7")
+            result_text.append(f"  ({inference_ms} ms)", style="#9e9e9e")
             thinking_widget.update(result_text)
             history.scroll_end(animate=False)
 
