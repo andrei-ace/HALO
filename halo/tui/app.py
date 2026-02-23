@@ -206,6 +206,12 @@ def _format_event(evt: object) -> str:
         return f"{name} {reason}"
     if name in ("COMMAND_ACCEPTED", "COMMAND_REJECTED") and cmd_type:
         return f"{name} {cmd_type}"
+    if name == "VLM_RESULT":
+        handle = data.get("target_handle", "?")
+        conf = int(data.get("confidence", 0) * 100)
+        dist = data.get("distance_m", 0)
+        valid = data.get("hint_valid", False)
+        return f"VLM_RESULT {handle} conf={conf}% dist={dist:.2f}m{'' if valid else ' invalid'}"
     return name
 
 
@@ -877,24 +883,40 @@ class HALOApp(App):
         runtime: object | None = None,
         agent: object | None = None,
         arm_id: str = "arm0",
+        perception_svc: object | None = None,
+        initial_target: str | None = None,
+        run_logger: RunLogger | None = None,
     ) -> None:
         super().__init__()
         self._runtime = runtime
         self._agent = agent
         self._arm_id = arm_id
+        self._perception_svc = perception_svc
+        self._initial_target = initial_target
         self._panel_data = (
             {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         )
-        self._run_logger = RunLogger(_RUNS_DIR, arm_id) if runtime is not None else None
+        # Accept an externally-created logger (shared with the VLM fn) or
+        # create one automatically when running live.
+        if run_logger is not None:
+            self._run_logger: RunLogger | None = run_logger
+        else:
+            self._run_logger = RunLogger(_RUNS_DIR, arm_id) if runtime is not None else None
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
         if self._runtime:
             self.set_interval(2.0, self._poll_system_panel)
             self._event_queue = self._runtime.bus.subscribe(self._arm_id)  # type: ignore[union-attr]
             self.run_worker(self._listen_events(), name="event_listener")
+        if self._perception_svc is not None:
+            if self._initial_target:
+                await self._perception_svc.set_tracking_target(self._initial_target)  # type: ignore[union-attr]
+            await self._perception_svc.start()  # type: ignore[union-attr]
 
-    def on_unmount(self) -> None:
+    async def on_unmount(self) -> None:
+        if self._perception_svc is not None:
+            await self._perception_svc.stop()  # type: ignore[union-attr]
         if self._run_logger:
             self._run_logger.close()
         if self._runtime and self._event_queue is not None:
@@ -1149,10 +1171,14 @@ def _run_live(args: list[str]) -> None:
     from pathlib import Path
     from halo.runtime.runtime import HALORuntime
     from halo.services.planner_service.agent import PlannerAgent
+    from halo.services.target_perception_service.mock_fns import make_mock_observe_fn
+    from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
+    from halo.services.target_perception_service.service import TargetPerceptionService
 
-    # Parse --arm, --model, --base-url from args
+    # Parse --arm, --model, --vlm-model, --base-url from args
     arm_id = "arm0"
     model = "gpt-oss:20B"
+    vlm_model = "qwen3-vl:30B"
     base_url = "http://localhost:11434"
 
     for i, arg in enumerate(args):
@@ -1160,14 +1186,34 @@ def _run_live(args: list[str]) -> None:
             arm_id = args[i + 1]
         elif arg == "--model" and i + 1 < len(args):
             model = args[i + 1]
+        elif arg == "--vlm-model" and i + 1 < len(args):
+            vlm_model = args[i + 1]
         elif arg == "--base-url" and i + 1 < len(args):
             base_url = args[i + 1]
 
     runtime = HALORuntime()
     runtime.register_arm(arm_id)
+
+    run_logger = RunLogger(_RUNS_DIR, arm_id)
+
     prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
     agent = PlannerAgent(model, base_url, prompts_dir)
-    HALOApp(runtime=runtime, agent=agent, arm_id=arm_id).run()
+
+    perception_svc = TargetPerceptionService(
+        arm_id=arm_id,
+        runtime=runtime,
+        observe_fn=make_mock_observe_fn(),
+        vlm_fn=make_ollama_vlm_fn(base_url=base_url, model=vlm_model, run_logger=run_logger),
+    )
+
+    HALOApp(
+        runtime=runtime,
+        agent=agent,
+        arm_id=arm_id,
+        perception_svc=perception_svc,
+        initial_target="cube-red-01",
+        run_logger=run_logger,
+    ).run()
 
 
 def main() -> None:

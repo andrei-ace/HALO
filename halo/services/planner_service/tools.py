@@ -111,7 +111,10 @@ def build_tools(ctx: AgentContext) -> list:
                 mode=mode,
                 reason=reason,
             ),
-            precondition_snapshot_id=ctx.snapshot_id,
+            # No precondition: perception refresh is a stateless side-effect.
+            # Pinning it to a snapshot_id causes REJECTED_STALE as soon as the
+            # snapshot advances between decide() and submit().
+            precondition_snapshot_id=None,
         )
         ctx.commands.append(cmd)
         return f"Queued REQUEST_PERCEPTION_REFRESH mode={mode}"

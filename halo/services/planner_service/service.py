@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from typing import Awaitable, Callable
 
-from halo.contracts.commands import CommandAck, CommandEnvelope
+from halo.contracts.commands import CommandAck, CommandEnvelope, RequestPerceptionRefreshPayload
+from halo.contracts.enums import CommandType
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.runtime.runtime import HALORuntime
@@ -59,12 +62,29 @@ class PlannerService:
     # --- Public API ---
 
     async def start(self) -> None:
-        """Spawn the planner loop and event-drain tasks."""
+        """Spawn the planner loop and event-drain tasks.
+
+        Immediately issues a REQUEST_PERCEPTION_REFRESH so the VLM acquires the
+        initial scene before the first planner tick fires.
+        """
         self._stop_event.clear()
         self._urgent_event.clear()
         self._event_queue = self._runtime.bus.subscribe(self._arm_id)
         self._event_task = asyncio.create_task(self._drain_events())
         self._loop_task = asyncio.create_task(self._run_loop())
+        await self._runtime.submit_command(
+            CommandEnvelope(
+                command_id=str(uuid.uuid4()),
+                arm_id=self._arm_id,
+                issued_at_ms=int(time.time() * 1000),
+                type=CommandType.REQUEST_PERCEPTION_REFRESH,
+                payload=RequestPerceptionRefreshPayload(
+                    mode="reacquire",
+                    reason="planner startup — initial VLM acquisition",
+                ),
+                precondition_snapshot_id=None,
+            )
+        )
 
     async def stop(self) -> None:
         """Signal the loop to stop and await clean shutdown."""
