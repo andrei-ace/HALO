@@ -128,6 +128,9 @@ wheels = [
 name = "halo"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "textual" },
+]
 
 [package.optional-dependencies]
 dev = [
@@ -140,9 +143,6 @@ planner = [
     { name = "langchain-ollama" },
     { name = "langgraph" },
 ]
-tui = [
-    { name = "textual" },
-]
 
 [package.metadata]
 requires-dist = [
@@ -152,7 +152,7 @@ requires-dist = [
     { name = "langgraph", marker = "extra == 'planner'", specifier = ">=0.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=0.70" },
+    { name = "textual", specifier = ">=0.70" },
 ]
 provides-extras = ["dev", "planner", "tui"]
 
