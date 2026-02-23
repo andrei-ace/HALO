@@ -19,6 +19,7 @@ build/
 .coverage
 htmlcov/
 integration/runs/
+runs/*.jsonl
 
 # editors
 .idea/
