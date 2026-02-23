@@ -12,8 +12,7 @@ from typing import TYPE_CHECKING
 
 from PIL import Image
 
-from halo.contracts.snapshots import TargetInfo
-from halo.services.target_perception_service.vlm_parser import parse_vlm_response
+from halo.services.target_perception_service.vlm_parser import VlmScene, parse_vlm_response
 
 # Resize input images to this width before sending to Ollama.
 # Height is computed to preserve aspect ratio.  All model bbox
@@ -82,14 +81,11 @@ def make_ollama_vlm_fn(
     run_logger: RunLogger | None = None,
 ):
     """
-    Return a vlm_fn that sends *image_path* to *model* via Ollama.
+    Return an async callable that sends *image_path* to *model* via Ollama
+    and returns a VlmScene (scene description + list of detections).
 
     The image and prompt are loaded once at construction time.  Each call is
-    non-blocking (asyncio.to_thread) so it never stalls the fast loop.
-
-    Returns a TargetInfo seeded from the detection whose handle matches
-    target_handle, or the most-confident detection if no exact match.
-    Returns None if the model finds nothing.
+    non-blocking (asyncio.to_thread) so it never stalls the event loop.
 
     If *run_logger* is provided every inference (success or failure) is
     appended to the session JSONL log alongside the full raw Ollama response.
@@ -106,10 +102,9 @@ def make_ollama_vlm_fn(
 
     prompt = prompt_path.read_text(encoding="utf-8")
 
-    async def vlm_fn(arm_id: str, target_handle: str) -> TargetInfo | None:
+    async def vlm_fn(arm_id: str) -> VlmScene:
         t0 = time.monotonic()
         result: dict = {}
-        target_info: TargetInfo | None = None
         error: str | None = None
 
         try:
@@ -119,65 +114,30 @@ def make_ollama_vlm_fn(
             if run_logger is not None:
                 run_logger.log_vlm_inference(
                     arm_id=arm_id,
-                    target_handle=target_handle,
+                    target_handle="",
                     model=model,
                     raw_response={k: v for k, v in result.items() if k != "context"},
                     target_info=None,
                     inference_ms=int((time.monotonic() - t0) * 1000),
                     error=error,
                 )
-            return None
+            return VlmScene(scene="", detections=[])
 
         raw = _extract_json(result.get("response", ""))
         vlm_scene = parse_vlm_response(raw)
 
-        if vlm_scene.detections:
-            # Prefer exact handle match; fall back to first graspable detection.
-            match = next((d for d in vlm_scene.detections if d.handle == target_handle), None)
-            if match is None:
-                match = next(
-                    (d for d in vlm_scene.detections if d.is_graspable),
-                    vlm_scene.detections[0],
-                )
-
-            total_ns = result.get("total_duration", 0)
-            obs_age_ms = int(total_ns / 1_000_000) if total_ns else 0
-
-            target_info = TargetInfo(
-                handle=target_handle,
-                hint_valid=True,
-                confidence=1.0,  # VLM detected it — present is 1.0
-                obs_age_ms=obs_age_ms,
-                time_skew_ms=0,
-                # Depth not available from VLM; filled by depth fusion later.
-                delta_xyz_ee=(0.0, 0.0, 0.0),
-                distance_m=0.0,
-            )
-
         if run_logger is not None:
-            # Drop the context token array — it's large and not useful in logs.
             loggable = {k: v for k, v in result.items() if k != "context"}
             run_logger.log_vlm_inference(
                 arm_id=arm_id,
-                target_handle=target_handle,
+                target_handle="",
                 model=model,
                 raw_response=loggable,
-                target_info=(
-                    {
-                        "handle": target_info.handle,
-                        "hint_valid": target_info.hint_valid,
-                        "confidence": target_info.confidence,
-                        "obs_age_ms": target_info.obs_age_ms,
-                        "distance_m": target_info.distance_m,
-                        "delta_xyz_ee": list(target_info.delta_xyz_ee),
-                    }
-                    if target_info is not None
-                    else None
-                ),
+                target_info=None,
                 inference_ms=int((time.monotonic() - t0) * 1000),
                 error=error,
             )
 
-        return target_info
+        return vlm_scene
 
     return vlm_fn

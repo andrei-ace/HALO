@@ -14,6 +14,7 @@ from halo.services.target_perception_service.service import (
     TargetPerceptionService,
     VlmFn,
 )
+from halo.services.target_perception_service.vlm_parser import VlmDetection, VlmScene
 
 ARM = "arm0"
 
@@ -303,28 +304,42 @@ async def test_start_stop_lifecycle(rt: HALORuntime):
     assert svc._loop_task is None
 
 
+# ─── VLM helpers ──────────────────────────────────────────────────────────────
+
+def _scene(*handles: str) -> VlmScene:
+    """Build a VlmScene with one detection per handle."""
+    dets = [
+        VlmDetection(
+            handle=h, label=h, bbox=(0.0, 0.0, 100.0, 100.0),
+            centroid=(50.0, 50.0), is_graspable=True,
+        )
+        for h in handles
+    ]
+    return VlmScene(scene="test scene", detections=dets)
+
+
 # ─── VLM async path ───────────────────────────────────────────────────────────
 
 async def test_vlm_triggered_on_set_tracking_target(rt: HALORuntime):
     called: list[str] = []
 
-    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
-        called.append(handle)
-        return _good_hint()
+    async def vlm(arm_id: str) -> VlmScene:
+        called.append(arm_id)
+        return _scene("cube-1")
 
     svc = _make_svc(rt, vlm_fn=vlm)
     await svc.set_tracking_target("cube-1")
     await asyncio.sleep(0.05)  # yield so the VLM task can run
 
-    assert called == ["cube-1"]
+    assert called == [ARM]
 
 
 async def test_vlm_triggered_on_request_refresh(rt: HALORuntime):
     called: list[str] = []
 
-    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
-        called.append(handle)
-        return _good_hint()
+    async def vlm(arm_id: str) -> VlmScene:
+        called.append(arm_id)
+        return _scene("cube-1")
 
     svc = _make_svc(rt, vlm_fn=vlm)
     await svc.set_tracking_target("cube-1")
@@ -337,31 +352,46 @@ async def test_vlm_triggered_on_request_refresh(rt: HALORuntime):
     assert len(called) == 1
 
 
-async def test_vlm_triggered_on_reacquire_fail_limit(rt: HALORuntime):
+async def test_vlm_triggered_on_request_refresh_without_target(rt: HALORuntime):
+    """request_refresh works even without a tracking target (scene-only)."""
     called: list[str] = []
 
-    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
-        called.append(handle)
-        return None  # VLM also fails; we just check it was called
+    async def vlm(arm_id: str) -> VlmScene:
+        called.append(arm_id)
+        return _scene("cube-1")
+
+    svc = _make_svc(rt, vlm_fn=vlm)
+    # No set_tracking_target — scene analysis only.
+    await svc.request_refresh(reason="startup")
+    await asyncio.sleep(0.05)
+
+    assert len(called) == 1
+
+
+async def test_vlm_triggered_on_reacquire_fail_limit(rt: HALORuntime):
+    call_count = 0
+
+    async def vlm(arm_id: str) -> VlmScene:
+        nonlocal call_count
+        call_count += 1
+        return VlmScene(scene="empty", detections=[])  # no match
 
     cfg = _cfg(reacquire_fail_limit=2)
     svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, cfg=cfg)
     await svc.set_tracking_target("cube-1")
     await asyncio.sleep(0.05)  # drain initial VLM
-    called.clear()
+    call_count = 0
 
     await svc.tick()  # fail 1 — not at limit yet
     await svc.tick()  # fail 2 — hits limit, spawns VLM
     await asyncio.sleep(0.05)  # let VLM task run
 
-    assert len(called) == 1
+    assert call_count == 1
 
 
 async def test_vlm_seed_used_when_observe_returns_none(rt: HALORuntime):
-    seed = _good_hint(distance_m=0.15)
-
-    async def vlm(arm_id: str, handle: str) -> TargetInfo | None:
-        return seed
+    async def vlm(arm_id: str) -> VlmScene:
+        return _scene("cube-1")
 
     svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm)
     await svc.set_tracking_target("cube-1")
@@ -372,17 +402,16 @@ async def test_vlm_seed_used_when_observe_returns_none(rt: HALORuntime):
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.perception.tracking_status == TrackingStatus.TRACKING
     assert snap.target is not None
-    assert snap.target.distance_m == pytest.approx(0.15)
 
 
 async def test_vlm_does_not_block_tick(rt: HALORuntime):
     """tick() must return promptly even when VLM is still running."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+    async def slow_vlm(arm_id: str) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)  # intentionally very slow
-        return _good_hint()
+        return _scene("cube-1")
 
     svc = _make_svc(rt, vlm_fn=slow_vlm)
     await svc.set_tracking_target("cube-1")
@@ -399,9 +428,9 @@ async def test_vlm_does_not_block_tick(rt: HALORuntime):
 async def test_vlm_job_pending_while_task_running(rt: HALORuntime):
     vlm_proceed = asyncio.Event()
 
-    async def blocking_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+    async def blocking_vlm(arm_id: str) -> VlmScene:
         await vlm_proceed.wait()
-        return _good_hint()
+        return _scene("cube-1")
 
     svc = _make_svc(rt, vlm_fn=blocking_vlm)
     await svc.set_tracking_target("cube-1")
@@ -420,11 +449,11 @@ async def test_vlm_not_stacked(rt: HALORuntime):
     call_count = 0
     vlm_proceed = asyncio.Event()
 
-    async def counting_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+    async def counting_vlm(arm_id: str) -> VlmScene:
         nonlocal call_count
         call_count += 1
         await vlm_proceed.wait()
-        return _good_hint()
+        return _scene("cube-1")
 
     svc = _make_svc(rt, vlm_fn=counting_vlm)
     await svc.set_tracking_target("cube-1")
@@ -443,14 +472,14 @@ async def test_vlm_not_stacked(rt: HALORuntime):
 async def test_stop_cancels_vlm_task(rt: HALORuntime):
     cancelled = False
 
-    async def long_vlm(arm_id: str, handle: str) -> TargetInfo | None:
+    async def long_vlm(arm_id: str) -> VlmScene:
         nonlocal cancelled
         try:
             await asyncio.sleep(60.0)
         except asyncio.CancelledError:
             cancelled = True
             raise
-        return None
+        return VlmScene(scene="", detections=[])
 
     svc = _make_svc(rt, vlm_fn=long_vlm)
     await svc.set_tracking_target("cube-1")

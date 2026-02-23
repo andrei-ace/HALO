@@ -980,7 +980,6 @@ class HALOApp(App):
         agent: object | None = None,
         arm_id: str = "arm0",
         perception_svc: object | None = None,
-        initial_target: str | None = None,
         run_logger: RunLogger | None = None,
     ) -> None:
         super().__init__()
@@ -988,7 +987,6 @@ class HALOApp(App):
         self._agent = agent
         self._arm_id = arm_id
         self._perception_svc = perception_svc
-        self._initial_target = initial_target
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
@@ -1004,9 +1002,11 @@ class HALOApp(App):
             self._event_queue = self._runtime.bus.subscribe(self._arm_id)  # type: ignore[union-attr]
             self.run_worker(self._listen_events(), name="event_listener")
         if self._perception_svc is not None:
-            if self._initial_target:
-                await self._perception_svc.set_tracking_target(self._initial_target)  # type: ignore[union-attr]
+            # Start the service so it listens for planner commands,
+            # but don't set a tracking target — the planner decides when.
             await self._perception_svc.start()  # type: ignore[union-attr]
+            # Run a single scene analysis on startup via the service.
+            await self._perception_svc.request_refresh(reason="startup")  # type: ignore[union-attr]
 
     async def on_unmount(self) -> None:
         if self._perception_svc is not None:
@@ -1273,7 +1273,6 @@ def _run_live(args: list[str]) -> None:
     from pathlib import Path
     from halo.runtime.runtime import HALORuntime
     from halo.services.planner_service.agent import PlannerAgent
-    from halo.services.target_perception_service.mock_fns import make_mock_observe_fn
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.service import TargetPerceptionService
 
@@ -1301,11 +1300,14 @@ def _run_live(args: list[str]) -> None:
     prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
     agent = PlannerAgent(model, base_url, prompts_dir)
 
+    vlm_fn = make_ollama_vlm_fn(
+        base_url=base_url, model=vlm_model, run_logger=run_logger,
+    )
+
     perception_svc = TargetPerceptionService(
         arm_id=arm_id,
         runtime=runtime,
-        observe_fn=make_mock_observe_fn(),
-        vlm_fn=make_ollama_vlm_fn(base_url=base_url, model=vlm_model, run_logger=run_logger),
+        vlm_fn=vlm_fn,
     )
 
     HALOApp(
@@ -1313,7 +1315,6 @@ def _run_live(args: list[str]) -> None:
         agent=agent,
         arm_id=arm_id,
         perception_svc=perception_svc,
-        initial_target="cube-red-01",
         run_logger=run_logger,
     ).run()
 
