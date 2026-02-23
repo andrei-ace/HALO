@@ -1,31 +1,36 @@
-## PLACE Skill
+---
+name: PLACE
+description: Place a held object at a target location. Start after a successful PICK. Not yet available in v0 — do not issue this command.
+version: 1.0.0
+---
 
-### When to start
+> **Not available in v0.** Do not call `start_skill(skill_name="PLACE", ...)`.
+> If PICK succeeded, no-op this tick and wait for operator guidance.
 
-- The previous PICK succeeded: `outcome.state` == "SUCCESS"
-- A place target has been identified (conveyed via `target.handle` or operator command)
-- `safety.state` == "OK" and `safety.reflex_active` == false
+## Goal
 
-Call `start_skill(skill_name="PLACE", target_handle=<place_target_handle>)`.
+Carry the grasped object to a place target and release it. As with PICK, the
+SkillRunner handles all motion phases automatically.
 
-### When to abort
+## When to start
 
-Abort the PLACE skill (call `abort_skill`) if:
+- PICK just succeeded (`outcome.state` == "SUCCESS").
+- A place target has been identified and is reachable.
+- No safety fault is active.
 
-- `outcome.reason_code` == "DROP_DETECTED" — object was dropped before placing
-- `outcome.reason_code` == "PLACE_MISS" — end-effector could not reach place target
-- `safety.reflex_active` == true
+```
+start_skill(skill_name="PLACE", target_handle=<place_target_handle>)
+```
 
-### Recovery hints
+## When to abort
 
-| reason_code | Recommended action |
-|---|---|
-| `DROP_DETECTED` | The object is lost; request perception refresh and restart PICK |
-| `PLACE_MISS` | Retry PLACE once; if it fails again, wait for operator |
+- The object was dropped in transit (`outcome.reason_code` == "DROP_DETECTED").
+- The place target is unreachable (`outcome.reason_code` == "PLACE_MISS") after one retry.
+- A safety fault is active.
 
-### Important note
+## Recovery after failure
 
-**PLACE skill is not yet implemented in SkillRunnerService (v0).**
-Do not issue `start_skill(skill_name="PLACE", ...)` in the current version.
-If a PICK succeeded and a PLACE would normally follow, log a no-op and wait
-for operator guidance.
+| reason_code | What happened | Recommended action |
+|---|---|---|
+| `DROP_DETECTED` | Object lost during transit | Request perception refresh, then restart PICK |
+| `PLACE_MISS` | Could not reach place target | Retry PLACE once; if it fails again, wait for operator |
