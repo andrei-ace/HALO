@@ -63,6 +63,23 @@ def _load_prompts(prompts_dir: Path) -> str:
     return "\n".join(parts)
 
 
+def _extract_reasoning(result: object) -> str:
+    """Pull the final AI text from an ainvoke result dict.
+
+    The result is ``{"messages": [...]}``; we walk backwards to find the last
+    AIMessage that has non-empty text content and no pending tool_calls.
+    """
+    try:
+        msgs = result.get("messages", []) if isinstance(result, dict) else []  # type: ignore[union-attr]
+        for msg in reversed(msgs):
+            content = getattr(msg, "content", "")
+            if content and isinstance(content, str) and not getattr(msg, "tool_calls", None):
+                return content
+    except Exception:
+        pass
+    return ""
+
+
 class PlannerAgent:
     """LangGraph ReAct agent that implements the DecideFn protocol."""
 
@@ -81,6 +98,12 @@ class PlannerAgent:
             tools,
             middleware=[_DeprecateOldSnapshotsMiddleware()],
         )
+        self._last_reasoning: str = ""
+
+    @property
+    def last_reasoning(self) -> str:
+        """Final LLM text from the most recent decide() call (empty if none)."""
+        return self._last_reasoning
 
     async def decide(
         self,
@@ -106,7 +129,8 @@ class PlannerAgent:
         ]
         if operator_cmd:
             messages.append(HumanMessage(content=f"Operator: {operator_cmd}"))
-        await self._agent.ainvoke({"messages": messages})
+        result = await self._agent.ainvoke({"messages": messages})
+        self._last_reasoning = _extract_reasoning(result)
         return list(self._ctx.commands)
 
 

@@ -97,6 +97,7 @@ _LEGEND = [
     ("T",               "Focus the message input directly"),
     ("Enter",       "Send message to planner"),
     ("Esc",         "Clear input and return to monitoring mode"),
+    ("R",           "Show full planner reasoning for last response"),
     ("A",           "Emergency abort — always fires (even while typing)"),
     ("Ctrl+Q",      "Quit"),
     ("?",           "Show / hide this legend"),
@@ -384,6 +385,37 @@ class LegendScreen(ModalScreen):
             yield Static(" Press ? or Esc to close", id="legend-close-hint")
 
 
+# ── Reasoning modal ───────────────────────────────────────────────
+
+class ReasoningScreen(ModalScreen):
+    """Full LLM reasoning text for the last planner response."""
+
+    BINDINGS = [
+        Binding("r", "close", show=False),
+        Binding("escape", "close", show=False),
+    ]
+
+    def __init__(self, reasoning: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._reasoning = reasoning
+
+    def action_close(self) -> None:
+        self.dismiss()
+
+    def compose(self) -> ComposeResult:
+        with Container(id="reasoning-box"):
+            yield Static(" Planner reasoning (last response)", id="reasoning-heading")
+            yield Static("")
+            if self._reasoning:
+                # Word-wrap long lines by splitting on newlines first
+                for line in self._reasoning.splitlines():
+                    yield Static(line or " ", classes="reasoning-line")
+            else:
+                yield Static("  (no reasoning captured yet)", classes="reasoning-line")
+            yield Static("")
+            yield Static(" Press R or Esc to close", id="reasoning-close-hint")
+
+
 # ── App ───────────────────────────────────────────────────────────
 
 class HALOApp(App):
@@ -540,6 +572,36 @@ class HALOApp(App):
     #legend-close-hint {
         color: #8a8a8a;
     }
+
+    /* ── Reasoning modal ── */
+    ReasoningScreen {
+        align: center middle;
+    }
+
+    #reasoning-box {
+        width: 80;
+        height: auto;
+        max-height: 40;
+        background: #141d30;
+        border: solid #4fc3f7;
+        padding: 1 0;
+        overflow-y: auto;
+    }
+
+    #reasoning-heading {
+        color: #4fc3f7;
+        text-style: bold;
+        margin-bottom: 0;
+    }
+
+    .reasoning-line {
+        padding: 0 2;
+        color: #b0bcd0;
+    }
+
+    #reasoning-close-hint {
+        color: #8a8a8a;
+    }
     """
 
     BINDINGS = [
@@ -547,10 +609,12 @@ class HALOApp(App):
         Binding("t", "focus_input", "type", show=False),
         Binding("enter", "send_message", "send", show=False),
         Binding("escape", "cancel_input", "cancel", show=False),
+        Binding("r", "show_reasoning", "reasoning", show=False),
         Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
     _abort_cooldown: float = 0.0  # monotonic time of last abort
+    _last_reasoning: str = ""
 
     def __init__(
         self,
@@ -657,6 +721,9 @@ class HALOApp(App):
     def action_focus_input(self) -> None:
         self.query_one("#planner-input", Input).focus()
 
+    def action_show_reasoning(self) -> None:
+        self.push_screen(ReasoningScreen(self._last_reasoning), callback=lambda _: self.set_focus(None))
+
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
@@ -680,6 +747,8 @@ class HALOApp(App):
             from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
             commands = await self._agent.decide(snap, operator_cmd=msg)  # type: ignore[union-attr]
+            reasoning = getattr(self._agent, "last_reasoning", "") or ""
+            self._last_reasoning = reasoning
 
             # Submit commands
             acks = []
@@ -695,6 +764,7 @@ class HALOApp(App):
                     snapshot=snapshot_to_dict(snap),
                     commands=[{"id": c.command_id, "str": _format_cmd(c)} for c, _ in acks],
                     acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
+                    reasoning=reasoning,
                 )
 
             # Update thinking widget
@@ -705,7 +775,11 @@ class HALOApp(App):
                 descs = ", ".join(_format_cmd(c) for c, _ in acks)
                 result_text.append(f"▶ Queued {len(acks)} command(s): {descs}", style="bright_green")
             else:
-                result_text.append("▶ No commands issued", style="grey62")
+                snippet = (reasoning[:80] + "…") if len(reasoning) > 80 else reasoning
+                result_text.append("▶ No commands", style="grey62")
+                if snippet:
+                    result_text.append(f" — {snippet}", style="#9e9e9e")
+                result_text.append("  [R]", style="#4fc3f7")
             thinking_widget.update(result_text)
             history.scroll_end(animate=False)
 
