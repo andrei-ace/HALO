@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rules
+
+- Always use Context7 MCP when needing library/API documentation, code generation, setup or configuration steps — no need to ask explicitly.
+
 ## Commands
 
 ```bash
