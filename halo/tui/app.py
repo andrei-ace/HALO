@@ -261,7 +261,6 @@ class HALOApp(App):
         height: 1;
         content-align: center middle;
         background: #141d30;
-        border-top: solid #263050;
     }
 
     #left-col {
@@ -436,8 +435,30 @@ class HALOApp(App):
         self.push_screen(LegendScreen())
 
 
+def _take_screenshot(path: str = "halo_tui.svg") -> None:
+    """Run headlessly, render one frame, save SVG screenshot, exit."""
+    import asyncio
+
+    async def _run() -> None:
+        app = HALOApp()
+        async with app.run_test(headless=True, size=(209, 53)) as pilot:
+            await pilot.pause(0.3)  # let layout settle
+            svg = app.export_screenshot()
+        with open(path, "w") as f:
+            f.write(svg)
+        print(f"Screenshot saved: {path}")
+
+    asyncio.run(_run())
+
+
 def main() -> None:
-    HALOApp().run()
+    import sys
+    if "--screenshot" in sys.argv:
+        idx = sys.argv.index("--screenshot")
+        path = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else "halo_tui.svg"
+        _take_screenshot(path)
+    else:
+        HALOApp().run()
 
 
 if __name__ == "__main__":
