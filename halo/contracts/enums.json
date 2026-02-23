@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "halo/contracts/enums.json",
+  "title": "HALO Stable Enums",
+  "description": "Canonical enum definitions shared across all HALO services. All services must validate against these values.",
+  "$defs": {
+    "PerceptionFailureCode": {
+      "type": "string",
+      "enum": ["OK", "OCCLUDED", "OUT_OF_VIEW", "DEPTH_INVALID", "MULTIPLE_CANDIDATES", "CALIB_INVALID", "TRACK_JUMP_REJECTED", "REACQUIRE_FAILED"]
+    },
+    "TrackingStatus": {
+      "type": "string",
+      "enum": ["TRACKING", "LOST", "RELOCALIZING", "REACQUIRING"]
+    },
+    "SkillName": {
+      "type": "string",
+      "enum": ["PICK", "PLACE"]
+    },
+    "PhaseId": {
+      "description": "Integer phase identifiers. Normal phases: 0–11. Recovery phases: 20–22. Names: 0=RESET, 1=APPROACH_PREGRASP, 2=ALIGN, 3=DESCEND_GRASP, 4=CLOSE, 5=LIFT, 6=VERIFY_GRASP, 7=TRANSIT_PREPLACE, 8=DESCEND_PLACE, 9=OPEN, 10=RETREAT, 11=DONE, 20=RECOVER_RETRY_APPROACH, 21=RECOVER_RETRY_DESCEND, 22=RECOVER_REGRASP",
+      "type": "integer",
+      "enum": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 20, 21, 22]
+    },
+    "SkillOutcomeState": {
+      "type": "string",
+      "enum": ["IN_PROGRESS", "SUCCESS", "FAILURE", "UNCERTAIN"]
+    },
+    "SkillFailureCode": {
+      "type": "string",
+      "enum": ["TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "UNSAFE_ABORT"]
+    },
+    "SafetyReflexReason": {
+      "type": "string",
+      "enum": ["JOINT_LIMIT", "WORKSPACE_LIMIT", "COLLISION_RISK", "OVERCURRENT", "ESTOP"]
+    },
+    "SafetyState": {
+      "type": "string",
+      "enum": ["OK", "FAULT"]
+    },
+    "ActStatus": {
+      "type": "string",
+      "enum": ["IDLE", "RUNNING", "BUFFER_LOW", "STALE"]
+    },
+    "CommandType": {
+      "type": "string",
+      "enum": ["START_SKILL", "ABORT_SKILL", "OVERRIDE_TARGET", "REQUEST_PERCEPTION_REFRESH"]
+    },
+    "CommandAckStatus": {
+      "type": "string",
+      "enum": ["ACCEPTED", "REJECTED_STALE", "REJECTED_WRONG_SKILL_RUN", "ALREADY_APPLIED"]
+    },
+    "EventType": {
+      "type": "string",
+      "enum": [
+        "COMMAND_ACCEPTED", "COMMAND_REJECTED",
+        "SKILL_STARTED", "SKILL_SUCCEEDED", "SKILL_FAILED",
+        "PHASE_ENTER", "PHASE_EXIT",
+        "PERCEPTION_FAILURE", "PERCEPTION_RECOVERED",
+        "SAFETY_REFLEX_TRIGGERED", "SAFETY_RECOVERED"
+      ]
+    }
+  }
+}

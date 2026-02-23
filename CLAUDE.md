@@ -24,7 +24,9 @@ The repo is in early development. See `docs/` for the full architecture and plan
 Planned layout (from architecture spec):
 ```
 halo/
-  contracts/        # JSON schemas for commands, snapshots, events + enums
+  contracts/        # JSON schemas (enums.json, commands.json, snapshot.json, events.json)
+                    # + Python dataclasses/enums mirroring those schemas
+  runtime/          # RuntimeStateStore, EventBus, CommandRouter, HALORuntime
   services/
     planner_service/           # LLM agent + tool adapter
     target_perception_service/ # VLM + SAM/Tracker + depth fusion
@@ -78,6 +80,9 @@ RuntimeStateStore → get_latest_runtime_snapshot() → PlannerService → async
 3. Every planner command carries a `command_id` (UUID) and `precondition_snapshot_id`; the router must enforce idempotency and reject stale preconditions.
 4. VLM reacquire runs **asynchronously** — it is never on the critical path of the 10–30 Hz hint-publish loop.
 5. On phase transition, **trim the ACT buffer** to ~50–100 ms to avoid executing old-phase tail actions.
+
+### HALORuntime (`halo/runtime/runtime.py`)
+Top-level entry point. Owns `RuntimeStateStore`, `EventBus`, and `CommandRouter`. Exposes the two planner-facing APIs: `get_latest_runtime_snapshot(arm_id)` and `submit_command(cmd)`.
 
 ### RuntimeStateStore / EventBus
 Single source of truth (transport TBD: ROS2 topics, ZeroMQ, Redis, shared memory). Partitioned by `arm_id` from day one.
