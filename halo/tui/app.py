@@ -684,12 +684,16 @@ class HALOApp(App):
         height: auto;
     }
 
+    /* info containers shrink first; Talk + Panic hold their space */
+    #left-info            { height: 1fr; min-height: 0; overflow: hidden hidden; }
+    #right-info           { height: 1fr; min-height: 0; overflow: hidden hidden; }
+    TalkPanel             { height: 2fr; min-height: 14; }
+    PanicPanel            { height: auto; min-height: 8;  }
+
     PlannerPanel          { height: 1fr; min-height: 9;  }
     TargetPerceptionPanel { height: 1fr; min-height: 8;  }
-    TalkPanel             { height: 2fr; min-height: 14; }
     ControlServicePanel   { height: 1fr; min-height: 7;  }
     EventsPanel           { height: 1fr; min-height: 7;  }
-    PanicPanel            { min-height: 8; }
 
     /* ── Talk to Planner internals ── */
     #prompt-history {
@@ -862,14 +866,16 @@ class HALOApp(App):
         with Vertical(id="body"):
             with Horizontal(id="main-row"):
                 with Vertical(id="left-col"):
-                    yield PlannerPanel(data=d, id="planner-panel")
-                    yield TargetPerceptionPanel(data=d, id="perception-panel")
+                    with Vertical(id="left-info"):
+                        yield PlannerPanel(data=d, id="planner-panel")
+                        yield TargetPerceptionPanel(data=d, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
                 with Vertical(id="right-col"):
-                    yield SystemPanel(data=d, id="system-panel")
-                    yield ServosPanel(data=d, id="servos-panel")
-                    yield ControlServicePanel(data=d, id="control-panel")
-                    yield EventsPanel(data=d, id="events-panel")
+                    with Vertical(id="right-info"):
+                        yield SystemPanel(data=d, id="system-panel")
+                        yield ServosPanel(data=d, id="servos-panel")
+                        yield ControlServicePanel(data=d, id="control-panel")
+                        yield EventsPanel(data=d, id="events-panel")
                     yield PanicPanel(id="panic-panel")
             yield HintBar()
 
@@ -1072,7 +1078,7 @@ def _take_screenshot(path: str = "halo_tui.svg") -> None:
 
     async def _run() -> None:
         app = HALOApp()
-        async with app.run_test(headless=True, size=(209, 53)) as pilot:
+        async with app.run_test(headless=True, size=(220, 60)) as pilot:
             await pilot.pause(0.3)  # let layout settle
             svg = app.export_screenshot()
         with open(path, "w") as f:
