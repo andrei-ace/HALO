@@ -190,7 +190,7 @@ _LEGEND = [
     ("Enter",       "Send message to planner"),
     ("Esc",         "Clear input and return to monitoring mode"),
     ("A",           "Emergency abort — always fires (even while typing)"),
-    ("Ctrl+C",      "Quit"),
+    ("Ctrl+Q",      "Quit"),
     ("?",           "Show / hide this legend"),
 ]
 
