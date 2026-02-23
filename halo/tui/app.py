@@ -2,6 +2,8 @@
 
 Run with:
     uv run python -m halo.tui.app
+    uv run python -m halo.tui.app --live
+    uv run python -m halo.tui.app --live --arm arm0 --model llama3.2:3b --base-url http://localhost:11434
 """
 
 from __future__ import annotations
@@ -94,6 +96,26 @@ def _bar(value: float, width: int = 8) -> Text:
     return t
 
 
+def _format_cmd(cmd: object) -> str:
+    """Convert a CommandEnvelope to a concise human-readable string."""
+    from halo.contracts.commands import (
+        AbortSkillPayload,
+        OverrideTargetPayload,
+        RequestPerceptionRefreshPayload,
+        StartSkillPayload,
+    )
+    p = cmd.payload  # type: ignore[attr-defined]
+    if isinstance(p, StartSkillPayload):
+        return f"START_SKILL({p.skill_name.value}, {p.target_handle})"
+    if isinstance(p, AbortSkillPayload):
+        return f"ABORT_SKILL({p.skill_run_id[-4:]}, {p.reason})"
+    if isinstance(p, OverrideTargetPayload):
+        return f"OVERRIDE_TARGET({p.target_handle})"
+    if isinstance(p, RequestPerceptionRefreshPayload):
+        return f"REFRESH_PERCEPTION({p.mode})"
+    return str(cmd.type)  # type: ignore[attr-defined]
+
+
 # ── Panel widgets ─────────────────────────────────────────────────
 
 class PlannerPanel(Container):
@@ -161,6 +183,23 @@ class ActionsPanel(Container):
                 t.append(f"  {cmd_id} ", style="#4fc3f7")
                 t.append(desc, style=f"bold {color}")
             yield Static(t)
+
+    def append_cmd(self, ts: str, desc: str, short_id: str) -> None:
+        t = Text()
+        t.append(ts, style="grey62")
+        t.append("  ")
+        t.append(desc, style="white")
+        t.append(f"  →{short_id}", style="#4fc3f7")
+        self.mount(Static(t))
+
+    def append_ack(self, ts: str, status: str, short_id: str) -> None:
+        t = Text()
+        t.append(ts, style="grey62")
+        t.append("  ")
+        color = "bright_green" if status == "ACCEPTED" else "red"
+        t.append(f"  {short_id} ", style="#4fc3f7")
+        t.append(status, style=f"bold {color}")
+        self.mount(Static(t))
 
 
 class ServosPanel(Container):
@@ -465,6 +504,17 @@ class HALOApp(App):
 
     _abort_cooldown: float = 0.0  # monotonic time of last abort
 
+    def __init__(
+        self,
+        runtime: object | None = None,
+        agent: object | None = None,
+        arm_id: str = "arm0",
+    ) -> None:
+        super().__init__()
+        self._runtime = runtime
+        self._agent = agent
+        self._arm_id = arm_id
+
     def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
 
@@ -513,22 +563,33 @@ class HALOApp(App):
             timeout=10,
             title="ABORT",
         )
+        if self._runtime:
+            self.run_worker(self._do_abort(), name="abort_worker")
 
     def action_send_message(self) -> None:
         from datetime import datetime
         inp = self.query_one("#planner-input", Input)
         msg = inp.value.strip()
-        if msg:
-            inp.value = ""
-            # append to history
-            ts = datetime.now().strftime("%H:%M:%S")
-            t = Text()
-            t.append(ts, style="grey62")
-            t.append("  ")
-            t.append(msg, style="#b0bcd0")
-            history = self.query_one("#prompt-history", VerticalScroll)
-            history.mount(Static(t, classes="history-item"))
-            history.scroll_end(animate=False)
+        if not msg:
+            self.set_focus(None)
+            return
+        inp.value = ""
+        # Append user message to history
+        ts = datetime.now().strftime("%H:%M:%S")
+        t = Text()
+        t.append(ts, style="grey62")
+        t.append("  ")
+        t.append(msg, style="#b0bcd0")
+        history = self.query_one("#prompt-history", VerticalScroll)
+        history.mount(Static(t, classes="history-item"))
+        history.scroll_end(animate=False)
+        # Launch agent call if live
+        if self._runtime and self._agent:
+            self.run_worker(
+                self._do_agent_call(msg),
+                group="planner",
+                exclusive=True,
+            )
         self.set_focus(None)
 
     def action_cancel_input(self) -> None:
@@ -542,6 +603,89 @@ class HALOApp(App):
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
+    # ── Live workers ──
+
+    async def _do_agent_call(self, msg: str) -> None:
+        from datetime import datetime
+        ts = datetime.now().strftime("%H:%M:%S")
+        history = self.query_one("#prompt-history", VerticalScroll)
+
+        # Mount "[thinking…]" placeholder
+        thinking_text = Text()
+        thinking_text.append(ts, style="grey62")
+        thinking_text.append("  ")
+        thinking_text.append("[thinking…]", style="italic #9e9e9e")
+        thinking_widget = Static(thinking_text, classes="history-item")
+        await history.mount(thinking_widget)
+        history.scroll_end(animate=False)
+
+        try:
+            snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
+            commands = await self._agent.decide(snap, operator_cmd=msg)  # type: ignore[union-attr]
+
+            # Submit commands
+            acks = []
+            for cmd in commands:
+                ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
+                acks.append((cmd, ack))
+
+            # Update thinking widget
+            result_text = Text()
+            result_text.append(ts, style="grey62")
+            result_text.append("  ")
+            if acks:
+                descs = ", ".join(_format_cmd(c) for c, _ in acks)
+                result_text.append(f"▶ Queued {len(acks)} command(s): {descs}", style="bright_green")
+            else:
+                result_text.append("▶ No commands issued", style="grey62")
+            thinking_widget.update(result_text)
+            history.scroll_end(animate=False)
+
+            # Append to ActionsPanel
+            actions_panel = self.query_one("#actions-panel", ActionsPanel)
+            for cmd, ack in acks:
+                cmd_ts = datetime.now().strftime("%H:%M:%S")
+                short_id = cmd.command_id[-4:]
+                actions_panel.append_cmd(cmd_ts, _format_cmd(cmd), short_id)
+                actions_panel.append_ack(cmd_ts, ack.status.value, short_id)
+
+        except Exception as exc:
+            err_text = Text()
+            err_text.append(ts, style="grey62")
+            err_text.append("  ")
+            err_text.append(f"✗ {exc}", style="bold red")
+            thinking_widget.update(err_text)
+            history.scroll_end(animate=False)
+            self.notify(str(exc), severity="error", title="Agent error")
+
+    async def _do_abort(self) -> None:
+        from datetime import datetime
+        from uuid import uuid4
+        import time
+        from halo.contracts.commands import AbortSkillPayload, CommandEnvelope, CommandType
+
+        snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
+        if snap.skill is None:
+            self.notify("No active skill to abort", severity="warning")
+            return
+
+        cmd = CommandEnvelope(
+            command_id=str(uuid4()),
+            arm_id=self._arm_id,
+            issued_at_ms=int(time.time() * 1000),
+            type=CommandType.ABORT_SKILL,
+            payload=AbortSkillPayload(
+                skill_run_id=snap.skill.skill_run_id,
+                reason="operator_abort",
+            ),
+        )
+        ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
+
+        actions_panel = self.query_one("#actions-panel", ActionsPanel)
+        ts = datetime.now().strftime("%H:%M:%S")
+        short_id = cmd.command_id[-4:]
+        actions_panel.append_cmd(ts, _format_cmd(cmd), short_id)
+        actions_panel.append_ack(ts, ack.status.value, short_id)
 
 
 def _take_screenshot(path: str = "halo_tui.svg") -> None:
@@ -560,12 +704,41 @@ def _take_screenshot(path: str = "halo_tui.svg") -> None:
     asyncio.run(_run())
 
 
+def _run_live(args: list[str]) -> None:
+    """Start the TUI wired to a real HALORuntime + PlannerAgent."""
+    from pathlib import Path
+    from halo.runtime.runtime import HALORuntime
+    from halo.services.planner_service.agent import PlannerAgent
+
+    # Parse --arm, --model, --base-url from args
+    arm_id = "arm0"
+    model = "gpt-oss:20B"
+    base_url = "http://localhost:11434"
+
+    for i, arg in enumerate(args):
+        if arg == "--arm" and i + 1 < len(args):
+            arm_id = args[i + 1]
+        elif arg == "--model" and i + 1 < len(args):
+            model = args[i + 1]
+        elif arg == "--base-url" and i + 1 < len(args):
+            base_url = args[i + 1]
+
+    runtime = HALORuntime()
+    runtime.register_arm(arm_id)
+    prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
+    agent = PlannerAgent(model, base_url, prompts_dir)
+    HALOApp(runtime=runtime, agent=agent, arm_id=arm_id).run()
+
+
 def main() -> None:
     import sys
-    if "--screenshot" in sys.argv:
-        idx = sys.argv.index("--screenshot")
-        path = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else "halo_tui.svg"
+    args = sys.argv[1:]
+    if "--screenshot" in args:
+        idx = args.index("--screenshot")
+        path = args[idx + 1] if idx + 1 < len(args) else "halo_tui.svg"
         _take_screenshot(path)
+    elif "--live" in args:
+        _run_live(args)
     else:
         HALOApp().run()
 
