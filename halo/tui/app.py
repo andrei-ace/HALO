@@ -186,11 +186,12 @@ class PanicPanel(Container):
 # ── Legend ────────────────────────────────────────────────────────
 
 _LEGEND = [
-    ("Enter",    "Send message to planner"),
-    ("Esc",      "Cancel / clear input"),
-    ("A",        "Emergency abort — stop robot immediately"),
-    ("Ctrl+C",   "Quit"),
-    ("?",        "Show / hide this legend"),
+    ("click / Tab", "Focus the message input (enter typing mode)"),
+    ("Enter",       "Send message to planner"),
+    ("Esc",         "Clear input and return to monitoring mode"),
+    ("A",           "Emergency abort — always fires (even while typing)"),
+    ("Ctrl+C",      "Quit"),
+    ("?",           "Show / hide this legend"),
 ]
 
 class LegendPanel(Container):
@@ -361,6 +362,9 @@ class HALOApp(App):
         Binding("question_mark", "toggle_legend", "help", show=False),
     ]
 
+    def on_mount(self) -> None:
+        self.set_focus(None)  # start in monitoring mode; user clicks input to type
+
     def compose(self) -> ComposeResult:
         yield TitleBar()
         with Horizontal(id="body"):
@@ -403,9 +407,13 @@ class HALOApp(App):
         msg = inp.value.strip()
         if msg:
             self.notify(f"→ Planner: {msg!r}", timeout=3)
+            inp.value = ""
+        self.set_focus(None)  # return to monitoring mode after send
 
     def action_cancel_input(self) -> None:
-        self.query_one("#planner-input", Input).value = ""
+        inp = self.query_one("#planner-input", Input)
+        inp.value = ""
+        self.set_focus(None)  # return to monitoring mode on Esc
 
     def action_toggle_legend(self) -> None:
         legend = self.query_one("#legend", LegendPanel)
