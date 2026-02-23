@@ -183,6 +183,29 @@ class PanicPanel(Container):
         yield Static("(Hold 'A' to stop immediately)", id="abort-hint")
 
 
+# ── Legend ────────────────────────────────────────────────────────
+
+_LEGEND = [
+    ("Enter",    "Send message to planner"),
+    ("Esc",      "Cancel / clear input"),
+    ("A",        "Emergency abort — stop robot immediately"),
+    ("Ctrl+C",   "Quit"),
+    ("?",        "Show / hide this legend"),
+]
+
+class LegendPanel(Container):
+    def on_mount(self) -> None:
+        self.border_title = "Keyboard shortcuts"
+        self.display = False
+
+    def compose(self) -> ComposeResult:
+        for key, desc in _LEGEND:
+            t = Text()
+            t.append(f"[ {key} ]", style="bold #4fc3f7")
+            t.append(f"  {desc}", style="#b0bcd0")
+            yield Static(t)
+
+
 # ── Title / footer ────────────────────────────────────────────────
 
 class TitleBar(Static):
@@ -199,8 +222,8 @@ class FooterBar(Static):
     def render(self) -> Text:
         t = Text(justify="center")
         t.append(
-            "[ Enter ] send  |  [ Esc ] cancel  |  [ A ] ABORT (emergency stop)",
-            style="grey62",
+            "[ Enter ] send  |  [ Esc ] cancel  |  [ A ] ABORT  |  [ ? ] help",
+            style="#9e9e9e",
         )
         return t
 
@@ -319,12 +342,23 @@ class HALOApp(App):
         content-align: center middle;
         color: #8a8a8a;
     }
+
+    /* ── Legend ── */
+    LegendPanel {
+        border: solid #263050;
+        border-title-color: #4fc3f7;
+        border-title-style: bold;
+        padding: 0 1;
+        height: auto;
+        background: #0d1320;
+    }
     """
 
     BINDINGS = [
         Binding("a", "emergency_abort", "ABORT", priority=True, show=False),
         Binding("enter", "send_message", "send", show=False),
         Binding("escape", "cancel_input", "cancel", show=False),
+        Binding("question_mark", "toggle_legend", "help", show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -340,6 +374,7 @@ class HALOApp(App):
                 yield SystemPanel()
                 yield EventsPanel()
                 yield PanicPanel()
+        yield LegendPanel(id="legend")
         yield FooterBar()
 
     # ── Event handlers ──
@@ -371,6 +406,10 @@ class HALOApp(App):
 
     def action_cancel_input(self) -> None:
         self.query_one("#planner-input", Input).value = ""
+
+    def action_toggle_legend(self) -> None:
+        legend = self.query_one("#legend", LegendPanel)
+        legend.display = not legend.display
 
 
 def main() -> None:
