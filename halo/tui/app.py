@@ -6,9 +6,11 @@ Run with:
 
 from __future__ import annotations
 
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
+from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 from rich.text import Text
 
@@ -18,7 +20,6 @@ from rich.text import Text
 _DATA = dict(
     arm_id="arm0",
     env="IsaacLab",
-    time="14:32:11",
     goal="pick cube → bin",
     phase="PREGRASP_ALIGN",
     actions=[
@@ -55,6 +56,15 @@ _DATA = dict(
         ("14:32:06", "SKILL_STARTED run-9"),
     ],
 )
+
+_LEGEND = [
+    ("click / Tab", "Focus the message input (enter typing mode)"),
+    ("Enter",       "Send message to planner"),
+    ("Esc",         "Clear input and return to monitoring mode"),
+    ("A",           "Emergency abort — always fires (even while typing)"),
+    ("Ctrl+Q",      "Quit"),
+    ("?",           "Show / hide this legend"),
+]
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -183,50 +193,50 @@ class PanicPanel(Container):
         yield Static("(Hold 'A' to stop immediately)", id="abort-hint")
 
 
-# ── Legend ────────────────────────────────────────────────────────
-
-_LEGEND = [
-    ("click / Tab", "Focus the message input (enter typing mode)"),
-    ("Enter",       "Send message to planner"),
-    ("Esc",         "Clear input and return to monitoring mode"),
-    ("A",           "Emergency abort — always fires (even while typing)"),
-    ("Ctrl+Q",      "Quit"),
-    ("?",           "Show / hide this legend"),
-]
-
-class LegendPanel(Container):
+class HintsPanel(Container):
     def on_mount(self) -> None:
-        self.border_title = "Keyboard shortcuts"
-        self.display = False
+        self.border_title = "Keys"
 
     def compose(self) -> ComposeResult:
-        for key, desc in _LEGEND:
+        for key, desc in (
+            ("?",     "toggle legend"),
+            ("A",     "emergency abort"),
+            ("Enter", "send message"),
+            ("Esc",   "cancel / clear"),
+            ("Ctrl+Q","quit"),
+        ):
             t = Text()
             t.append(f"[ {key} ]", style="bold #4fc3f7")
-            t.append(f"  {desc}", style="#b0bcd0")
+            t.append(f"  {desc}", style="#9e9e9e")
             yield Static(t)
 
 
-# ── Title / footer ────────────────────────────────────────────────
+# ── Title bar ─────────────────────────────────────────────────────
 
 class TitleBar(Static):
     def render(self) -> Text:
         t = Text(justify="center")
-        t.append(
-            f"HALO  —  {_DATA['arm_id']}  —  {_DATA['env']}  —  {_DATA['time']}",
-            style="bold white",
-        )
+        t.append(f"HALO  —  {_DATA['arm_id']}", style="bold white")
         return t
 
 
-class FooterBar(Static):
-    def render(self) -> Text:
-        t = Text(justify="center")
-        t.append(
-            "[ ? ] legend  |  [ Enter ] send  |  [ Esc ] cancel  |  [ A ] ABORT",
-            style="#9e9e9e",
-        )
-        return t
+# ── Legend modal ──────────────────────────────────────────────────
+
+class LegendScreen(ModalScreen):
+    def compose(self) -> ComposeResult:
+        with Container(id="legend-box"):
+            yield Static(" Keyboard shortcuts", id="legend-heading")
+            for key, desc in _LEGEND:
+                t = Text()
+                t.append(f" [ {key} ]", style="bold #4fc3f7")
+                t.append(f"  {desc}", style="#b0bcd0")
+                yield Static(t)
+            yield Static("")
+            yield Static(" Press ? or Esc to close", id="legend-close-hint")
+
+    def on_key(self, event: events.Key) -> None:
+        if event.key in ("question_mark", "escape"):
+            self.dismiss()
 
 
 # ── App ───────────────────────────────────────────────────────────
@@ -238,22 +248,17 @@ class HALOApp(App):
         color: #b0bcd0;
     }
 
+    /* ── Title bar ── */
     TitleBar {
         height: 1;
+        dock: top;
         content-align: center middle;
         background: #141d30;
         color: white;
         text-style: bold;
     }
 
-    FooterBar {
-        height: 1;
-        content-align: center middle;
-        background: #141d30;
-        color: #9e9e9e;
-        border-top: solid #263050;
-    }
-
+    /* ── Body ── */
     #body {
         height: 1fr;
     }
@@ -274,7 +279,8 @@ class HALOApp(App):
     TalkPanel,
     SystemPanel,
     EventsPanel,
-    PanicPanel {
+    PanicPanel,
+    HintsPanel {
         border: solid #263050;
         border-title-color: #4fc3f7;
         border-title-style: bold;
@@ -282,9 +288,11 @@ class HALOApp(App):
         height: auto;
     }
 
-    TalkPanel   { height: 1fr; min-height: 12; }
-    EventsPanel { height: 1fr; min-height: 8;  }
-    PanicPanel  { min-height: 8; }
+    PlannerPanel { min-height: 10; }
+    TalkPanel    { height: 1fr; min-height: 12; }
+    EventsPanel  { height: 1fr; min-height: 8;  }
+    PanicPanel   { min-height: 8; }
+    HintsPanel   { height: auto; }
 
     /* ── Talk to Planner internals ── */
     #talk-label {
@@ -344,14 +352,27 @@ class HALOApp(App):
         color: #8a8a8a;
     }
 
-    /* ── Legend ── */
-    LegendPanel {
-        border: solid #263050;
-        border-title-color: #4fc3f7;
-        border-title-style: bold;
-        padding: 0 1;
+    /* ── Legend modal ── */
+    LegendScreen {
+        align: center middle;
+    }
+
+    #legend-box {
+        width: 62;
         height: auto;
-        background: #0d1320;
+        background: #141d30;
+        border: solid #4fc3f7;
+        padding: 1 0;
+    }
+
+    #legend-heading {
+        color: #4fc3f7;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #legend-close-hint {
+        color: #8a8a8a;
     }
     """
 
@@ -359,12 +380,10 @@ class HALOApp(App):
         Binding("a", "emergency_abort", "ABORT", priority=True, show=False),
         Binding("enter", "send_message", "send", show=False),
         Binding("escape", "cancel_input", "cancel", show=False),
-        Binding("question_mark", "toggle_legend", "help", show=False),
+        Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
     def on_mount(self) -> None:
-        # Defer until after all widgets have mounted and Textual's auto-focus runs,
-        # then clear focus to start in monitoring mode.
         self.call_after_refresh(self.set_focus, None)
 
     def compose(self) -> ComposeResult:
@@ -380,8 +399,7 @@ class HALOApp(App):
                 yield SystemPanel()
                 yield EventsPanel()
                 yield PanicPanel()
-        yield LegendPanel(id="legend")
-        yield FooterBar()
+                yield HintsPanel()
 
     # ── Event handlers ──
 
@@ -410,16 +428,15 @@ class HALOApp(App):
         if msg:
             self.notify(f"→ Planner: {msg!r}", timeout=3)
             inp.value = ""
-        self.set_focus(None)  # return to monitoring mode after send
+        self.set_focus(None)
 
     def action_cancel_input(self) -> None:
         inp = self.query_one("#planner-input", Input)
         inp.value = ""
-        self.set_focus(None)  # return to monitoring mode on Esc
+        self.set_focus(None)
 
-    def action_toggle_legend(self) -> None:
-        legend = self.query_one("#legend", LegendPanel)
-        legend.display = not legend.display
+    def action_show_legend(self) -> None:
+        self.push_screen(LegendScreen())
 
 
 def main() -> None:
