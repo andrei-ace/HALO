@@ -363,7 +363,9 @@ class HALOApp(App):
     ]
 
     def on_mount(self) -> None:
-        self.set_focus(None)  # start in monitoring mode; user clicks input to type
+        # Defer until after all widgets have mounted and Textual's auto-focus runs,
+        # then clear focus to start in monitoring mode.
+        self.call_after_refresh(self.set_focus, None)
 
     def compose(self) -> ComposeResult:
         yield TitleBar()
