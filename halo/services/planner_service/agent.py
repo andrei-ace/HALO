@@ -6,7 +6,7 @@ from typing import Awaitable, Callable
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
-from langgraph.prebuilt import create_react_agent
+from langchain.agents import create_agent
 
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
@@ -45,7 +45,7 @@ class PlannerAgent:
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         tools = build_tools(self._ctx)
         llm = ChatOllama(model=model_name, base_url=base_url)
-        self._agent = create_react_agent(llm, tools)
+        self._agent = create_agent(llm, tools)
 
     async def decide(
         self,
