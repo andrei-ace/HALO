@@ -9,7 +9,7 @@ from halo.contracts.enums import ActStatus, PhaseId, SafetyReflexReason, SafetyS
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import ActInfo, SafetyInfo
 from halo.runtime.runtime import HALORuntime
-from halo.services.control_service.action_buffer import ActionBuffer
+from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
 from halo.services.control_service.config import ControlServiceConfig
 from halo.services.control_service.safety_guard import SafetyGuard
 
@@ -43,7 +43,7 @@ class ControlService:
         self._apply_fn = apply_fn
         self._config = config
 
-        self._buffer = ActionBuffer()
+        self._buffer = TemporalEnsemblingBuffer(temp=config.ensembling_temp)
         self._guard = SafetyGuard(config)
         self._lock = asyncio.Lock()
 

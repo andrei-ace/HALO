@@ -15,3 +15,5 @@ class ControlServiceConfig:
     max_gripper_delta: float = 1.0       # gripper can jump full range
 
     max_obs_age_ms: int = 200
+
+    ensembling_temp: float = 0.01   # temporal ensembling decay (0.0 = uniform weight)
