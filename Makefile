@@ -19,7 +19,7 @@ tui-mock:
 	uv run python -m halo.tui.app
 
 tui-live:
-	uv run --extra planner python -m halo.tui.app --live --arm arm0 --model llama3.2:3b --base-url http://localhost:11434
+	uv run --extra planner python -m halo.tui.app --live --arm arm0 --model gpt-oss --base-url http://localhost:11434
 
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
