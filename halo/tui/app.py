@@ -19,7 +19,6 @@ from rich.text import Text
 
 _DATA = dict(
     arm_id="arm0",
-    env="IsaacLab",
     goal="pick cube → bin",
     phase="PREGRASP_ALIGN",
     actions=[
@@ -27,7 +26,6 @@ _DATA = dict(
         ("14:32:09", "start_skill(place_into_bin) → cmd-7a21"),
         ("14:32:09", "cmd-7a21 accepted"),
     ],
-    note="Hold. Let runner trigger grasp. Watch for failures.",
     servos=[
         ("J1", "base_yaw",    "OK", 42, 0.35),
         ("J2", "shoulder",    "OK", 45, 0.55),
@@ -87,7 +85,7 @@ class PlannerPanel(Container):
 
     def compose(self) -> ComposeResult:
         t = Text()
-        t.append("Goal: ", style="bold white")
+        t.append("Goal:   ", style="bold white")
         t.append(_DATA["goal"])
         yield Static(t)
         t2 = Text()
@@ -107,14 +105,6 @@ class ActionsPanel(Container):
             t.append("  ")
             t.append(desc)
             yield Static(t)
-
-
-class NotePanel(Container):
-    def on_mount(self) -> None:
-        self.border_title = "Note"
-
-    def compose(self) -> ComposeResult:
-        yield Static(f" {_DATA['note']}")
 
 
 class ServosPanel(Container):
@@ -193,30 +183,29 @@ class PanicPanel(Container):
         yield Static("(Hold 'A' to stop immediately)", id="abort-hint")
 
 
-class HintsPanel(Container):
-    def on_mount(self) -> None:
-        self.border_title = "Keys"
-
-    def compose(self) -> ComposeResult:
-        for key, desc in (
-            ("?",     "toggle legend"),
-            ("A",     "emergency abort"),
-            ("Enter", "send message"),
-            ("Esc",   "cancel / clear"),
-            ("Ctrl+Q","quit"),
-        ):
-            t = Text()
-            t.append(f"[ {key} ]", style="bold #4fc3f7")
-            t.append(f"  {desc}", style="#9e9e9e")
-            yield Static(t)
-
-
-# ── Title bar ─────────────────────────────────────────────────────
+# ── Chrome ────────────────────────────────────────────────────────
 
 class TitleBar(Static):
     def render(self) -> Text:
         t = Text(justify="center")
         t.append(f"HALO  —  {_DATA['arm_id']}", style="bold white")
+        return t
+
+
+class HintBar(Static):
+    """Single-line keybinding hint that spans the full width."""
+    def render(self) -> Text:
+        t = Text(justify="center")
+        t.append("[ ? ] legend", style="#4fc3f7")
+        for key, desc in (
+            ("Enter", "send"),
+            ("Esc",   "cancel"),
+            ("A",     "abort"),
+            ("Ctrl+Q","quit"),
+        ):
+            t.append("  ·  ", style="#3a4060")
+            t.append(f"[ {key} ]", style="#4fc3f7")
+            t.append(f" {desc}", style="#9e9e9e")
         return t
 
 
@@ -248,7 +237,6 @@ class HALOApp(App):
         color: #b0bcd0;
     }
 
-    /* ── Title bar ── */
     TitleBar {
         height: 1;
         dock: top;
@@ -258,9 +246,22 @@ class HALOApp(App):
         text-style: bold;
     }
 
-    /* ── Body ── */
+    /* ── Body: vertical so HintBar gets exactly 1 row at the bottom ── */
     #body {
         height: 1fr;
+        layout: vertical;
+    }
+
+    #main-row {
+        height: 1fr;
+        layout: horizontal;
+    }
+
+    HintBar {
+        height: 1;
+        content-align: center middle;
+        background: #141d30;
+        border-top: solid #263050;
     }
 
     #left-col {
@@ -274,13 +275,11 @@ class HALOApp(App):
     /* ── Panel borders ── */
     PlannerPanel,
     ActionsPanel,
-    NotePanel,
     ServosPanel,
     TalkPanel,
     SystemPanel,
     EventsPanel,
-    PanicPanel,
-    HintsPanel {
+    PanicPanel {
         border: solid #263050;
         border-title-color: #4fc3f7;
         border-title-style: bold;
@@ -288,11 +287,9 @@ class HALOApp(App):
         height: auto;
     }
 
-    PlannerPanel { min-height: 10; }
-    TalkPanel    { height: 1fr; min-height: 12; }
-    EventsPanel  { height: 1fr; min-height: 8;  }
-    PanicPanel   { min-height: 8; }
-    HintsPanel   { height: auto; }
+    TalkPanel   { height: 1fr; min-height: 12; }
+    EventsPanel { height: 1fr; min-height: 8;  }
+    PanicPanel  { min-height: 8; }
 
     /* ── Talk to Planner internals ── */
     #talk-label {
@@ -388,18 +385,18 @@ class HALOApp(App):
 
     def compose(self) -> ComposeResult:
         yield TitleBar()
-        with Horizontal(id="body"):
-            with Vertical(id="left-col"):
-                yield PlannerPanel()
-                yield ActionsPanel()
-                yield NotePanel()
-                yield ServosPanel()
-                yield TalkPanel()
-            with Vertical(id="right-col"):
-                yield SystemPanel()
-                yield EventsPanel()
-                yield PanicPanel()
-                yield HintsPanel()
+        with Vertical(id="body"):
+            with Horizontal(id="main-row"):
+                with Vertical(id="left-col"):
+                    yield PlannerPanel()
+                    yield ActionsPanel()
+                    yield ServosPanel()
+                    yield TalkPanel()
+                with Vertical(id="right-col"):
+                    yield SystemPanel()
+                    yield EventsPanel()
+                    yield PanicPanel()
+            yield HintBar()
 
     # ── Event handlers ──
 
