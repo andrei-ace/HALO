@@ -47,7 +47,7 @@ This document is the **architecture reference** that complements the plan summar
 **ControlService (real-time loop; high-rate)**
 - Streams actions at 50–100Hz (or as required).
 - Applies smoothing + clamps + safety interlocks.
-- Never waits on LLM, VLM, or disk.
+- Never waits on LLM, VLM
 
 **Safety/Reflex (hard real-time-ish)**
 - Immediate stop/retract/open-gripper on unsafe conditions.
@@ -119,7 +119,7 @@ Planner issues commands **asynchronously**. Results appear in:
 - Wrist camera for ACT: as needed, ideally aligned to ACT rate
 - TargetPerceptionService fusion publish: **10–30 Hz** (tracking; fast loop budget ≤80–120ms, excludes VLM reacquire)
 - VLM reacquire: event-driven, low duty cycle
-- Planner snapshots: **2–10 Hz** + event-triggered
+- PlannerService: **event-driven** (tick on SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE) + **30 s watchdog** fallback. No fixed polling rate — decide_fn (LLM) is awaited before the next event is processed, so ticks are always serialized.
 
 ### 4.2 Action chunk buffering (receding horizon)
 - Predict horizon: ~200–500ms for moving targets

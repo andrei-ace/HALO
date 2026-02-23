@@ -123,7 +123,7 @@ Define and monitor explicit budgets early so tuning is measurable:
 - **Fast perception loop** (scene camera capture → tracker/depth fusion → fused target hint publish): initial target (e.g., **<80–120 ms**).
 - **Semantic VLM job** (grounding / reacquire / verify): **not** part of the fast-loop budget; runs async and may take ~0.5–5 s.
 - Wrist camera capture → ACT observation availability: target budget per control profile
-- Snapshot publication cadence (planner-grade): fixed rate (e.g., 2–10 Hz) + event-triggered updates
+- Planner tick cadence: **event-driven** (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE) + **30 s watchdog** fallback. No fixed rate — LLM decide_fn latency is non-deterministic so ticks are serialized (next tick only starts after decide_fn returns).
 - Planner reaction latency: best-effort only (not in the control path)
 - Phase-specific freshness thresholds (e.g., stricter in PREGRASP_ALIGN / GRASP_CLOSE than in TRANSIT)
 
