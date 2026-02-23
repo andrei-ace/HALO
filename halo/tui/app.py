@@ -102,7 +102,11 @@ _DATA = dict(
         ("ControlService",   "RUNNING",  "bright_green"),
         ("Safety",           "OK",       "yellow"),
     ],
-    target_info="Target: cube-1, distance: 9 cm, confidence: 86%",
+    target_info=[
+        ("Target",     "cube-1"),
+        ("Distance",   "9 cm"),
+        ("Confidence", "86%"),
+    ],
     events=[
         ("14:32:08", "PHASE_ENTER PREGRASP_ALIGN"),
         ("14:32:08", "PERCEPTION_RECOVERED"),
@@ -119,11 +123,23 @@ _EMPTY_DATA = dict(
     perc_confidence=None, perc_obs_age_ms=None, perc_failure=None, perc_hint_valid=None,
     ctrl_status=None, ctrl_safety=None, ctrl_reflex=None,
     ctrl_action_xyz=None, ctrl_gripper=None,
-    servos=[],
+    servos=[
+        ("J1", "base_yaw",    "NC", None, None),
+        ("J2", "shoulder",    "NC", None, None),
+        ("J3", "elbow",       "NC", None, None),
+        ("J4", "wrist_pitch", "NC", None, None),
+        ("J5", "wrist_yaw",   "NC", None, None),
+        ("J6", "wrist_roll",  "NC", None, None),
+    ],
     prompt_history=[],
     suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
-    services=[],
-    target_info="",
+    services=[
+        ("TargetPerception", "—", "#9e9e9e"),
+        ("SkillRunner",      "—", "#9e9e9e"),
+        ("ControlService",   "—", "#9e9e9e"),
+        ("Safety",           "—", "#9e9e9e"),
+    ],
+    target_info=[],
     events=[],
 )
 
@@ -173,6 +189,54 @@ def _format_cmd(cmd: object) -> str:
     return str(cmd.type)  # type: ignore[attr-defined]
 
 
+def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
+    """Return (service_rows, target_info_str) from a PlannerSnapshot."""
+    rows: list[tuple[str, str, str]] = []
+
+    perc = getattr(snap, "perception", None)
+    if perc is not None:
+        ts = getattr(perc, "tracking_status", None)
+        status = str(ts.value) if ts else "UNKNOWN"
+        color = ("bright_green" if status == "TRACKING"
+                 else "yellow" if status in ("RELOCALIZING", "REACQUIRING")
+                 else "red")
+        rows.append(("TargetPerception", status, color))
+
+    skill = getattr(snap, "skill", None)
+    if skill is not None:
+        phase = getattr(skill, "phase", None)
+        rows.append(("SkillRunner", phase.name if phase else "ACTIVE", "bright_green"))
+    else:
+        rows.append(("SkillRunner", "IDLE", "#9e9e9e"))
+
+    act = getattr(snap, "act", None)
+    if act is not None:
+        status = str(getattr(getattr(act, "status", None), "value", "UNKNOWN"))
+        color = "bright_green" if status == "RUNNING" else "yellow" if status == "BUFFER_LOW" else "#9e9e9e"
+        rows.append(("ControlService", status, color))
+
+    safety = getattr(snap, "safety", None)
+    if safety is not None:
+        state = str(getattr(getattr(safety, "state", None), "value", "UNKNOWN"))
+        reflex = getattr(safety, "reflex_active", False)
+        color = "red" if reflex or state == "FAULT" else "bright_green"
+        rows.append(("Safety", f"{state} (REFLEX)" if reflex else state, color))
+
+    target = getattr(snap, "target", None)
+    target_info: list[tuple[str, str]] = []
+    if target is not None:
+        handle = getattr(target, "handle", "")
+        dist_cm = int(getattr(target, "distance_m", 0) * 100)
+        conf = int(getattr(target, "confidence", 0) * 100)
+        target_info = [
+            ("Target",     handle or "—"),
+            ("Distance",   f"{dist_cm} cm"),
+            ("Confidence", f"{conf}%"),
+        ]
+
+    return rows, target_info
+
+
 # ── Panel widgets ─────────────────────────────────────────────────
 
 class PlannerPanel(Container):
@@ -184,50 +248,60 @@ class PlannerPanel(Container):
         self.border_title = "Skill Runner"
 
     def compose(self) -> ComposeResult:
-        if self._data["skill_name"] is None:
-            yield Static(Text("no active skill", style="#9e9e9e"))
-            return
+        no_data = self._data["skill_name"] is None
         # Skill + run id
         t = Text()
         t.append("Skill:    ", style="bold white")
-        t.append(self._data["skill_name"], style="bold #4fc3f7")
-        t.append(f"  {self._data['skill_run_id']}", style="#9e9e9e")
+        if no_data:
+            t.append("—", style="#9e9e9e")
+        else:
+            t.append(self._data["skill_name"], style="bold #4fc3f7")
+            t.append(f"  {self._data['skill_run_id']}", style="#9e9e9e")
         yield Static(t)
         # Phase
         t2 = Text()
         t2.append("Phase:    ", style="bold white")
-        t2.append(self._data["skill_phase"], style="bold white")
+        t2.append("—" if no_data else self._data["skill_phase"], style="#9e9e9e" if no_data else "bold white")
         yield Static(t2)
         # ACT buffer
-        buf = self._data["act_buffer_ms"]
-        low = self._data["act_buffer_low"]
-        buf_color = "yellow" if low else "bright_green"
         t3 = Text()
         t3.append("ACT:      ", style="bold white")
-        t3.append(self._data["act_status"], style=f"bold {buf_color}")
-        if buf is not None:
-            t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
-        if low:
-            t3.append("  !", style="bold yellow")
+        if no_data:
+            t3.append("—", style="#9e9e9e")
+        else:
+            buf = self._data["act_buffer_ms"]
+            low = self._data["act_buffer_low"]
+            buf_color = "yellow" if low else "bright_green"
+            t3.append(self._data["act_status"], style=f"bold {buf_color}")
+            if buf is not None:
+                t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
+            if low:
+                t3.append("  !", style="bold yellow")
         yield Static(t3)
         # Outcome
-        outcome = self._data["outcome_state"]
-        outcome_color = (
-            "bright_green" if outcome == "SUCCESS"
-            else "red" if outcome == "FAILURE"
-            else "#b0bcd0"
-        )
         t4 = Text()
         t4.append("Outcome:  ", style="bold white")
-        t4.append(outcome, style=f"bold {outcome_color}")
-        if self._data["outcome_reason"]:
-            t4.append(f"  ({self._data['outcome_reason']})", style="yellow")
+        if no_data:
+            t4.append("—", style="#9e9e9e")
+        else:
+            outcome = self._data["outcome_state"]
+            outcome_color = (
+                "bright_green" if outcome == "SUCCESS"
+                else "red" if outcome == "FAILURE"
+                else "#b0bcd0"
+            )
+            t4.append(outcome, style=f"bold {outcome_color}")
+            if self._data["outcome_reason"]:
+                t4.append(f"  ({self._data['outcome_reason']})", style="yellow")
         yield Static(t4)
         # Elapsed
-        elapsed_s = (self._data["elapsed_ms"] or 0) / 1000
         t5 = Text()
         t5.append("Elapsed:  ", style="bold white")
-        t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
+        if no_data:
+            t5.append("—", style="#9e9e9e")
+        else:
+            elapsed_s = (self._data["elapsed_ms"] or 0) / 1000
+            t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
         yield Static(t5)
 
 
@@ -240,47 +314,53 @@ class TargetPerceptionPanel(Container):
         self.border_title = "Target Perception"
 
     def compose(self) -> ComposeResult:
+        def row(label: str, value: str, value_style: str) -> Static:
+            t = Text()
+            t.append(f"{label:<12}", style="bold white")
+            t.append(value, style=value_style)
+            return Static(t)
+
         tracking = self._data["perc_tracking"]
-        if tracking is None:
-            yield Static(Text("no tracking data", style="#9e9e9e"))
-            return
-        track_color = (
-            "bright_green" if tracking == "TRACKING"
-            else "yellow" if tracking == "RELOCALIZING"
-            else "red"
-        )
-        t = Text()
-        t.append("Status:   ", style="bold white")
-        t.append(tracking, style=f"bold {track_color}")
-        hint_valid = self._data["perc_hint_valid"]
-        if hint_valid is False:
-            t.append("  invalid", style="bold red")
-        yield Static(t)
+        no_data = tracking is None
 
+        # Status
+        if no_data:
+            yield row("Status:", "—", "#9e9e9e")
+        else:
+            track_color = (
+                "bright_green" if tracking == "TRACKING"
+                else "yellow" if tracking == "RELOCALIZING"
+                else "red"
+            )
+            t = Text()
+            t.append(f"{'Status:':<12}", style="bold white")
+            t.append(tracking, style=f"bold {track_color}")
+            if self._data["perc_hint_valid"] is False:
+                t.append("  invalid", style="bold red")
+            yield Static(t)
+
+        # Target
         target = self._data["perc_target"]
-        t2 = Text()
-        t2.append("Target:   ", style="bold white")
-        t2.append(target or "—", style="#4fc3f7" if target else "#9e9e9e")
-        yield Static(t2)
+        yield row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e")
 
+        # Distance
         dist = self._data["perc_distance_m"]
-        conf = self._data["perc_confidence"]
-        t3 = Text()
-        t3.append("Distance: ", style="bold white")
-        t3.append(f"{dist * 100:.0f} cm" if dist is not None else "—", style="white")
-        t3.append("   Conf: ", style="bold white")
-        t3.append(f"{conf * 100:.0f}%" if conf is not None else "—", style="white")
-        yield Static(t3)
+        yield row("Distance:", f"{dist * 100:.0f} cm" if dist is not None else "—",
+                  "white" if dist is not None else "#9e9e9e")
 
+        # Confidence
+        conf = self._data["perc_confidence"]
+        yield row("Confidence:", f"{conf * 100:.0f}%" if conf is not None else "—",
+                  "white" if conf is not None else "#9e9e9e")
+
+        # Obs age
         age = self._data["perc_obs_age_ms"]
+        yield row("Obs age:", f"{age} ms" if age is not None else "—", "#9e9e9e")
+
+        # Failure code
         failure = self._data["perc_failure"]
-        t4 = Text()
-        t4.append("Obs age:  ", style="bold white")
-        t4.append(f"{age} ms" if age is not None else "—", style="#9e9e9e")
-        t4.append("   Code: ", style="bold white")
-        fail_color = "bright_green" if failure == "OK" else "yellow"
-        t4.append(failure or "—", style=fail_color)
-        yield Static(t4)
+        fail_color = "bright_green" if failure == "OK" else ("yellow" if failure else "#9e9e9e")
+        yield row("Code:", failure or "—", fail_color)
 
 
 class ControlServicePanel(Container):
@@ -333,13 +413,17 @@ class ServosPanel(Container):
         self.border_title = "Servos (6DOF)"
 
     def compose(self) -> ComposeResult:
-        for jid, name, _status, temp, load in self._data["servos"]:
+        for jid, name, status, temp, load in self._data["servos"]:
             t = Text(no_wrap=True)
             t.append(f"{jid} ", style="bold white")
             t.append(f"{name:<13}", style="white")
-            t.append("OK   ", style="bold bright_green")
-            t.append(f"{temp}°C  ", style="white")
-            t.append_text(_bar(load))
+            if status == "NC":
+                t.append("NC   ", style="#9e9e9e")
+                t.append("not connected", style="#9e9e9e")
+            else:
+                t.append(f"{status:<5}", style="bold bright_green")
+                t.append(f"{temp}°C  ", style="white")
+                t.append_text(_bar(load))
             yield Static(t)
 
 
@@ -385,15 +469,42 @@ class SystemPanel(Container):
     def on_mount(self) -> None:
         self.border_title = "System"
 
+    @staticmethod
+    def _service_row(name: str, status: str, color: str) -> Text:
+        t = Text()
+        t.append("● ", style=color)
+        t.append(f"{name:<16}  ", style="white")
+        t.append(status, style=f"bold {color}")
+        return t
+
+    _TARGET_LABELS = ("Target", "Distance", "Confidence")
+
+    @classmethod
+    def _target_rows(cls, target_info: list[tuple[str, str]]) -> list[Static]:
+        values = dict(target_info)
+        rows = []
+        for label in cls._TARGET_LABELS:
+            value = values.get(label)
+            t = Text()
+            t.append("  ")  # match "● " column
+            t.append(f"{label:<16}  ", style="bold white")
+            t.append(value if value else "—", style="white" if value else "#9e9e9e")
+            rows.append(Static(t))
+        return rows
+
     def compose(self) -> ComposeResult:
         for name, status, color in self._data["services"]:
-            t = Text()
-            t.append("● ", style=color)
-            t.append(f"{name}  ", style="white")
-            t.append(status, style=f"bold {color}")
-            yield Static(t)
-        yield Static("")
-        yield Static(self._data["target_info"])
+            yield Static(self._service_row(name, status, color))
+        for row in self._target_rows(self._data["target_info"]):
+            yield row
+
+    async def refresh_live(self, services: list[tuple[str, str, str]], target_info: list[tuple[str, str]]) -> None:
+        """Replace content with live service statuses."""
+        await self.query("Static").remove()
+        for name, status, color in services:
+            await self.mount(Static(self._service_row(name, status, color)))
+        for row in self._target_rows(target_info):
+            await self.mount(row)
 
 
 class EventsPanel(Container):
@@ -738,6 +849,8 @@ class HALOApp(App):
 
     def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
+        if self._runtime:
+            self.set_interval(2.0, self._poll_system_panel)
 
     def on_unmount(self) -> None:
         if self._run_logger:
@@ -753,10 +866,10 @@ class HALOApp(App):
                     yield TargetPerceptionPanel(data=d, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
                 with Vertical(id="right-col"):
-                    yield ControlServicePanel(data=d, id="control-panel")
-                    yield ServosPanel(data=d, id="servos-panel")
-                    yield EventsPanel(data=d, id="events-panel")
                     yield SystemPanel(data=d, id="system-panel")
+                    yield ServosPanel(data=d, id="servos-panel")
+                    yield ControlServicePanel(data=d, id="control-panel")
+                    yield EventsPanel(data=d, id="events-panel")
                     yield PanicPanel(id="panic-panel")
             yield HintBar()
 
@@ -843,6 +956,15 @@ class HALOApp(App):
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
     # ── Live workers ──
+
+    async def _poll_system_panel(self) -> None:
+        """Refresh SystemPanel with live service statuses every 2 s."""
+        try:
+            snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
+            services, target_info = _derive_services(snap)
+            await self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
+        except Exception:
+            pass
 
     async def _do_agent_call(self, msg: str) -> None:
         from datetime import datetime
