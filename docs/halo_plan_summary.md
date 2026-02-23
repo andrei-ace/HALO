@@ -233,6 +233,15 @@ Invalidate hints and trigger reacquire when:
 - depth-valid ratio below threshold
 - time skew / obs age too high
 
+### Implementation status (v0)
+The following are implemented:
+
+- **`TargetPerceptionService`** (`service.py`): fast-loop (10 Hz default) + async VLM reacquisition. Accepts injected `ObserveFn` (tracker) and optional `VlmFn` (scene analysis). At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when observe returns `None`.
+- **`vlm_parser.py`**: `VlmDetection`, `VlmScene`, `parse_vlm_response()` — typed parsing of VLM JSON output.
+- **`ollama_vlm_fn.py`**: `make_ollama_vlm_fn()` — factory returning async `VlmFn` backed by Ollama (`qwen2.5vl`). Images resized to 1024px width. Prompt loaded from `configs/perception/scene_analysis.md`.
+- **`mock_fns.py`**: `make_mock_observe_fn()`, `make_mock_vlm_fn()` — mock perception backed by `docs/data/mock/` JSON fixtures.
+- **VLM prompt** (`configs/perception/scene_analysis.md`): structured JSON output for object detection on table surface.
+
 ---
 
 ## 8) SkillRunner FSM (Pick) — phases decided locally
@@ -342,18 +351,18 @@ Track dataset stats continuously:
 
 ---
 
-## 11) Recommended implementation structure (processes/threads)
+## 11) Implementation structure (processes/threads)
 
-Suggested separation (processes if possible):
-- `planner_service` (LLM agent + tools)
-- `target_perception_service` (VLM+SAM+tracker+depth fusion)
-- `skill_runner_service` (FSM + ACT inference + chunk planner)
-- `control_service` (realtime executor + safety/reflex)
-- shared state store + event bus (queues, ROS2 topics, or similar)
+All services are implemented as async Python classes with dependency injection:
+- `PlannerService` (`halo/services/planner_service/service.py`) — LLM agent via LangGraph ReAct + 4 tools
+- `TargetPerceptionService` (`halo/services/target_perception_service/service.py`) — fast loop + async VLM
+- `SkillRunnerService` (`halo/services/skill_runner_service/service.py`) — FSM + ACT chunk scheduling
+- `ControlService` (`halo/services/control_service/service.py`) — real-time executor + safety/reflex
+- `HALORuntime` (`halo/runtime/runtime.py`) — owns `RuntimeStateStore`, `EventBus`, `CommandRouter`
 
 Planner reads snapshots and emits commands; no blocking in the motion loop.
 
-Implementation note: namespace runtime state, commands, snapshots, and events by `arm_id` from day one (even if v0 runs one arm).
+All state is namespaced by `arm_id` from day one (even if v0 runs one arm).
 
 ---
 
@@ -384,18 +393,26 @@ Planner-grade fields only:
 
 ---
 
-## 14) Next build steps (suggested order)
+## 14) Build steps
 
-1. Implement shared runtime state + event IDs + compact snapshot.
-2. Implement SkillRunner Pick FSM with deterministic phase transitions and fast success checks.
-3. Integrate ACT with chunk buffering + buffer trimming on phase switches.
-4. Integrate TargetPerceptionService in basic mode:
-   - scene VLM for target init
-   - tracker + depth → target hints
-   - plausibility gates
-5. Add verification path (WAIT_VERIFY) and fallback reacquire strategies.
-6. Add logging and episode capture for dataset.
-7. Iterate thresholds/profiles for moving targets (short horizons, strict freshness).
+### Completed (v0 backbone — 207 tests passing)
+
+1. ✅ Shared runtime state + event IDs + compact snapshot (`RuntimeStateStore`, `EventBus`, `CommandRouter`, `HALORuntime`).
+2. ✅ SkillRunner Pick FSM with deterministic phase transitions and fast success checks (`PickFSM`, `SkillRunnerService`).
+3. ✅ ControlService with TemporalEnsemblingBuffer, SafetyGuard, action clamping, hint freshness interlocks.
+4. ✅ TargetPerceptionService with mocked observe_fn + async VLM pipeline (VLM parser, Ollama VLM client, mock fns, VLM prompt).
+5. ✅ PlannerService (event-driven, 30 s watchdog) + PlannerAgent (LangGraph ReAct, 4 tools, snapshot middleware).
+6. ✅ TUI (mock + live modes) + RunLogger (JSONL session logs + VLM logging).
+7. ✅ Integration tests (Ollama-backed, auto-skip if unavailable).
+
+### Next steps
+
+1. Isaac Sim/Lab environment setup (pick-cube-place-bin task).
+2. Analytic teacher controller (IK + motion generation) for demo episode generation.
+3. Real observe_fn wired to tracker + depth fusion (replace mock).
+4. ACT model training pipeline (dataset schema, chunked imitation learning).
+5. Closed-loop evaluation with FSM orchestrator + ACT-predicted actions.
+6. Iterate thresholds/profiles for moving targets (short horizons, strict freshness).
 
 ## Isaac Sim/Lab-first bootstrapping for HALO: Teacher demos → ACT (teleop-aligned)
 

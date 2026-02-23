@@ -174,7 +174,36 @@ If `obs_age_ms` or `time_skew_ms` exceeds thresholds:
 6) **Hint publication**
    - Publish both base-frame pose and EE-relative deltas + confidence.
 
-### 6.2 Health/failure codes (stable enums)
+### 6.2 Implemented modules
+
+**`vlm_parser.py`** — Parse VLM JSON responses into typed dataclasses:
+- `VlmDetection` (frozen): `handle`, `label`, `bbox` (x1, y1, x2, y2), `centroid` (computed midpoint), `is_graspable`
+- `VlmScene` (frozen): `scene` (description string), `detections` (list)
+- `parse_vlm_response(response: dict) -> VlmScene`
+
+**`ollama_vlm_fn.py`** — Ollama VLM integration (async, scene camera only):
+- `make_ollama_vlm_fn(base_url, model, prompt_path, ...) -> VlmFn` — factory returning async fn
+- Input images resized to `_VLM_INPUT_WIDTH = 1024` for stable bbox coords
+- Prompt loaded from `configs/perception/scene_analysis.md`
+- `VlmFn = Callable[[str], Awaitable[VlmScene]]` — arm_id → scene analysis result
+
+**`mock_fns.py`** — Mock perception functions backed by `docs/data/mock/` JSON fixtures:
+- `make_mock_observe_fn(mock_dir) -> ObserveFn` — returns async fn for tracker simulation
+- `make_mock_vlm_fn(mock_dir) -> VlmFn` — returns async fn for VLM simulation (with simulated latency)
+
+**`service.py`** — TargetPerceptionService orchestrates the fast loop + async VLM:
+- Type aliases: `ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]`, `VlmFn = Callable[[str], Awaitable[VlmScene]]`
+- VLM is optional (`vlm_fn=None` disables async reacquisition)
+- At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`
+- VLM result publishes `VLM_RESULT` event and is logged via `RunLogger.log_vlm_result()`
+
+### 6.3 VLM prompt (`configs/perception/scene_analysis.md`)
+Structured prompt for Qwen2.5-VL:
+- Detect cubes, boxes, containers, balls, bottles, cups on the table surface
+- JSON output: `{"scene":"...","detections":[{"handle":"...","label":"...","bounding_box":[x1,y1,x2,y2],"is_graspable":bool}]}`
+- `handle` format: `<type>-<N>` (e.g., `cube-1`, `box-2`)
+
+### 6.4 Health/failure codes (stable enums)
 - `OCCLUDED`
 - `OUT_OF_VIEW`
 - `DEPTH_INVALID`
@@ -184,7 +213,7 @@ If `obs_age_ms` or `time_skew_ms` exceeds thresholds:
 - `REACQUIRE_FAILED`
 - `OK`
 
-### 6.3 What the planner can request
+### 6.5 What the planner can request
 - `set_tracking_target(...)`
 - `request_refresh(mode, reason)` (rare)
 
@@ -404,35 +433,73 @@ Keep it **off** the steady-state planner loop.
 
 ---
 
-## 13) Recommended repo structure (code-oriented)
+## 13) Repo structure (actual)
 
 ```
 halo/
   contracts/
+    enums.py            # all enums (PhaseId, SafetyReflexReason, ActStatus, etc.)
+    snapshots.py        # PlannerSnapshot, TargetInfo, ActInfo, SafetyInfo, etc.
+    commands.py         # CommandEnvelope, CommandAck, payload types
+    events.py           # EventEnvelope, EventType
+    actions.py          # Action, ActionChunk, ZERO_ACTION
+    enums.json          # JSON schema
     commands.json
-    snapshot.json
     events.json
-    enums.md
+    snapshot.json
+  runtime/
+    runtime.py          # HALORuntime (register_arm, get_latest_runtime_snapshot, submit_command)
+    state_store.py      # RuntimeStateStore (per-arm state, snapshot caching)
+    event_bus.py        # EventBus (subscribe/unsubscribe/publish/get_recent_events)
+    command_router.py   # CommandRouter (idempotency + precondition + skill-run validation)
   services/
     planner_service/
+      config.py               # PlannerServiceConfig (watchdog_interval_s, max_commands_per_tick)
+      snapshot_serializer.py  # snapshot_to_dict() — PlannerSnapshot → plain dict for LLM
+      tools.py                # AgentContext, build_tools() — 4 LangChain @tool functions
+      agent.py                # PlannerAgent, make_decide_fn() — LangGraph ReAct agent
+      service.py              # PlannerService (event-driven loop, 30 s watchdog)
     target_perception_service/
+      config.py           # TargetPerceptionServiceConfig
+      service.py          # TargetPerceptionService (fast loop + async VLM)
+      vlm_parser.py       # VlmDetection, VlmScene, parse_vlm_response()
+      ollama_vlm_fn.py    # make_ollama_vlm_fn() — Ollama VLM client factory
+      mock_fns.py         # make_mock_observe_fn(), make_mock_vlm_fn() — mock perception
     skill_runner_service/
+      config.py           # SkillRunnerConfig
+      fsm.py              # PickFSM (pure synchronous state machine)
+      service.py          # SkillRunnerService
     control_service/
-    logger_service/
-  models/
-    act/
-    vlm/
+      config.py           # ControlServiceConfig
+      action_buffer.py    # ActionBuffer (legacy, kept for compatibility)
+      te_buffer.py        # TemporalEnsemblingBuffer (production blending)
+      safety_guard.py     # SafetyGuard (check, clamp, hint_freshness)
+      service.py          # ControlService (50–100 Hz loop)
+  tui/
+    app.py              # Textual TUI — mock + live modes
+    run_logger.py       # RunLogger: writes JSONL session logs to runs/
+  models/               # (planned) act/, vlm/
   configs/
-    calib/
-    skills/
-    safety/
-  tools/
-    ollama_clients/
-    zed_capture/
-    uvc_capture/
-  eval/
-    sim/
-    real/
+    planner/
+      system_prompt.md        # core agent instructions
+      skills/pick.md          # PICK skill reference for planner
+      skills/place.md         # PLACE skill reference for planner
+    perception/
+      scene_analysis.md       # VLM prompt for qwen2.5vl
+    calib/                    # (planned)
+    skills/                   # (planned)
+    safety/                   # (planned)
+  tools/                      # (planned) ollama_clients/, zed_capture/, uvc_capture/
+  eval/                       # (planned) sim/, real/
+docs/
+  halo_architecture.md        # this file
+  halo_plan_summary.md        # project plan + Isaac Lab strategy
+  data/mock/                  # mock data: observe_fn_result.json, vlm_response.json, perception_info.json, mock.png
+tests/                        # 207 unit tests (14 test modules)
+integration/                  # LLM integration tests (require Ollama)
+  conftest.py                 # Ollama health-check; auto-skip if model unavailable
+  runs/                       # timestamped result folders
+runs/                         # live TUI session logs (JSONL, git-ignored)
 ```
 
 ---
