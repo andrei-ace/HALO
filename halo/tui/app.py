@@ -348,9 +348,11 @@ class HALOApp(App):
         height: auto;
     }
 
-    TalkPanel   { height: 1fr; min-height: 12; }
-    EventsPanel { height: 1fr; min-height: 8;  }
-    PanicPanel  { min-height: 8; }
+    PlannerPanel { height: 1fr; min-height: 9;  }
+    ActionsPanel { height: 1fr; min-height: 8;  }
+    TalkPanel    { height: 2fr; min-height: 14; }
+    EventsPanel  { height: 1fr; min-height: 8;  }
+    PanicPanel   { min-height: 8; }
 
     /* ── Talk to Planner internals ── */
     #prompt-history {
@@ -365,14 +367,10 @@ class HALOApp(App):
     }
 
     #planner-input {
-        height: 1;
         margin: 0;
         background: #111827;
         color: white;
-        border: none;
-        border-top: solid #263050;
-        border-bottom: solid #263050;
-        padding: 0 1;
+        border: tall #3a4060;
     }
 
     #sugg-row-1, #sugg-row-2 {
@@ -461,10 +459,10 @@ class HALOApp(App):
                 with Vertical(id="left-col"):
                     yield PlannerPanel()
                     yield ActionsPanel()
-                    yield ServosPanel()
                     yield TalkPanel()
                 with Vertical(id="right-col"):
                     yield SystemPanel()
+                    yield ServosPanel()
                     yield EventsPanel()
                     yield PanicPanel()
             yield HintBar()
