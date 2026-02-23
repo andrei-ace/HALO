@@ -8,12 +8,18 @@ Run with:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 from rich.text import Text
+
+from halo.tui.run_logger import RunLogger
+
+_RUNS_DIR = Path(__file__).parents[2] / "runs"
 
 
 # ── Static fixtures ───────────────────────────────────────────────
@@ -72,6 +78,20 @@ _DATA = dict(
     ],
 )
 
+_EMPTY_DATA = dict(
+    arm_id="arm0",
+    skill_name="—", skill_run_id="—", skill_phase="—",
+    act_status="—", act_buffer_ms=0, act_buffer_low=False,
+    outcome_state="—", outcome_reason=None, elapsed_ms=0,
+    actions=[],
+    servos=[],
+    prompt_history=[],
+    suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
+    services=[],
+    target_info="",
+    events=[],
+)
+
 _LEGEND = [
     ("Tab / Shift+Tab", "Navigate between input and buttons"),
     ("T",               "Focus the message input directly"),
@@ -119,6 +139,10 @@ def _format_cmd(cmd: object) -> str:
 # ── Panel widgets ─────────────────────────────────────────────────
 
 class PlannerPanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
     def on_mount(self) -> None:
         self.border_title = "Skill Runner"
 
@@ -126,27 +150,27 @@ class PlannerPanel(Container):
         # Skill + run id
         t = Text()
         t.append("Skill:    ", style="bold white")
-        t.append(_DATA["skill_name"], style="bold #4fc3f7")
-        t.append(f"  {_DATA['skill_run_id']}", style="#9e9e9e")
+        t.append(self._data["skill_name"], style="bold #4fc3f7")
+        t.append(f"  {self._data['skill_run_id']}", style="#9e9e9e")
         yield Static(t)
         # Phase
         t2 = Text()
         t2.append("Phase:    ", style="bold white")
-        t2.append(_DATA["skill_phase"], style="bold white")
+        t2.append(self._data["skill_phase"], style="bold white")
         yield Static(t2)
         # ACT buffer
-        buf = _DATA["act_buffer_ms"]
-        low = _DATA["act_buffer_low"]
+        buf = self._data["act_buffer_ms"]
+        low = self._data["act_buffer_low"]
         buf_color = "yellow" if low else "bright_green"
         t3 = Text()
         t3.append("ACT:      ", style="bold white")
-        t3.append(_DATA["act_status"], style=f"bold {buf_color}")
+        t3.append(self._data["act_status"], style=f"bold {buf_color}")
         t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
         if low:
             t3.append("  !", style="bold yellow")
         yield Static(t3)
         # Outcome
-        outcome = _DATA["outcome_state"]
+        outcome = self._data["outcome_state"]
         outcome_color = (
             "bright_green" if outcome == "SUCCESS"
             else "red" if outcome == "FAILURE"
@@ -155,11 +179,11 @@ class PlannerPanel(Container):
         t4 = Text()
         t4.append("Outcome:  ", style="bold white")
         t4.append(outcome, style=f"bold {outcome_color}")
-        if _DATA["outcome_reason"]:
-            t4.append(f"  ({_DATA['outcome_reason']})", style="yellow")
+        if self._data["outcome_reason"]:
+            t4.append(f"  ({self._data['outcome_reason']})", style="yellow")
         yield Static(t4)
         # Elapsed
-        elapsed_s = _DATA["elapsed_ms"] / 1000
+        elapsed_s = self._data["elapsed_ms"] / 1000
         t5 = Text()
         t5.append("Elapsed:  ", style="bold white")
         t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
@@ -167,11 +191,15 @@ class PlannerPanel(Container):
 
 
 class ActionsPanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
     def on_mount(self) -> None:
         self.border_title = "Planner Actions"
 
     def compose(self) -> ComposeResult:
-        for ts, desc, kind, cmd_id in _DATA["actions"]:
+        for ts, desc, kind, cmd_id in self._data["actions"]:
             t = Text()
             t.append(ts, style="grey62")
             t.append("  ")
@@ -203,11 +231,15 @@ class ActionsPanel(Container):
 
 
 class ServosPanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
     def on_mount(self) -> None:
         self.border_title = "Servos (6DOF)"
 
     def compose(self) -> ComposeResult:
-        for jid, name, _status, temp, load in _DATA["servos"]:
+        for jid, name, _status, temp, load in self._data["servos"]:
             t = Text(no_wrap=True)
             t.append(f"{jid} ", style="bold white")
             t.append(f"{name:<13}", style="white")
@@ -218,6 +250,10 @@ class ServosPanel(Container):
 
 
 class TalkPanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
     def on_mount(self) -> None:
         self.border_title = "Talk to Planner"
         # scroll history to bottom after layout settles
@@ -227,14 +263,14 @@ class TalkPanel(Container):
 
     def compose(self) -> ComposeResult:
         with VerticalScroll(id="prompt-history"):
-            for ts, msg in _DATA["prompt_history"]:
+            for ts, msg in self._data["prompt_history"]:
                 t = Text()
                 t.append(ts, style="grey62")
                 t.append("  ")
                 t.append(msg, style="#b0bcd0")
                 yield Static(t, classes="history-item")
         yield Input(placeholder="Type a command…", id="planner-input")
-        sugg = _DATA["suggestions"]
+        sugg = self._data["suggestions"]
         yield Horizontal(
             Button(f"▶ {sugg[0]}", name=sugg[0], classes="suggestion"),
             Button(f"▶ {sugg[1]}", name=sugg[1], classes="suggestion"),
@@ -248,26 +284,34 @@ class TalkPanel(Container):
 
 
 class SystemPanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
     def on_mount(self) -> None:
         self.border_title = "System"
 
     def compose(self) -> ComposeResult:
-        for name, status, color in _DATA["services"]:
+        for name, status, color in self._data["services"]:
             t = Text()
             t.append("● ", style=color)
             t.append(f"{name}  ", style="white")
             t.append(status, style=f"bold {color}")
             yield Static(t)
         yield Static("")
-        yield Static(_DATA["target_info"])
+        yield Static(self._data["target_info"])
 
 
 class EventsPanel(Container):
+    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._data = data
+
     def on_mount(self) -> None:
         self.border_title = "Events"
 
     def compose(self) -> ComposeResult:
-        for ts, desc in _DATA["events"]:
+        for ts, desc in self._data["events"]:
             t = Text()
             t.append(ts, style="grey62")
             t.append("  ")
@@ -288,9 +332,13 @@ class PanicPanel(Container):
 # ── Chrome ────────────────────────────────────────────────────────
 
 class TitleBar(Static):
+    def __init__(self, arm_id: str = _DATA["arm_id"], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._arm_id = arm_id
+
     def render(self) -> Text:
         t = Text(justify="center")
-        t.append(f"HALO  —  {_DATA['arm_id']}", style="bold white")
+        t.append(f"HALO  —  {self._arm_id}", style="bold white")
         return t
 
 
@@ -514,22 +562,31 @@ class HALOApp(App):
         self._runtime = runtime
         self._agent = agent
         self._arm_id = arm_id
+        self._panel_data = (
+            {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
+        )
+        self._run_logger = RunLogger(_RUNS_DIR, arm_id) if runtime is not None else None
 
     def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
 
+    def on_unmount(self) -> None:
+        if self._run_logger:
+            self._run_logger.close()
+
     def compose(self) -> ComposeResult:
-        yield TitleBar()
+        d = self._panel_data
+        yield TitleBar(arm_id=d["arm_id"])
         with Vertical(id="body"):
             with Horizontal(id="main-row"):
                 with Vertical(id="left-col"):
-                    yield PlannerPanel(id="planner-panel")
-                    yield ActionsPanel(id="actions-panel")
-                    yield TalkPanel(id="talk-panel")
+                    yield PlannerPanel(data=d, id="planner-panel")
+                    yield ActionsPanel(data=d, id="actions-panel")
+                    yield TalkPanel(data=d, id="talk-panel")
                 with Vertical(id="right-col"):
-                    yield SystemPanel(id="system-panel")
-                    yield ServosPanel(id="servos-panel")
-                    yield EventsPanel(id="events-panel")
+                    yield SystemPanel(data=d, id="system-panel")
+                    yield ServosPanel(data=d, id="servos-panel")
+                    yield EventsPanel(data=d, id="events-panel")
                     yield PanicPanel(id="panic-panel")
             yield HintBar()
 
@@ -620,6 +677,7 @@ class HALOApp(App):
         history.scroll_end(animate=False)
 
         try:
+            from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
             commands = await self._agent.decide(snap, operator_cmd=msg)  # type: ignore[union-attr]
 
@@ -628,6 +686,16 @@ class HALOApp(App):
             for cmd in commands:
                 ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
                 acks.append((cmd, ack))
+
+            # Log interaction
+            if self._run_logger:
+                self._run_logger.log_interaction(
+                    arm_id=self._arm_id,
+                    operator_msg=msg,
+                    snapshot=snapshot_to_dict(snap),
+                    commands=[{"id": c.command_id, "str": _format_cmd(c)} for c, _ in acks],
+                    acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
+                )
 
             # Update thinking widget
             result_text = Text()
@@ -650,6 +718,15 @@ class HALOApp(App):
                 actions_panel.append_ack(cmd_ts, ack.status.value, short_id)
 
         except Exception as exc:
+            if self._run_logger:
+                self._run_logger.log_interaction(
+                    arm_id=self._arm_id,
+                    operator_msg=msg,
+                    snapshot=None,
+                    commands=[],
+                    acks=[],
+                    error=str(exc),
+                )
             err_text = Text()
             err_text.append(ts, style="grey62")
             err_text.append("  ")
