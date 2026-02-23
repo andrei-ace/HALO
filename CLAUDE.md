@@ -9,48 +9,66 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv sync --extra dev   # install + dev deps (first time or after pyproject.toml changes)
-uv run pytest         # run all tests
-uv run pytest tests/test_contracts.py   # run a single test file
-uv run pytest -k test_snapshot_ids_increment  # run a single test by name
+uv sync --extra dev                   # install + dev deps (first time or after pyproject.toml changes)
+uv run python -m pytest               # run all tests
+uv run python -m pytest tests/test_contracts.py   # run a single test file
+uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
+
+make tui          # launch TUI in mock mode (no Ollama needed)
+make tui-live     # launch TUI wired to HALORuntime + PlannerAgent (requires Ollama)
 ```
+
+**Note:** `uv run pytest` fails if `uv sync --extra dev` hasn't been run yet; use `uv run python -m pytest` to be safe.
+
+## Implementation Status
+
+All v0 backbone services are implemented and tested (206 tests passing):
+
+| Layer | Status | Tests |
+|---|---|---|
+| contracts (enums, snapshots, commands, events, actions) | ✅ done | — |
+| runtime (RuntimeStateStore, EventBus, CommandRouter, HALORuntime) | ✅ done | — |
+| ControlService + TemporalEnsemblingBuffer + SafetyGuard | ✅ done | 104 |
+| SkillRunnerService + PickFSM | ✅ done | 143 |
+| PlannerService | ✅ done | 177 |
+| TargetPerceptionService (mocked observe_fn) | ✅ done | 192 |
+| PlannerAgent (LangGraph ReAct + tools) | ✅ done | 206 |
+| TUI (`halo/tui/app.py`) | ✅ done | — |
+
+The TUI supports two modes:
+- **Mock mode** (`make tui`): static fixture data, no services needed.
+- **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel.
 
 ## Project Overview
 
 HALO is a robotic manipulation system. **v1 runs entirely in Isaac Sim/Lab** (no hardware required). Real SO-ARM101 arm support is a later phase. The core design principle is **continuous control decoupled from LLM reasoning**: the robot never pauses motion waiting for the planner. Perception and control are machine-to-machine; numeric control hints never flow through LLM context.
 
-## Repository Structure (planned)
+## Repository Structure
 
-The repo is in early development. See `docs/` for the full architecture and plan:
-- `docs/halo_architecture.md` — module boundaries, runtime contracts, dataflows, timing, and code-facing interfaces
-- `docs/halo_plan_summary.md` — project plan including Isaac Lab sim-to-real bootstrapping strategy
-
-Planned layout (from architecture spec):
 ```
 halo/
-  contracts/        # JSON schemas (enums.json, commands.json, snapshot.json, events.json)
-                    # + Python dataclasses/enums mirroring those schemas
-  runtime/          # RuntimeStateStore, EventBus, CommandRouter, HALORuntime
+  contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
+  runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
   services/
-    planner_service/           # LLM agent + tool adapter
-    target_perception_service/ # VLM + SAM/Tracker + depth fusion
-    skill_runner_service/      # FSM + ACT inference + chunk scheduling
-    control_service/           # Real-time executor + safety/reflex
-    logger_service/            # Episode capture + dataset writer
-  models/
-    act/            # Action Chunking Transformer policy
-    vlm/            # Vision-language model (Ollama: qwen3-vl:30B)
+    control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
+    skill_runner_service/      # config.py, fsm.py, service.py
+    planner_service/           # config.py, snapshot_serializer.py, tools.py, agent.py, service.py
+    target_perception_service/ # config.py, service.py
+  tui/
+    app.py          # Textual TUI — mock + live modes
+  models/           # (planned) act/, vlm/
   configs/
-    calib/          # Camera and kinematic calibration
-    skills/         # Per-skill FSM profiles and thresholds
-    safety/         # Safety guard parameters
-  tools/
-    ollama_clients/
-    zed_capture/    # ZED X scene camera
-    uvc_capture/    # Wrist UVC camera
-  eval/
-    sim/            # Isaac Lab evaluation
-    real/           # Real hardware evaluation
+    planner/        # system_prompt.md, skills/pick.md, skills/place.md
+    calib/          # (planned)
+    skills/         # (planned)
+    safety/         # (planned)
+  tools/            # (planned) ollama_clients/, zed_capture/, uvc_capture/
+  eval/             # (planned) sim/, real/
+docs/
+  halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
+  halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
+tests/
+integration/        # LLM integration tests (require Ollama)
 ```
 
 ## Architecture
