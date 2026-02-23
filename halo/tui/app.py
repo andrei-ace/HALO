@@ -9,7 +9,7 @@ from __future__ import annotations
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
 from rich.text import Text
@@ -29,10 +29,12 @@ _DATA = dict(
     outcome_state="IN_PROGRESS",
     outcome_reason=None,
     elapsed_ms=3200,
+    # Planner commands issued + acks (command_id abbreviated to last 4 chars)
     actions=[
-        ("14:32:09", "snapshot → snap-1843"),
-        ("14:32:09", "start_skill(place_into_bin) → cmd-7a21"),
-        ("14:32:09", "cmd-7a21 accepted"),
+        ("14:32:09", "START_SKILL(pick, cube-1)",          "cmd", "7a21"),
+        ("14:32:09", "ACCEPTED",                            "ack", "7a21"),
+        ("14:32:01", "REQUEST_PERCEPTION_REFRESH(fast)",   "cmd", "7a20"),
+        ("14:32:01", "ACCEPTED",                            "ack", "7a20"),
     ],
     servos=[
         ("J1", "base_yaw",    "OK", 42, 0.35),
@@ -41,6 +43,12 @@ _DATA = dict(
         ("J4", "wrist_pitch", "OK", 44, 0.50),
         ("J5", "wrist_yaw",   "OK", 42, 0.25),
         ("J6", "wrist_roll",  "OK", 41, 0.30),
+    ],
+    # Prompt history — shown newest-at-bottom inside the Talk panel
+    prompt_history=[
+        ("14:31:44", "What objects are visible on the table?"),
+        ("14:31:50", "Retry the grasp once."),
+        ("14:32:05", "Use cube-2 instead, then continue with the bin."),
     ],
     # Row-major order: [top-left, top-right, bottom-left, bottom-right]
     suggestions=[
@@ -137,14 +145,20 @@ class PlannerPanel(Container):
 
 class ActionsPanel(Container):
     def on_mount(self) -> None:
-        self.border_title = "Latest actions"
+        self.border_title = "Planner Actions"
 
     def compose(self) -> ComposeResult:
-        for ts, desc in _DATA["actions"]:
+        for ts, desc, kind, cmd_id in _DATA["actions"]:
             t = Text()
             t.append(ts, style="grey62")
             t.append("  ")
-            t.append(desc)
+            if kind == "cmd":
+                t.append(desc, style="white")
+                t.append(f"  →{cmd_id}", style="#4fc3f7")
+            else:  # ack
+                color = "bright_green" if desc == "ACCEPTED" else "red"
+                t.append(f"  {cmd_id} ", style="#4fc3f7")
+                t.append(desc, style=f"bold {color}")
             yield Static(t)
 
 
@@ -166,13 +180,20 @@ class ServosPanel(Container):
 class TalkPanel(Container):
     def on_mount(self) -> None:
         self.border_title = "Talk to Planner"
+        # scroll history to bottom after layout settles
+        self.call_after_refresh(
+            lambda: self.query_one("#prompt-history", VerticalScroll).scroll_end(animate=False)
+        )
 
     def compose(self) -> ComposeResult:
-        yield Static("What would you like the robot to do?", id="talk-label")
-        yield Input(
-            value="Use cube-2 instead, then continue with the bin.",
-            id="planner-input",
-        )
+        with VerticalScroll(id="prompt-history"):
+            for ts, msg in _DATA["prompt_history"]:
+                t = Text()
+                t.append(ts, style="grey62")
+                t.append("  ")
+                t.append(msg, style="#b0bcd0")
+                yield Static(t, classes="history-item")
+        yield Input(placeholder="Type a command…", id="planner-input")
         sugg = _DATA["suggestions"]
         yield Horizontal(
             Button(f"▶ {sugg[0]}", name=sugg[0], classes="suggestion"),
@@ -332,16 +353,26 @@ class HALOApp(App):
     PanicPanel  { min-height: 8; }
 
     /* ── Talk to Planner internals ── */
-    #talk-label {
-        color: #bdbdbd;
-        margin-bottom: 1;
+    #prompt-history {
+        height: 1fr;
+        min-height: 3;
+        border-bottom: solid #263050;
+        padding: 0 0;
+    }
+
+    .history-item {
+        padding: 0;
     }
 
     #planner-input {
-        margin-bottom: 1;
+        height: 1;
+        margin: 0;
         background: #111827;
         color: white;
-        border: tall #3a4060;
+        border: none;
+        border-top: solid #263050;
+        border-bottom: solid #263050;
+        padding: 0 1;
     }
 
     #sugg-row-1, #sugg-row-2 {
@@ -460,11 +491,21 @@ class HALOApp(App):
         self.notify("EMERGENCY STOP triggered!", severity="error", timeout=5)
 
     def action_send_message(self) -> None:
+        from datetime import datetime
         inp = self.query_one("#planner-input", Input)
         msg = inp.value.strip()
         if msg:
             self.notify(f"→ Planner: {msg!r}", timeout=3)
             inp.value = ""
+            # append to history
+            ts = datetime.now().strftime("%H:%M:%S")
+            t = Text()
+            t.append(ts, style="grey62")
+            t.append("  ")
+            t.append(msg, style="#b0bcd0")
+            history = self.query_one("#prompt-history", VerticalScroll)
+            history.mount(Static(t, classes="history-item"))
+            history.scroll_end(animate=False)
         self.set_focus(None)
 
     def action_cancel_input(self) -> None:
@@ -473,7 +514,7 @@ class HALOApp(App):
         self.set_focus(None)
 
     def action_show_legend(self) -> None:
-        self.push_screen(LegendScreen())
+        self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
 
 def _take_screenshot(path: str = "halo_tui.svg") -> None:
