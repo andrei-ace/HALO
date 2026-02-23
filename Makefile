@@ -16,7 +16,12 @@ test-k:
 	uv run pytest -k "$(K)"
 
 test-integration:
-	uv run pytest integration/ -v -s
+	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
+	mkdir -p $(RUN_DIR)
+	uv run pytest integration/ -v -s \
+		--tb=short \
+		--junit-xml=$(RUN_DIR)/results.xml \
+		2>&1 | tee $(RUN_DIR)/output.log
 
 help:
 	@echo "install    install deps (uv sync --extra dev)"
