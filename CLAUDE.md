@@ -44,9 +44,7 @@ The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
 - **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` (via `halo/tui/run_logger.py`).
 
-To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot halo_tui.svg`
-
-![HALO TUI](halo_tui.svg)
+To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot runs/halo_tui.svg`
 
 ## Project Overview
 

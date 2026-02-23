@@ -19,7 +19,7 @@ build/
 .coverage
 htmlcov/
 integration/runs/
-runs/*.jsonl
+runs/
 
 
 # editors
