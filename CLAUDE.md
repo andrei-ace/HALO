@@ -55,7 +55,7 @@ halo/
 
 | Service | Rate | Owns |
 |---|---|---|
-| **PlannerService** | 2–10 Hz (+ event-triggered) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss:20B` via Ollama. |
+| **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss:20B` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
 | **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen3-vl:30B` via Ollama (scene camera only). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion. |
 | **SkillRunnerService** | 10–20 Hz (ACT inference) | Pick FSM, phase transitions, ACT chunk buffering, buffer trimming on phase switch, fast success/failure checks. |
 | **ControlService** | 50–100 Hz | Real-time action streaming, smoothing, clamps (vel/acc/jerk), safety interlocks. Never waits on LLM or VLM. |
