@@ -38,6 +38,8 @@ internals — those are handled by other subsystems automatically.
 | `safety.reflex_active` | True when a safety reflex is active |
 | `safety.state` | OK or FAULT |
 | `recent_events` | Small ring of notable events since the last tick |
+| `recent_events[].data.detections` | When a SCENE_DESCRIBED event is present: list of detected objects with `handle` and `label` |
+| `recent_events[].data.scene` | When a SCENE_DESCRIBED event is present: natural-language scene description |
 
 ## Safety rules (non-negotiable)
 
@@ -56,6 +58,20 @@ internals — those are handled by other subsystems automatically.
 - If perception has failed to reacquire the target 3 or more times in a row
   (`reacquire_fail_count >= 3`), stop and wait — do not keep requesting
   refreshes.
+
+## Using scene descriptions
+
+When you call `describe_scene`, the VLM runs asynchronously and fires a
+`SCENE_DESCRIBED` event. On your next tick you will see it in `recent_events`
+with:
+- `data.scene` — a natural-language description of the workspace
+- `data.detections` — a list of objects, each with `handle` (e.g. "cube-1")
+  and `label`
+- `data.count` — number of detected objects
+
+Use the `handle` from detections as the `target_handle` when calling
+`start_skill`. If the operator asks "what do you see?" or "describe the scene",
+call `describe_scene` and report the results on the next tick.
 
 ## Operator commands
 

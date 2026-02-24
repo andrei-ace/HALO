@@ -1138,18 +1138,30 @@ class HALOApp(App):
             pass
 
     async def _listen_events(self) -> None:
-        """Forward EventBus events to EventsPanel in real time."""
+        """Forward EventBus events to EventsPanel and trigger agent on scene results."""
         import asyncio
+        from halo.contracts.events import EventType
 
         events_panel = self.query_one("#events-panel", EventsPanel)
         try:
             while True:
                 evt = await self._event_queue.get()  # type: ignore[union-attr]
                 events_panel.append_event(evt)
+                if evt.type == EventType.SCENE_DESCRIBED and self._agent:
+                    count = evt.data.get("count", "?")
+                    scene = evt.data.get("scene", "")
+                    snippet = (scene[:120] + "…") if len(scene) > 120 else scene
+                    self.run_worker(
+                        self._do_agent_call(
+                            f"[scene update] VLM described {count} object(s): {snippet}"
+                        ),
+                        group="planner",
+                        exclusive=True,
+                    )
         except asyncio.CancelledError:
             pass
 
-    async def _do_agent_call(self, msg: str) -> None:
+    async def _do_agent_call(self, msg: str | None) -> None:
         from datetime import datetime
 
         ts = datetime.now().strftime("%H:%M:%S")
