@@ -453,29 +453,33 @@ halo/
     state_store.py      # RuntimeStateStore (per-arm state, snapshot caching)
     event_bus.py        # EventBus (subscribe/unsubscribe/publish/get_recent_events)
     command_router.py   # CommandRouter (idempotency + precondition + skill-run validation)
-  services/
+  services/                        # each service has its own CLAUDE.md with detailed docs
     planner_service/
-      config.py               # PlannerServiceConfig (watchdog_interval_s, max_commands_per_tick)
-      snapshot_serializer.py  # snapshot_to_dict() — PlannerSnapshot → plain dict for LLM
-      tools.py                # AgentContext, build_tools() — 4 LangChain @tool functions
-      agent.py                # PlannerAgent, make_decide_fn() — LangGraph ReAct agent
-      service.py              # PlannerService (event-driven loop, 30 s watchdog)
+      CLAUDE.md                 # tools, one-tool-per-tick, loop detection, snapshot middleware
+      config.py                 # PlannerServiceConfig (watchdog_interval_s, max_commands_per_tick)
+      snapshot_serializer.py    # snapshot_to_dict() — PlannerSnapshot → plain dict for LLM
+      tools.py                  # AgentContext, build_tools() — 5 LangChain @tool functions
+      agent.py                  # PlannerAgent, make_decide_fn() — LangGraph ReAct agent
+      service.py                # PlannerService (event-driven loop, 30 s watchdog)
     target_perception_service/
-      config.py           # TargetPerceptionServiceConfig
-      service.py          # TargetPerceptionService (fast loop + async VLM)
-      vlm_parser.py       # VlmDetection, VlmScene, parse_vlm_response()
-      ollama_vlm_fn.py    # make_ollama_vlm_fn() — Ollama VLM client factory
-      mock_fns.py         # make_mock_observe_fn(), make_mock_vlm_fn() — mock perception
+      CLAUDE.md             # tick logic, plausibility gates, VLM async pipeline, state transitions
+      config.py             # TargetPerceptionServiceConfig
+      service.py            # TargetPerceptionService (fast loop + async VLM)
+      vlm_parser.py         # VlmDetection, VlmScene, parse_vlm_response()
+      ollama_vlm_fn.py      # make_ollama_vlm_fn() — Ollama VLM client factory
+      mock_fns.py           # make_mock_observe_fn(), make_mock_vlm_fn() — mock perception
     skill_runner_service/
-      config.py           # SkillRunnerConfig
-      fsm.py              # PickFSM (pure synchronous state machine)
-      service.py          # SkillRunnerService
+      CLAUDE.md             # FSM phase flow, advance() check order, grasp persistence, recovery
+      config.py             # SkillRunnerConfig
+      fsm.py                # PickFSM (pure synchronous state machine)
+      service.py            # SkillRunnerService
     control_service/
-      config.py           # ControlServiceConfig
-      action_buffer.py    # ActionBuffer (legacy, kept for compatibility)
-      te_buffer.py        # TemporalEnsemblingBuffer (production blending)
-      safety_guard.py     # SafetyGuard (check, clamp, hint_freshness)
-      service.py          # ControlService (50–100 Hz loop)
+      CLAUDE.md             # tick order, TE buffer, reflex lifecycle, safety guard
+      config.py             # ControlServiceConfig
+      action_buffer.py      # ActionBuffer (legacy, kept for compatibility)
+      te_buffer.py          # TemporalEnsemblingBuffer (production blending)
+      safety_guard.py       # SafetyGuard (check, clamp, hint_freshness)
+      service.py            # ControlService (50–100 Hz loop)
   tui/
     app.py              # Textual TUI — mock + live modes
     run_logger.py       # RunLogger: writes JSONL session logs to runs/
