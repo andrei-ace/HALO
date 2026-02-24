@@ -325,6 +325,8 @@ def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
 
 
 class PlannerPanel(Container):
+    _ROW_IDS = ("skill", "phase", "act", "outcome", "elapsed")
+
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = data
@@ -333,8 +335,8 @@ class PlannerPanel(Container):
         self.border_title = "Skill Runner"
 
     @staticmethod
-    def _build_rows(data: dict) -> list[Static]:
-        rows: list[Static] = []
+    def _build_texts(data: dict) -> list[Text]:
+        texts: list[Text] = []
         no_data = data["skill_name"] is None
         # Skill + run id
         t = Text()
@@ -344,12 +346,12 @@ class PlannerPanel(Container):
         else:
             t.append(data["skill_name"], style="bold #4fc3f7")
             t.append(f"  {data['skill_run_id']}", style="#9e9e9e")
-        rows.append(Static(t))
+        texts.append(t)
         # Phase
         t2 = Text()
         t2.append("Phase:    ", style="bold white")
         t2.append("—" if no_data else data["skill_phase"], style="#9e9e9e" if no_data else "bold white")
-        rows.append(Static(t2))
+        texts.append(t2)
         # ACT buffer
         t3 = Text()
         t3.append("ACT:      ", style="bold white")
@@ -364,7 +366,7 @@ class PlannerPanel(Container):
                 t3.append(f"  buffer: {buf} ms", style="#9e9e9e")
             if low:
                 t3.append("  !", style="bold yellow")
-        rows.append(Static(t3))
+        texts.append(t3)
         # Outcome
         t4 = Text()
         t4.append("Outcome:  ", style="bold white")
@@ -376,7 +378,7 @@ class PlannerPanel(Container):
             t4.append(outcome, style=f"bold {outcome_color}")
             if data["outcome_reason"]:
                 t4.append(f"  ({data['outcome_reason']})", style="yellow")
-        rows.append(Static(t4))
+        texts.append(t4)
         # Elapsed
         t5 = Text()
         t5.append("Elapsed:  ", style="bold white")
@@ -385,20 +387,22 @@ class PlannerPanel(Container):
         else:
             elapsed_s = (data["elapsed_ms"] or 0) / 1000
             t5.append(f"{elapsed_s:.1f} s", style="#9e9e9e")
-        rows.append(Static(t5))
-        return rows
+        texts.append(t5)
+        return texts
 
     def compose(self) -> ComposeResult:
-        yield from self._build_rows(self._data)
+        for rid, text in zip(self._ROW_IDS, self._build_texts(self._data)):
+            yield Static(text, id=f"planner-{rid}")
 
-    async def refresh_live(self, data: dict) -> None:
+    def refresh_live(self, data: dict) -> None:
         self._data = data
-        await self.query("Static").remove()
-        for widget in self._build_rows(data):
-            await self.mount(widget)
+        for rid, text in zip(self._ROW_IDS, self._build_texts(data)):
+            self.query_one(f"#planner-{rid}", Static).update(text)
 
 
 class TargetPerceptionPanel(Container):
+    _ROW_IDS = ("status", "target", "distance", "confidence", "obs-age", "code")
+
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = data
@@ -407,20 +411,20 @@ class TargetPerceptionPanel(Container):
         self.border_title = "Target Perception"
 
     @staticmethod
-    def _build_rows(data: dict) -> list[Static]:
-        def row(label: str, value: str, value_style: str) -> Static:
+    def _build_texts(data: dict) -> list[Text]:
+        def row(label: str, value: str, value_style: str) -> Text:
             t = Text()
             t.append(f"{label:<12}", style="bold white")
             t.append(value, style=value_style)
-            return Static(t)
+            return t
 
-        rows: list[Static] = []
+        texts: list[Text] = []
         tracking = data["perc_tracking"]
         no_data = tracking is None
 
         # Status
         if no_data:
-            rows.append(row("Status:", "—", "#9e9e9e"))
+            texts.append(row("Status:", "—", "#9e9e9e"))
         else:
             track_color = (
                 "bright_green"
@@ -434,15 +438,15 @@ class TargetPerceptionPanel(Container):
             t.append(tracking, style=f"bold {track_color}")
             if data["perc_hint_valid"] is False:
                 t.append("  invalid", style="bold red")
-            rows.append(Static(t))
+            texts.append(t)
 
         # Target
         target = data["perc_target"]
-        rows.append(row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e"))
+        texts.append(row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e"))
 
         # Distance
         dist = data["perc_distance_m"]
-        rows.append(
+        texts.append(
             row(
                 "Distance:",
                 f"{dist * 100:.0f} cm" if dist is not None else "—",
@@ -452,7 +456,7 @@ class TargetPerceptionPanel(Container):
 
         # Confidence
         conf = data["perc_confidence"]
-        rows.append(
+        texts.append(
             row(
                 "Confidence:",
                 f"{conf * 100:.0f}%" if conf is not None else "—",
@@ -462,23 +466,23 @@ class TargetPerceptionPanel(Container):
 
         # Obs age
         age = data["perc_obs_age_ms"]
-        rows.append(row("Obs age:", f"{age} ms" if age is not None else "—", "#9e9e9e"))
+        texts.append(row("Obs age:", f"{age} ms" if age is not None else "—", "#9e9e9e"))
 
         # Failure code
         failure = data["perc_failure"]
         fail_color = "bright_green" if failure == "OK" else ("yellow" if failure else "#9e9e9e")
-        rows.append(row("Code:", failure or "—", fail_color))
+        texts.append(row("Code:", failure or "—", fail_color))
 
-        return rows
+        return texts
 
     def compose(self) -> ComposeResult:
-        yield from self._build_rows(self._data)
+        for rid, text in zip(self._ROW_IDS, self._build_texts(self._data)):
+            yield Static(text, id=f"perc-{rid}")
 
-    async def refresh_live(self, data: dict) -> None:
+    def refresh_live(self, data: dict) -> None:
         self._data = data
-        await self.query("Static").remove()
-        for widget in self._build_rows(data):
-            await self.mount(widget)
+        for rid, text in zip(self._ROW_IDS, self._build_texts(data)):
+            self.query_one(f"#perc-{rid}", Static).update(text)
 
 
 class ControlServicePanel(Container):
@@ -578,6 +582,9 @@ class TalkPanel(Container):
 
 
 class SystemPanel(Container):
+    _SERVICE_NAMES = ("TargetPerception", "SkillRunner", "ControlService", "Safety")
+    _TARGET_LABELS = ("Target", "Distance", "Confidence")
+
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = data
@@ -586,41 +593,38 @@ class SystemPanel(Container):
         self.border_title = "System"
 
     @staticmethod
-    def _service_row(name: str, status: str, color: str) -> Text:
+    def _service_text(name: str, status: str, color: str) -> Text:
         t = Text()
         t.append("● ", style=color)
         t.append(f"{name:<16}  ", style="white")
         t.append(status, style=f"bold {color}")
         return t
 
-    _TARGET_LABELS = ("Target", "Distance", "Confidence")
-
     @classmethod
-    def _target_rows(cls, target_info: list[tuple[str, str]]) -> list[Static]:
+    def _target_texts(cls, target_info: list[tuple[str, str]]) -> list[Text]:
         values = dict(target_info)
-        rows = []
+        texts = []
         for label in cls._TARGET_LABELS:
             value = values.get(label)
             t = Text()
             t.append("  ")  # match "● " column
             t.append(f"{label:<16}  ", style="bold white")
             t.append(value if value else "—", style="white" if value else "#9e9e9e")
-            rows.append(Static(t))
-        return rows
+            texts.append(t)
+        return texts
 
     def compose(self) -> ComposeResult:
         for name, status, color in self._data["services"]:
-            yield Static(self._service_row(name, status, color))
-        for row in self._target_rows(self._data["target_info"]):
-            yield row
+            yield Static(self._service_text(name, status, color), id=f"sys-svc-{name}")
+        for label, text in zip(self._TARGET_LABELS, self._target_texts(self._data["target_info"])):
+            yield Static(text, id=f"sys-tgt-{label}")
 
-    async def refresh_live(self, services: list[tuple[str, str, str]], target_info: list[tuple[str, str]]) -> None:
-        """Replace content with live service statuses."""
-        await self.query("Static").remove()
+    def refresh_live(self, services: list[tuple[str, str, str]], target_info: list[tuple[str, str]]) -> None:
+        """Update content in-place — no DOM churn."""
         for name, status, color in services:
-            await self.mount(Static(self._service_row(name, status, color)))
-        for row in self._target_rows(target_info):
-            await self.mount(row)
+            self.query_one(f"#sys-svc-{name}", Static).update(self._service_text(name, status, color))
+        for label, text in zip(self._TARGET_LABELS, self._target_texts(target_info)):
+            self.query_one(f"#sys-tgt-{label}", Static).update(text)
 
 
 class EventsPanel(Container):
@@ -1127,9 +1131,9 @@ class HALOApp(App):
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
             services, target_info = _derive_services(snap)
             panel_data = _snap_to_panel_data(snap, self._panel_data)
-            await self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
-            await self.query_one("#planner-panel", PlannerPanel).refresh_live(panel_data)
-            await self.query_one("#perception-panel", TargetPerceptionPanel).refresh_live(panel_data)
+            self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
+            self.query_one("#planner-panel", PlannerPanel).refresh_live(panel_data)
+            self.query_one("#perception-panel", TargetPerceptionPanel).refresh_live(panel_data)
         except Exception:
             pass
 
