@@ -27,20 +27,20 @@ make test-integration  # run LLM integration tests (requires Ollama); saves resu
 
 ## Implementation Status
 
-All v0 backbone services are implemented and tested (219 tests passing):
+All v0 backbone services are implemented and tested:
 
-| Layer | Status | Tests |
-|---|---|---|
-| contracts (enums, snapshots, commands, events, actions) | ✅ done | — |
-| runtime (RuntimeStateStore, EventBus, CommandRouter, HALORuntime) | ✅ done | — |
-| ControlService + TemporalEnsemblingBuffer + SafetyGuard | ✅ done | 104 |
-| SkillRunnerService + PickFSM | ✅ done | 143 |
-| PlannerService | ✅ done | 177 |
-| TargetPerceptionService (mock + VLM pipeline) | ✅ done | 192 |
-| PlannerAgent (LangGraph ReAct + tools) | ✅ done | 219 |
-| TUI (`halo/tui/app.py`) | ✅ done | — |
-| RunLogger + observability | ✅ done | — |
-| Integration tests (`integration/`) | ✅ done | requires Ollama |
+| Layer | Status |
+|---|---|
+| contracts (enums, snapshots, commands, events, actions) | ✅ done |
+| runtime (RuntimeStateStore, EventBus, CommandRouter, HALORuntime) | ✅ done |
+| ControlService + TemporalEnsemblingBuffer + SafetyGuard | ✅ done |
+| SkillRunnerService + PickFSM | ✅ done |
+| PlannerService | ✅ done |
+| TargetPerceptionService (mock + VLM pipeline) | ✅ done |
+| PlannerAgent (LangGraph ReAct + tools) | ✅ done |
+| TUI (`halo/tui/app.py`) | ✅ done |
+| RunLogger + observability | ✅ done |
+| Integration tests (`integration/`) | ✅ done (requires Ollama) |
 
 The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
