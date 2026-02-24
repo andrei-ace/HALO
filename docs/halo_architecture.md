@@ -195,7 +195,7 @@ If `obs_age_ms` or `time_skew_ms` exceeds thresholds:
 - Type aliases: `ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]`, `VlmFn = Callable[[str], Awaitable[VlmScene]]`
 - VLM is optional (`vlm_fn=None` disables async reacquisition)
 - At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`
-- VLM result publishes `VLM_RESULT` event and is logged via `RunLogger.log_vlm_result()`
+- VLM result publishes `SCENE_DESCRIBED` event and is logged via `RunLogger.log_vlm_result()`
 
 ### 6.3 VLM prompt (`configs/perception/scene_analysis.md`)
 Structured prompt for Qwen2.5-VL:
@@ -215,7 +215,7 @@ Structured prompt for Qwen2.5-VL:
 
 ### 6.5 What the planner can request
 - `set_tracking_target(...)`
-- `request_refresh(mode, reason)` (rare)
+- `describe_scene(reason)` — triggers async VLM scene analysis; result delivered via `SCENE_DESCRIBED` event
 
 ---
 
@@ -319,7 +319,7 @@ Signals:
   "command_id": "uuid",
   "arm_id": "arm0",
   "issued_at_ms": 0,
-  "type": "start_skill | abort_skill | override_target | request_perception_refresh",
+  "type": "start_skill | abort_skill | override_target | describe_scene",
   "precondition_snapshot_id": "snap-123",
   "payload": {}
 }
@@ -375,6 +375,7 @@ Event types (examples):
 - `SKILL_STARTED / SKILL_SUCCEEDED / SKILL_FAILED`
 - `PHASE_ENTER / PHASE_EXIT`
 - `PERCEPTION_FAILURE / PERCEPTION_RECOVERED`
+- `SCENE_DESCRIBED`
 - `SAFETY_REFLEX_TRIGGERED / SAFETY_RECOVERED`
 
 ---

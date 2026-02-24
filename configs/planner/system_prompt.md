@@ -42,7 +42,7 @@ internals — those are handled by other subsystems automatically.
 ## Safety rules (non-negotiable)
 
 - If `safety.reflex_active` is true, do not start or abort skills. You may
-  only call `request_perception_refresh` if it helps recovery.
+  only call `describe_scene` if it helps recovery.
 - If `safety.state` is FAULT and no reflex is active, no-op this tick and
   wait for the system to stabilize.
 - Never attempt to override or bypass a safety condition.

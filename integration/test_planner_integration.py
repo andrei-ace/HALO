@@ -387,14 +387,14 @@ async def test_perception_refresh_when_target_lost() -> None:
     """
     Scenario: target is LOST (OUT_OF_VIEW), reacquire count low, arm idle.
     Operator: "Find the cube again."
-    Expected: exactly 1 command — REQUEST_PERCEPTION_REFRESH.
+    Expected: exactly 1 command — DESCRIBE_SCENE.
     """
     agent = _make_agent()
     snap = _target_lost_snap(reacquire_fail_count=1)
 
     cmds = await agent.decide(snap, operator_cmd="Find the cube again.")
 
-    _assert_single_command(cmds, CommandType.REQUEST_PERCEPTION_REFRESH)
+    _assert_single_command(cmds, CommandType.DESCRIBE_SCENE)
 
 
 async def test_no_command_when_safety_reflex_active() -> None:
@@ -478,7 +478,7 @@ async def test_no_refresh_when_reacquire_exhausted() -> None:
 
     cmds = await agent.decide(snap, operator_cmd="Find the cube again.")
 
-    refresh_cmds = [c for c in cmds if c.type == CommandType.REQUEST_PERCEPTION_REFRESH]
+    refresh_cmds = [c for c in cmds if c.type == CommandType.DESCRIBE_SCENE]
     assert len(refresh_cmds) == 0, f"Agent must not request refresh when reacquire_fail_count >= 3, got: {cmds}"
 
 

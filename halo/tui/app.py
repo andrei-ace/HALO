@@ -190,7 +190,7 @@ def _format_cmd(cmd: object) -> str:
     from halo.contracts.commands import (
         AbortSkillPayload,
         OverrideTargetPayload,
-        RequestPerceptionRefreshPayload,
+        DescribeScenePayload,
         StartSkillPayload,
     )
 
@@ -201,8 +201,8 @@ def _format_cmd(cmd: object) -> str:
         return f"ABORT_SKILL({p.skill_run_id[-4:]}, {p.reason})"
     if isinstance(p, OverrideTargetPayload):
         return f"OVERRIDE_TARGET({p.target_handle})"
-    if isinstance(p, RequestPerceptionRefreshPayload):
-        return f"REFRESH_PERCEPTION({p.mode})"
+    if isinstance(p, DescribeScenePayload):
+        return f"DESCRIBE_SCENE({p.reason})"
     return str(cmd.type)  # type: ignore[attr-defined]
 
 
@@ -222,12 +222,12 @@ def _format_event(evt: object) -> str:
         return f"{name} {reason}"
     if name in ("COMMAND_ACCEPTED", "COMMAND_REJECTED") and cmd_type:
         return f"{name} {cmd_type}"
-    if name == "VLM_RESULT":
+    if name == "SCENE_DESCRIBED":
         handle = data.get("target_handle", "?")
         conf = int(data.get("confidence", 0) * 100)
         ms = data.get("inference_ms", 0)
         valid = data.get("hint_valid", False)
-        return f"VLM_RESULT {handle} conf={conf}%{'' if valid else ' invalid'}  ({ms} ms)"
+        return f"SCENE_DESCRIBED {handle} conf={conf}%{'' if valid else ' invalid'}  ({ms} ms)"
     return name
 
 

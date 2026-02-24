@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Awaitable, Callable
 
-from halo.contracts.commands import CommandAck, CommandEnvelope, RequestPerceptionRefreshPayload
+from halo.contracts.commands import CommandAck, CommandEnvelope, DescribeScenePayload
 from halo.contracts.enums import CommandType
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import PlannerSnapshot
@@ -64,7 +64,7 @@ class PlannerService:
     async def start(self) -> None:
         """Spawn the planner loop and event-drain tasks.
 
-        Immediately issues a REQUEST_PERCEPTION_REFRESH so the VLM acquires the
+        Immediately issues a DESCRIBE_SCENE so the VLM acquires the
         initial scene before the first planner tick fires.
         """
         self._stop_event.clear()
@@ -77,10 +77,9 @@ class PlannerService:
                 command_id=str(uuid.uuid4()),
                 arm_id=self._arm_id,
                 issued_at_ms=int(time.time() * 1000),
-                type=CommandType.REQUEST_PERCEPTION_REFRESH,
-                payload=RequestPerceptionRefreshPayload(
-                    mode="reacquire",
-                    reason="planner startup — initial VLM acquisition",
+                type=CommandType.DESCRIBE_SCENE,
+                payload=DescribeScenePayload(
+                    reason="planner startup — initial VLM scene acquisition",
                 ),
                 precondition_snapshot_id=None,
             )

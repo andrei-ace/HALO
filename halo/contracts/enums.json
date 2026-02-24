@@ -43,7 +43,7 @@
     },
     "CommandType": {
       "type": "string",
-      "enum": ["START_SKILL", "ABORT_SKILL", "OVERRIDE_TARGET", "REQUEST_PERCEPTION_REFRESH"]
+      "enum": ["START_SKILL", "ABORT_SKILL", "OVERRIDE_TARGET", "DESCRIBE_SCENE"]
     },
     "CommandAckStatus": {
       "type": "string",
@@ -56,6 +56,7 @@
         "SKILL_STARTED", "SKILL_SUCCEEDED", "SKILL_FAILED",
         "PHASE_ENTER", "PHASE_EXIT",
         "PERCEPTION_FAILURE", "PERCEPTION_RECOVERED",
+        "SCENE_DESCRIBED",
         "SAFETY_REFLEX_TRIGGERED", "SAFETY_RECOVERED"
       ]
     }
