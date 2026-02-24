@@ -10,7 +10,7 @@
     },
     "TrackingStatus": {
       "type": "string",
-      "enum": ["TRACKING", "LOST", "RELOCALIZING", "REACQUIRING"]
+      "enum": ["IDLE", "TRACKING", "LOST", "RELOCALIZING", "REACQUIRING"]
     },
     "SkillName": {
       "type": "string",
@@ -43,7 +43,7 @@
     },
     "CommandType": {
       "type": "string",
-      "enum": ["START_SKILL", "ABORT_SKILL", "OVERRIDE_TARGET", "DESCRIBE_SCENE"]
+      "enum": ["START_SKILL", "ABORT_SKILL", "OVERRIDE_TARGET", "DESCRIBE_SCENE", "TRACK_OBJECT"]
     },
     "CommandAckStatus": {
       "type": "string",
@@ -57,6 +57,7 @@
         "PHASE_ENTER", "PHASE_EXIT",
         "PERCEPTION_FAILURE", "PERCEPTION_RECOVERED",
         "SCENE_DESCRIBED",
+        "TARGET_ACQUIRED",
         "SAFETY_REFLEX_TRIGGERED", "SAFETY_RECOVERED"
       ]
     }

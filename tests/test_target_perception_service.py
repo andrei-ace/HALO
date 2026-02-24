@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from halo.contracts.enums import PerceptionFailureCode, TrackingStatus
-from halo.contracts.events import EventType
+from halo.contracts.enums import CommandType, PerceptionFailureCode, TrackingStatus
+from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
@@ -81,12 +81,12 @@ def _make_svc(
 
 # ─── tick: no target ─────────────────────────────────────────────────────────
 
-async def test_tick_no_target_publishes_lost(rt: HALORuntime):
+async def test_tick_no_target_publishes_idle(rt: HALORuntime):
     svc = _make_svc(rt)
     await svc.tick()
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
-    assert snap.perception.tracking_status == TrackingStatus.LOST
+    assert snap.perception.tracking_status == TrackingStatus.IDLE
     assert snap.target is None
 
 
@@ -489,3 +489,75 @@ async def test_stop_cancels_vlm_task(rt: HALORuntime):
 
     assert cancelled is True
     assert svc._vlm_task is None
+
+
+# ─── TARGET_ACQUIRED event ───────────────────────────────────────────────────
+
+async def test_target_acquired_emitted_on_first_tracking(rt: HALORuntime):
+    """TARGET_ACQUIRED fires on the first tick that reaches TRACKING after set_tracking_target."""
+    svc = _make_svc(rt)
+    await svc.set_tracking_target("cube-1")
+    await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    acquired = [e for e in events if e.type == EventType.TARGET_ACQUIRED]
+    assert len(acquired) == 1
+    assert acquired[0].data["target_handle"] == "cube-1"
+
+
+async def test_target_acquired_not_emitted_on_subsequent_ticks(rt: HALORuntime):
+    """TARGET_ACQUIRED fires only once per set_tracking_target, not on every tick."""
+    svc = _make_svc(rt)
+    await svc.set_tracking_target("cube-1")
+
+    for _ in range(5):
+        await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    acquired = [e for e in events if e.type == EventType.TARGET_ACQUIRED]
+    assert len(acquired) == 1
+
+
+# ─── _drain_commands: TRACK_OBJECT ──────────────────────────────────────────
+
+async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
+    """VLM triggered by set_tracking_target must NOT emit SCENE_DESCRIBED."""
+    async def vlm(arm_id: str) -> VlmScene:
+        return _scene("cube-1")
+
+    svc = _make_svc(rt, vlm_fn=vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)  # let VLM complete
+    await svc.tick()  # consume seed → TRACKING → TARGET_ACQUIRED
+
+    events = rt.bus.get_recent_events(ARM)
+    scene_events = [e for e in events if e.type == EventType.SCENE_DESCRIBED]
+    acquired_events = [e for e in events if e.type == EventType.TARGET_ACQUIRED]
+    assert len(scene_events) == 0
+    assert len(acquired_events) == 1
+
+
+async def test_drain_commands_handles_track_object(rt: HALORuntime):
+    """A COMMAND_ACCEPTED event for TRACK_OBJECT sets the tracking target."""
+    svc = _make_svc(rt)
+    await svc.start()
+    await asyncio.sleep(0.02)
+
+    # Simulate a COMMAND_ACCEPTED event with TRACK_OBJECT payload data
+    evt = EventEnvelope(
+        event_id=rt.bus.make_event_id(),
+        type=EventType.COMMAND_ACCEPTED,
+        ts_ms=1000,
+        arm_id=ARM,
+        data={
+            "command_id": "cmd-track-1",
+            "command_type": CommandType.TRACK_OBJECT,
+            "target_handle": "mug-3",
+        },
+    )
+    await rt.bus.publish(evt)
+    await asyncio.sleep(0.1)
+
+    assert svc._target_handle == "mug-3"
+
+    await svc.stop()

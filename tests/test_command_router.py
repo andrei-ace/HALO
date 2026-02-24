@@ -9,6 +9,7 @@ from halo.contracts.commands import (
     CommandEnvelope,
     OverrideTargetPayload,
     StartSkillPayload,
+    TrackObjectPayload,
 )
 from halo.contracts.enums import CommandAckStatus, CommandType, PhaseId, SkillName
 from halo.contracts.snapshots import SkillInfo
@@ -180,3 +181,31 @@ async def test_concurrent_duplicate_commands_idempotent(rt: HALORuntime):
     already_applied = sum(1 for a in acks if a.status == CommandAckStatus.ALREADY_APPLIED)
     assert accepted == 1
     assert already_applied == 9
+
+
+# ---------------------------------------------------------------------------
+# TRACK_OBJECT
+# ---------------------------------------------------------------------------
+
+async def test_track_object_accepted_includes_target_handle(rt: HALORuntime):
+    q = rt.bus.subscribe(ARM)
+    cmd = CommandEnvelope(
+        command_id="cmd-track-1",
+        arm_id=ARM,
+        issued_at_ms=1000,
+        type=CommandType.TRACK_OBJECT,
+        payload=TrackObjectPayload(target_handle="mug-3"),
+    )
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.ACCEPTED
+
+    # The COMMAND_ACCEPTED event should include target_handle in data
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    accepted_events = [e for e in events if e.type.value == "COMMAND_ACCEPTED"]
+    assert len(accepted_events) == 1
+    assert accepted_events[0].data["target_handle"] == "mug-3"
+    assert accepted_events[0].data["command_type"] == "TRACK_OBJECT"
+
+    rt.bus.unsubscribe(ARM, q)

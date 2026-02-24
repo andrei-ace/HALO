@@ -31,7 +31,7 @@ internals — those are handled by other subsystems automatically.
 | `skill` | What skill is running right now (null = arm idle) |
 | `skill.skill_run_id` | ID needed to abort or override the current skill |
 | `target.handle` | Which object perception is tracking |
-| `perception.tracking_status` | TRACKING / RELOCALIZING / REACQUIRING / LOST |
+| `perception.tracking_status` | IDLE / TRACKING / RELOCALIZING / REACQUIRING / LOST |
 | `perception.reacquire_fail_count` | How many times reacquisition has failed in a row |
 | `outcome.state` | IN_PROGRESS / SUCCESS / FAILURE / UNCERTAIN |
 | `outcome.reason_code` | Why the last skill failed (null if not failed) |
@@ -58,6 +58,18 @@ internals — those are handled by other subsystems automatically.
 - If perception has failed to reacquire the target 3 or more times in a row
   (`reacquire_fail_count >= 3`), stop and wait — do not keep requesting
   refreshes.
+
+## Tracking objects
+
+Before starting a skill you must ensure perception is tracking the target
+object. If `perception.tracking_status` is `IDLE` or `LOST`, call
+`track_object` with the object handle (from `SCENE_DESCRIBED` detections).
+Perception will run VLM to locate the object, then a `TARGET_ACQUIRED` event
+fires once tracking is established. Only after seeing `TARGET_ACQUIRED` in
+`recent_events` should you proceed to `start_skill`.
+
+Typical flow: `describe_scene` → (SCENE_DESCRIBED) → `track_object` →
+(TARGET_ACQUIRED) → `start_skill`.
 
 ## Using scene descriptions
 

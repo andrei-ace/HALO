@@ -72,10 +72,11 @@ class TargetPerceptionService:
         self._config = config
 
         self._target_handle: str | None = None
-        self._tracking_status = TrackingStatus.LOST
+        self._tracking_status = TrackingStatus.IDLE
         self._failure_code = PerceptionFailureCode.OK
         self._reacquire_fail_count = 0
         self._vlm_job_pending = False
+        self._awaiting_acquisition = False
 
         # VLM async state
         self._vlm_task: asyncio.Task | None = None
@@ -132,8 +133,9 @@ class TargetPerceptionService:
         self._failure_code = PerceptionFailureCode.OK
         self._vlm_seed = None
         self._last_obs = None
+        self._awaiting_acquisition = True
         self._cancel_vlm()
-        self._spawn_vlm()
+        self._spawn_vlm(emit_scene_described=False)
 
     async def clear_tracking_target(self) -> None:
         """Stop tracking. Cancels any running VLM job. Next tick publishes LOST."""
@@ -167,7 +169,7 @@ class TargetPerceptionService:
         if self._target_handle is None:
             await self._publish_state(
                 target=None,
-                tracking_status=TrackingStatus.LOST,
+                tracking_status=self._tracking_status,
                 failure_code=PerceptionFailureCode.OK,
             )
             return
@@ -251,19 +253,22 @@ class TargetPerceptionService:
 
     async def _drain_commands(self) -> None:
         """
-        Listen for COMMAND_ACCEPTED events and trigger VLM scene analysis when
-        a DESCRIBE_SCENE command is accepted by the router.
+        Listen for COMMAND_ACCEPTED events and handle DESCRIBE_SCENE and
+        TRACK_OBJECT commands.
         """
         while not self._stop_event.is_set():
             try:
                 event: EventEnvelope = await asyncio.wait_for(
                     self._cmd_queue.get(), timeout=0.05
                 )
-                if (
-                    event.type == EventType.COMMAND_ACCEPTED
-                    and event.data.get("command_type") == CommandType.DESCRIBE_SCENE
-                ):
-                    await self.request_refresh(reason="command:DESCRIBE_SCENE")
+                if event.type == EventType.COMMAND_ACCEPTED:
+                    cmd_type = event.data.get("command_type")
+                    if cmd_type == CommandType.DESCRIBE_SCENE:
+                        await self.request_refresh(reason="command:DESCRIBE_SCENE")
+                    elif cmd_type == CommandType.TRACK_OBJECT:
+                        handle = event.data.get("target_handle", "")
+                        if handle:
+                            await self.set_tracking_target(handle)
             except asyncio.TimeoutError:
                 continue
 
@@ -307,6 +312,12 @@ class TargetPerceptionService:
         )
         if was_failing:
             await self._emit_event(EventType.PERCEPTION_RECOVERED, {})
+        if self._awaiting_acquisition and tracking_status == TrackingStatus.TRACKING:
+            self._awaiting_acquisition = False
+            await self._emit_event(
+                EventType.TARGET_ACQUIRED,
+                {"target_handle": self._target_handle or ""},
+            )
 
     async def _update_failure(
         self,
@@ -338,14 +349,16 @@ class TargetPerceptionService:
 
     # --- Private: VLM async path ---
 
-    def _spawn_vlm(self) -> None:
+    def _spawn_vlm(self, *, emit_scene_described: bool = True) -> None:
         """Spawn a VLM task if vlm_fn is configured and none is already running."""
         if self._vlm_fn is None:
             return
         if self._vlm_task is not None and not self._vlm_task.done():
             return  # already running — do not stack
         self._vlm_job_pending = True
-        self._vlm_task = asyncio.create_task(self._run_vlm(self._target_handle))
+        self._vlm_task = asyncio.create_task(
+            self._run_vlm(self._target_handle, emit_scene_described=emit_scene_described)
+        )
 
     def _cancel_vlm(self) -> None:
         """Cancel the running VLM task (fire-and-forget; stop() awaits it properly)."""
@@ -353,11 +366,15 @@ class TargetPerceptionService:
             self._vlm_task.cancel()
         self._vlm_task = None
 
-    async def _run_vlm(self, target_handle: str | None) -> None:
+    async def _run_vlm(
+        self, target_handle: str | None, *, emit_scene_described: bool = True,
+    ) -> None:
         """
         Background VLM coroutine. Runs asynchronously — never awaited by tick().
 
-        Always emits SCENE_DESCRIBED with full scene data.
+        Emits SCENE_DESCRIBED unless *emit_scene_described* is False (e.g. when
+        the VLM run was triggered by set_tracking_target / TRACK_OBJECT — only
+        TARGET_ACQUIRED matters in that case).
         If a target_handle is set, also seeds the tracker for reacquisition.
         """
         if self._vlm_fn is None:
@@ -372,17 +389,17 @@ class TargetPerceptionService:
                 for d in scene.detections
             ]
 
-            # Always emit scene analysis result.
-            await self._emit_event(
-                EventType.SCENE_DESCRIBED,
-                {
-                    "target_handle": target_handle or "",
-                    "scene": scene.scene,
-                    "detections": det_summary,
-                    "count": len(scene.detections),
-                    "inference_ms": inference_ms,
-                },
-            )
+            if emit_scene_described:
+                await self._emit_event(
+                    EventType.SCENE_DESCRIBED,
+                    {
+                        "target_handle": target_handle or "",
+                        "scene": scene.scene,
+                        "detections": det_summary,
+                        "count": len(scene.detections),
+                        "inference_ms": inference_ms,
+                    },
+                )
 
             # If tracking a target, seed the tracker for reacquisition.
             if target_handle is not None:

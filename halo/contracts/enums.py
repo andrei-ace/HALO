@@ -13,6 +13,7 @@ class PerceptionFailureCode(StrEnum):
 
 
 class TrackingStatus(StrEnum):
+    IDLE = "IDLE"
     TRACKING = "TRACKING"
     LOST = "LOST"
     RELOCALIZING = "RELOCALIZING"
@@ -83,6 +84,7 @@ class CommandType(StrEnum):
     ABORT_SKILL = "ABORT_SKILL"
     OVERRIDE_TARGET = "OVERRIDE_TARGET"
     DESCRIBE_SCENE = "DESCRIBE_SCENE"
+    TRACK_OBJECT = "TRACK_OBJECT"
 
 
 class CommandAckStatus(StrEnum):
