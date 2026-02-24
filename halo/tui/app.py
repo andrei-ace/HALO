@@ -223,11 +223,11 @@ def _format_event(evt: object) -> str:
     if name in ("COMMAND_ACCEPTED", "COMMAND_REJECTED") and cmd_type:
         return f"{name} {cmd_type}"
     if name == "SCENE_DESCRIBED":
-        handle = data.get("target_handle", "?")
-        conf = int(data.get("confidence", 0) * 100)
+        count = data.get("count", 0)
         ms = data.get("inference_ms", 0)
-        valid = data.get("hint_valid", False)
-        return f"SCENE_DESCRIBED {handle} conf={conf}%{'' if valid else ' invalid'}  ({ms} ms)"
+        scene = data.get("scene", "")
+        snippet = (scene[:60] + "…") if len(scene) > 60 else scene
+        return f"SCENE_DESCRIBED {count} obj  ({ms} ms)  {snippet}"
     return name
 
 
