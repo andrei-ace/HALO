@@ -57,7 +57,8 @@ Scope: HALO — v1: Isaac Sim/Lab, single-arm pick/place, local models via Ollam
    - Never waits on planner or VLM.
 
 5) **Safety Guard + Reflex Layer (LLM-independent)**
-   - Hard guards: joint/workspace bounds, velocity/accel/jerk limits, coarse collision checks.
+   - v0 hard guards: per-timestep linear/angular delta limits + hint freshness gating.
+   - Planned: workspace AABB, velocity/accel/jerk rate limits, coarse collision checks.
    - Reflex: immediate overrides (stop/retract/open gripper) on faults/overload/unsafe conditions.
    - Planner handles recovery *after* reflex stabilizes the robot.
 
@@ -95,7 +96,7 @@ Fallback (optional):
 
 ### Decision path (LLM)
 - Planner reads **compact runtime snapshot** and emits high-level commands:
-  - Start skill, abort, override target, describe scene
+  - Start skill, abort, override target, describe scene, track object
 - Planner does not transport control floats.
 
 ---
@@ -123,9 +124,9 @@ Define and monitor explicit budgets early so tuning is measurable:
 - **Fast perception loop** (scene camera capture → tracker/depth fusion → fused target hint publish): initial target (e.g., **<80–120 ms**).
 - **Semantic VLM job** (grounding / reacquire / verify): **not** part of the fast-loop budget; runs async and may take ~0.5–5 s.
 - Wrist camera capture → ACT observation availability: target budget per control profile
-- Planner tick cadence: **event-driven** (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE) + **30 s watchdog** fallback. No fixed rate — LLM decide_fn latency is non-deterministic so ticks are serialized (next tick only starts after decide_fn returns).
+- Planner tick cadence: **event-driven** (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE, SCENE_DESCRIBED, TARGET_ACQUIRED, COMMAND_REJECTED) + **30 s watchdog** fallback. No fixed rate — LLM decide_fn latency is non-deterministic so ticks are serialized (next tick only starts after decide_fn returns).
 - Planner reaction latency: best-effort only (not in the control path)
-- Phase-specific freshness thresholds (e.g., stricter in PREGRASP_ALIGN / GRASP_CLOSE than in TRANSIT)
+- Phase-specific freshness thresholds (e.g., stricter in ALIGN / DESCEND_GRASP than in TRANSIT)
 
 
 ### EE-relative hints (recommended)
@@ -194,6 +195,7 @@ Planner sends high-level commands; results appear in subsequent snapshots/events
 - `abort_skill(skill_run_id, reason)`
 - `override_target(skill_run_id, target_handle)`
 - `describe_scene(reason)` — triggers VLM scene analysis; result delivered via SCENE_DESCRIBED event
+- `track_object(target_handle)` — sets tracking target on TargetPerceptionService; result delivered via TARGET_ACQUIRED event
 
 #### Command sequencing + idempotency (must-have)
 Each planner command should carry:
@@ -214,16 +216,16 @@ Execution contract:
 ## 7) TargetPerceptionService contract
 
 ### Planner → Perception
-- `set_tracking_target(arm_id, target_spec | target_handle, task_role, optional_roi, tolerance)`
+- `track_object(target_handle)` — sets tracking target; result delivered via `TARGET_ACQUIRED` event (also available as `set_tracking_target()` internal API)
 - `describe_scene(reason)` — triggers async VLM scene analysis; result delivered via `SCENE_DESCRIBED` event
 
 ### Perception → Runtime state (for SkillRunner + planner summary)
 Publishes:
 - `arm_id`
-- `tracking_status`: tracking / lost / relocalizing / reacquiring
+- `tracking_status`: idle / tracking / lost / relocalizing / reacquiring
 - `target_handle`, `target_id` (if known)
 - `target_hint_vec`: target pose + EE-relative deltas + confidence
-- `hint_valid`, `obs_age_ms`, `time_skew_ms`, `calib_valid`
+- `hint_valid`, `obs_age_ms`, `time_skew_ms`
 - `failure_code` (explicit): OCCLUDED, OUT_OF_VIEW, DEPTH_INVALID, MULTIPLE_CANDIDATES, CALIB_INVALID, TRACK_JUMP_REJECTED, etc.
 
 ### Deterministic plausibility gates (must-have)
@@ -250,34 +252,32 @@ The following are implemented:
 Planner starts the skill; SkillRunner runs the micro-state machine with fast success checks.
 This prevents pauses between approach→grasp for moving targets.
 
-### Pick FSM states (summary)
-- IDLE
-- ACQUIRE_TARGET
-- REACQUIRE_TARGET
-- APPROACH
-- PREGRASP_ALIGN
-- GRASP_CLOSE
-- VERIFY_GRASP (optional)
-- WAIT_VERIFY (optional, VLM verify)
-- LIFT
-- GRASP_RECOVER (retry)
-- SUCCESS_PICK
-- FAIL(reason)
+### Pick FSM states (implemented)
+- `RESET` (0) — initial state
+- `APPROACH_PREGRASP` (1) — move to pregrasp pose
+- `ALIGN` (2) — fine alignment
+- `DESCEND_GRASP` (3) — descend to grasp pose; grasp persistence timer starts when distance < threshold
+- `CLOSE` (4) — gripper close + dwell (`close_duration_ms`)
+- `VERIFY_GRASP` (6) — optional (configurable via `skip_verify_grasp`)
+- `LIFT` (5) — lift after grasp (`lift_duration_ms`)
+- `DONE` (11) — terminal state (outcome: SUCCESS or FAILURE with reason code)
+- Recovery: `RECOVER_RETRY_APPROACH` (20), `RECOVER_RETRY_DESCEND` (21), `RECOVER_REGRASP` (22)
 
 Each state has:
-- entry actions (set `phase_id`, trigger gripper close, request reacquire, etc.)
-- success predicates (distance thresholds, gripper occupancy band, lift delta-z, etc.)
-- failure predicates (timeout, no progress, target lost, safety reflex)
+- success predicates (distance thresholds, timer-based durations)
+- failure predicates (timeout, no progress / target lost beyond `no_target_tolerance_ms`)
+- recovery: wait `recover_wait_ms`, increment reacquire counter, retry up to `max_reacquire_attempts`
 
 ### Moving target critical detail
-- GRASP_CLOSE should be triggered deterministically when in grasp window (distance + persistence), without waiting for planner.
-- Optional immediate gripper close and buffer trimming on phase transition.
+- `CLOSE` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, without waiting for planner. Distance bounce resets the persistence timer.
+- On phase transition, ControlService trims ACT buffer to `buffer_trim_ms` (~75 ms).
 
 ### Gripper timing / dwell modeling (important for real transfer)
 Model and expose configurable timing terms in the SkillRunner profile:
-- `gripper_close_timeout_ms`
-- `gripper_settle_dwell_ms`
-- optional force/current threshold for “object contacted / grasp likely”
+- `close_duration_ms` (default 1000 ms)
+- `verify_duration_ms` (default 500 ms)
+- `lift_duration_ms` (default 2000 ms)
+- optional force/current threshold for “object contacted / grasp likely” (planned)
 - phase-specific timing compensation (especially close→lift transitions)
 
 
@@ -371,13 +371,13 @@ All state is namespaced by `arm_id` from day one (even if v0 runs one arm).
 Planner-grade fields only:
 - identity: snapshot_id, ts, last_event_id, arm_id
 - goal: task_id, skill, phase
-- target: handle, hint_valid, confidence, obs_age_ms, time_skew_ms, calib_valid, delta_xyz_ee, distance, delta_distance
+- target: handle, hint_valid, confidence, obs_age_ms, time_skew_ms, delta_xyz_ee, distance_m
 - perception: tracking_status, failure_code, reacquire_fail_count, vlm_job_pending
 - act: status, buffer_low, buffer_fill_ms
 - progress: elapsed_ms, no_progress_ms
 - outcome: state, reason_code, needs_verify
 - safety: state, reflex_active, reason_codes
-- command_ack: recent command statuses (accepted/rejected/stale/already_applied)
+- command_acks: recent command statuses (ACCEPTED/REJECTED_STALE/REJECTED_WRONG_SKILL_RUN/ALREADY_APPLIED)
 - recent_events: small ring
 
 ---
@@ -395,13 +395,13 @@ Planner-grade fields only:
 
 ## 14) Build steps
 
-### Completed (v0 backbone — 207 tests passing)
+### Completed (v0 backbone — 219 tests passing)
 
 1. ✅ Shared runtime state + event IDs + compact snapshot (`RuntimeStateStore`, `EventBus`, `CommandRouter`, `HALORuntime`).
 2. ✅ SkillRunner Pick FSM with deterministic phase transitions and fast success checks (`PickFSM`, `SkillRunnerService`).
 3. ✅ ControlService with TemporalEnsemblingBuffer, SafetyGuard, action clamping, hint freshness interlocks.
 4. ✅ TargetPerceptionService with mocked observe_fn + async VLM pipeline (VLM parser, Ollama VLM client, mock fns, VLM prompt).
-5. ✅ PlannerService (event-driven, 30 s watchdog) + PlannerAgent (LangGraph ReAct, 4 tools, snapshot middleware).
+5. ✅ PlannerService (event-driven, 30 s watchdog) + PlannerAgent (LangGraph ReAct, 5 tools, snapshot middleware).
 6. ✅ TUI (mock + live modes) + RunLogger (JSONL session logs + VLM logging).
 7. ✅ Integration tests (Ollama-backed, auto-skip if unavailable).
 
