@@ -25,7 +25,7 @@ make test-integration  # run LLM integration tests (requires Ollama); saves resu
 
 ## Implementation Status
 
-All v0 backbone services are implemented and tested (207 tests passing):
+All v0 backbone services are implemented and tested (219 tests passing):
 
 | Layer | Status | Tests |
 |---|---|---|
@@ -35,7 +35,7 @@ All v0 backbone services are implemented and tested (207 tests passing):
 | SkillRunnerService + PickFSM | ✅ done | 143 |
 | PlannerService | ✅ done | 177 |
 | TargetPerceptionService (mock + VLM pipeline) | ✅ done | 192 |
-| PlannerAgent (LangGraph ReAct + tools) | ✅ done | 207 |
+| PlannerAgent (LangGraph ReAct + tools) | ✅ done | 219 |
 | TUI (`halo/tui/app.py`) | ✅ done | — |
 | RunLogger + observability | ✅ done | — |
 | Integration tests (`integration/`) | ✅ done | requires Ollama |
@@ -91,11 +91,11 @@ integration/        # LLM integration tests (require Ollama)
 
 | Service | Rate | Owns |
 |---|---|---|
-| **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
+| **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE, SCENE_DESCRIBED, TARGET_ACQUIRED, COMMAND_REJECTED); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
 | **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen2.5vl` via Ollama (scene camera only, async reacquire). Includes VLM parser (`vlm_parser.py`), Ollama VLM client (`ollama_vlm_fn.py`), mock fns (`mock_fns.py`). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion (planned). |
 | **SkillRunnerService** | 10–20 Hz (ACT inference) | Pick FSM, phase transitions, ACT chunk buffering, buffer trimming on phase switch, fast success/failure checks. |
-| **ControlService** | 50–100 Hz | Real-time action streaming, smoothing, clamps (vel/acc/jerk), safety interlocks. Never waits on LLM or VLM. |
-| **SafetyGuard / ReflexLayer** | Hard real-time | Joint/workspace/velocity limits, immediate stop/retract/open-gripper overrides. LLM cannot bypass. |
+| **ControlService** | 50–100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping, safety interlocks. Never waits on LLM or VLM. |
+| **SafetyGuard / ReflexLayer** | Hard real-time | v0: per-timestep linear/angular delta limits + hint freshness gating. Planned: workspace AABB, vel/accel/jerk, collision checks. LLM cannot bypass. |
 
 ### Dataflows
 
@@ -113,7 +113,7 @@ RuntimeStateStore → get_latest_runtime_snapshot() → PlannerService → async
 ### Key invariants to maintain
 1. SkillRunner reads `target_hint_vec` **directly from runtime state**, not through the Planner.
 2. Planner sees **exactly one** snapshot: the latest. Middleware must **replace** (not append) the prior snapshot in LLM context.
-3. Every planner command carries a `command_id` (UUID) and `precondition_snapshot_id`; the router must enforce idempotency and reject stale preconditions.
+3. Every mutating planner command carries a `command_id` (UUID) and `precondition_snapshot_id`; the router must enforce idempotency and reject stale preconditions. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = None` to avoid premature rejection.
 4. VLM reacquire runs **asynchronously** — it is never on the critical path of the 10–30 Hz hint-publish loop.
 5. On phase transition, **trim the ACT buffer** to ~50–100 ms to avoid executing old-phase tail actions.
 
@@ -124,17 +124,17 @@ Top-level entry point. Owns `RuntimeStateStore`, `EventBus`, and `CommandRouter`
 Single source of truth (transport TBD: ROS2 topics, ZeroMQ, Redis, shared memory). Partitioned by `arm_id` from day one.
 
 ### Pick Skill FSM states
-`IDLE → ACQUIRE_TARGET → APPROACH → PREGRASP_ALIGN → GRASP_CLOSE → [VERIFY_GRASP] → LIFT → SUCCESS_PICK`
-Recovery: `REACQUIRE_TARGET`, `GRASP_RECOVER`, `FAIL(<reason>)`
+`RESET → APPROACH_PREGRASP → ALIGN → DESCEND_GRASP → CLOSE → [VERIFY_GRASP] → LIFT → DONE`
+Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_RETRY_DESCEND`, `RECOVER_REGRASP`
 
-`GRASP_CLOSE` is triggered **deterministically** (distance + persistence threshold), never by the planner.
+`CLOSE` is triggered **deterministically** (distance < threshold held for `grasp_persistence_ms`), never by the planner.
 
 ### ACT action space
 `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` in the EE frame, per-timestep servo increments.
 Do **not** integrate and play back whole chunks open-loop. Temporal ensembling blends overlapping deltas per-timestep before IK/OSC mapping.
 
 ### Planner snapshot fields (compact; no raw telemetry)
-`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low), `progress`, `outcome`, `safety`, `command_ack`, `recent_events` (ring of 3–8).
+`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8).
 
 ### Stable enums (define in `contracts/enums`)
 - Perception failure codes: `OK`, `OCCLUDED`, `OUT_OF_VIEW`, `DEPTH_INVALID`, `MULTIPLE_CANDIDATES`, `CALIB_INVALID`, `TRACK_JUMP_REJECTED`, `REACQUIRE_FAILED`

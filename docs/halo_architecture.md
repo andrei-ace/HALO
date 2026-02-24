@@ -119,7 +119,7 @@ Planner issues commands **asynchronously**. Results appear in:
 - Wrist camera for ACT: as needed, ideally aligned to ACT rate
 - TargetPerceptionService fusion publish: **10–30 Hz** (tracking; fast loop budget ≤80–120ms, excludes VLM reacquire)
 - VLM reacquire: event-driven, low duty cycle
-- PlannerService: **event-driven** (tick on SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE) + **30 s watchdog** fallback. No fixed polling rate — decide_fn (LLM) is awaited before the next event is processed, so ticks are always serialized.
+- PlannerService: **event-driven** (tick on SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE, SCENE_DESCRIBED, TARGET_ACQUIRED, COMMAND_REJECTED) + **30 s watchdog** fallback. No fixed polling rate — decide_fn (LLM) is awaited before the next event is processed, so ticks are always serialized.
 
 ### 4.2 Action chunk buffering (receding horizon)
 - Predict horizon: ~200–500ms for moving targets
@@ -214,7 +214,7 @@ Structured prompt for Qwen2.5-VL:
 - `OK`
 
 ### 6.5 What the planner can request
-- `set_tracking_target(...)`
+- `set_tracking_target(...)` — also available as `track_object(target_handle)` planner tool
 - `describe_scene(reason)` — triggers async VLM scene analysis; result delivered via `SCENE_DESCRIBED` event
 
 ---
@@ -228,21 +228,18 @@ Structured prompt for Qwen2.5-VL:
 - Buffer trimming and chunk scheduling
 - Optional verification hooks (e.g., VLM verify after grasp)
 
-### 7.2 Pick skill FSM (canonical states)
-- `IDLE`
-- `ACQUIRE_TARGET`
-- `REACQUIRE_TARGET`
-- `APPROACH`
-- `PREGRASP_ALIGN`
-- `GRASP_CLOSE`
-- `VERIFY_GRASP` (optional)
-- `WAIT_VERIFY` (optional, perception verify)
-- `LIFT`
-- `GRASP_RECOVER`
-- `SUCCESS_PICK`
-- `FAIL(<reason>)`
+### 7.2 Pick skill FSM (implemented states)
+- `RESET` (0) — initial state
+- `APPROACH_PREGRASP` (1) — move to pregrasp pose
+- `ALIGN` (2) — fine alignment
+- `DESCEND_GRASP` (3) — descend to grasp pose; grasp persistence timer starts when distance < threshold
+- `CLOSE` (4) — gripper close + dwell
+- `VERIFY_GRASP` (6) — optional (configurable via `skip_verify_grasp`)
+- `LIFT` (5) — lift after grasp
+- `DONE` (11) — terminal state (outcome: SUCCESS or FAILURE with reason code)
+- Recovery: `RECOVER_RETRY_APPROACH` (20), `RECOVER_RETRY_DESCEND` (21), `RECOVER_REGRASP` (22)
 
-**Critical:** `GRASP_CLOSE` is triggered deterministically when in the grasp window (distance + persistence), not by the planner.
+**Critical:** `CLOSE` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, not by the planner.
 
 ### 7.3 Outcome monitoring
 A `SkillOutcomeMonitor` computes:
@@ -291,11 +288,14 @@ Signals:
 ## 9) SafetyGuard + Reflex layer
 
 ### 9.1 Hard guards (pre-execution)
-- joint limits
-- workspace AABB limits
-- velocity/acceleration/jerk limits
+v0 implements:
+- per-timestep linear/angular delta magnitude limits (`max_linear_delta_m`, `max_angular_delta_rad`)
+- stale-hint / invalid-calibration interlocks (hint freshness gating in ControlService)
+
+Planned (not yet implemented):
+- absolute workspace AABB limits
+- velocity/acceleration/jerk rate limits
 - coarse collision checks
-- stale-hint / invalid-calibration interlocks
 
 ### 9.2 Reflexes (immediate overrides)
 - stop
@@ -319,16 +319,17 @@ Signals:
   "command_id": "uuid",
   "arm_id": "arm0",
   "issued_at_ms": 0,
-  "type": "start_skill | abort_skill | override_target | describe_scene",
-  "precondition_snapshot_id": "snap-123",
+  "type": "start_skill | abort_skill | override_target | describe_scene | track_object",
+  "precondition_snapshot_id": "snap-123 | null",
   "payload": {}
 }
 ```
 
 **Idempotency rules**
-- duplicate `command_id` => `already_applied`
-- stale precondition => `rejected:stale`
-- wrong skill_run => `rejected:wrong_skill_run`
+- duplicate `command_id` => `ALREADY_APPLIED`
+- stale precondition => `REJECTED_STALE`
+- wrong skill_run => `REJECTED_WRONG_SKILL_RUN`
+- `precondition_snapshot_id = null` (used by `describe_scene`, `track_object`) => accepted without precondition check
 
 ### 10.2 Planner snapshot (compact, planner-grade)
 
@@ -357,7 +358,7 @@ Signals:
 
   "safety": {"state": "OK", "reflex_active": false, "reason_codes": []},
 
-  "command_ack": [{"command_id": "uuid", "status": "accepted"}],
+  "command_acks": [{"command_id": "uuid", "status": "ACCEPTED"}],
   "recent_events": [{"event_id": "evt-77", "type": "PHASE_ENTER", "data": {"phase": "PREGRASP_ALIGN"}}]
 }
 ```
@@ -366,16 +367,17 @@ Signals:
 - The planner must see **exactly one** `get_latest_runtime_snapshot()` payload: the *latest* one.
 - When a new snapshot arrives, middleware must **replace** the prior snapshot tool output in the LLM context (do not append multiple snapshots).
 - Keep only a small `recent_events` ring; never stream raw telemetry into the planner prompt.
-- Every mutating command must include `precondition_snapshot_id`; the command router must reject stale preconditions even if the LLM repeats calls.
+- Every mutating command must include `precondition_snapshot_id`; the command router must reject stale preconditions even if the LLM repeats calls. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = null` to avoid premature rejection.
 
 
 ### 10.3 Event stream (small, canonical)
-Event types (examples):
+Event types:
 - `COMMAND_ACCEPTED / COMMAND_REJECTED`
 - `SKILL_STARTED / SKILL_SUCCEEDED / SKILL_FAILED`
 - `PHASE_ENTER / PHASE_EXIT`
 - `PERCEPTION_FAILURE / PERCEPTION_RECOVERED`
 - `SCENE_DESCRIBED`
+- `TARGET_ACQUIRED`
 - `SAFETY_REFLEX_TRIGGERED / SAFETY_RECOVERED`
 
 ---
@@ -500,7 +502,7 @@ docs/
   halo_architecture.md        # this file
   halo_plan_summary.md        # project plan + Isaac Lab strategy
   data/mock/                  # mock data: observe_fn_result.json, vlm_response.json, perception_info.json, mock.png
-tests/                        # 207 unit tests (14 test modules)
+tests/                        # 219 unit tests
 integration/                  # LLM integration tests (require Ollama)
   conftest.py                 # Ollama health-check; auto-skip if model unavailable
   runs/                       # timestamped result folders
