@@ -368,7 +368,7 @@ class TargetPerceptionService:
             inference_ms = int((time.monotonic() - t0) * 1000)
 
             det_summary = [
-                {"handle": d.handle, "label": d.label, "bbox": list(d.bbox)}
+                {"handle": d.handle, "label": d.label}
                 for d in scene.detections
             ]
 
