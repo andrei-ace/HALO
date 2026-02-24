@@ -22,10 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from halo.contracts.commands import CommandAck, CommandEnvelope
+from halo.contracts.commands import CommandEnvelope
 from halo.contracts.enums import (
     ActStatus,
-    CommandAckStatus,
     CommandType,
     PerceptionFailureCode,
     PhaseId,

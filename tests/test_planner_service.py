@@ -7,7 +7,17 @@ import uuid
 import pytest
 
 from halo.contracts.commands import CommandEnvelope, StartSkillPayload
-from halo.contracts.enums import CommandAckStatus, CommandType, SkillName
+from halo.contracts.enums import (
+    ActStatus,
+    CommandAckStatus,
+    CommandType,
+    PerceptionFailureCode,
+    PhaseId,
+    SafetyState,
+    SkillName,
+    SkillOutcomeState,
+    TrackingStatus,
+)
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import (
     ActInfo,
@@ -18,15 +28,6 @@ from halo.contracts.snapshots import (
     SafetyInfo,
     SkillInfo,
     TargetInfo,
-)
-from halo.contracts.enums import (
-    ActStatus,
-    PerceptionFailureCode,
-    PhaseId,
-    SafetyReflexReason,
-    SafetyState,
-    SkillOutcomeState,
-    TrackingStatus,
 )
 from halo.runtime.runtime import HALORuntime
 from halo.services.planner_service.config import PlannerServiceConfig
@@ -64,6 +65,7 @@ def _cmd(
 
 # ─── tick() core ──────────────────────────────────────────────────────────────
 
+
 async def test_tick_calls_decide_fn_with_snapshot(rt: HALORuntime):
     received: list[PlannerSnapshot] = []
 
@@ -85,7 +87,7 @@ async def test_tick_returns_empty_acks_when_no_commands(rt: HALORuntime):
 
 
 async def test_tick_submits_start_skill_command(rt: HALORuntime):
-    snap = await rt.get_latest_runtime_snapshot(ARM)
+    await rt.get_latest_runtime_snapshot(ARM)
 
     async def decide(s: PlannerSnapshot) -> list[CommandEnvelope]:
         return [_cmd(str(uuid.uuid4()), snap_id=s.snapshot_id)]
@@ -98,7 +100,7 @@ async def test_tick_submits_start_skill_command(rt: HALORuntime):
 
 
 async def test_tick_returns_ack_for_each_command(rt: HALORuntime):
-    snap = await rt.get_latest_runtime_snapshot(ARM)
+    await rt.get_latest_runtime_snapshot(ARM)
 
     async def decide(s: PlannerSnapshot) -> list[CommandEnvelope]:
         return [
@@ -141,7 +143,7 @@ async def test_tick_stale_precondition_returns_rejected_ack(rt: HALORuntime):
 
 async def test_tick_duplicate_command_returns_already_applied(rt: HALORuntime):
     cmd_id = str(uuid.uuid4())
-    snap = await rt.get_latest_runtime_snapshot(ARM)
+    await rt.get_latest_runtime_snapshot(ARM)
 
     call_count = 0
 
@@ -161,6 +163,7 @@ async def test_tick_duplicate_command_returns_already_applied(rt: HALORuntime):
 
 # ─── Config ───────────────────────────────────────────────────────────────────
 
+
 async def test_tick_limits_commands_to_max_per_tick(rt: HALORuntime):
     async def decide(snap: PlannerSnapshot) -> list[CommandEnvelope]:
         return [_cmd(str(uuid.uuid4())) for _ in range(5)]
@@ -173,6 +176,7 @@ async def test_tick_limits_commands_to_max_per_tick(rt: HALORuntime):
 
 
 # ─── Lifecycle ────────────────────────────────────────────────────────────────
+
 
 async def test_start_stop_lifecycle(rt: HALORuntime):
     svc = PlannerService(ARM, rt, _null_decide)
@@ -203,6 +207,7 @@ async def test_start_subscribes_to_event_bus(rt: HALORuntime):
 
 
 # ─── Urgent events ────────────────────────────────────────────────────────────
+
 
 async def test_urgent_event_triggers_tick(rt: HALORuntime):
     call_count = 0
@@ -299,6 +304,7 @@ async def test_command_rejected_event_triggers_tick(rt: HALORuntime):
 
 # ─── Snapshot serializer ──────────────────────────────────────────────────────
 
+
 def _make_snapshot(
     skill: SkillInfo | None = None,
     target: TargetInfo | None = None,
@@ -330,9 +336,18 @@ def test_snapshot_to_dict_has_required_keys():
     d = snapshot_to_dict(snap)
 
     required = {
-        "snapshot_id", "ts_ms", "arm_id", "skill", "target",
-        "perception", "act", "progress", "outcome", "safety",
-        "command_acks", "recent_events",
+        "snapshot_id",
+        "ts_ms",
+        "arm_id",
+        "skill",
+        "target",
+        "perception",
+        "act",
+        "progress",
+        "outcome",
+        "safety",
+        "command_acks",
+        "recent_events",
     }
     assert required <= d.keys()
 

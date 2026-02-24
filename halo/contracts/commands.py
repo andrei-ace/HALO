@@ -35,11 +35,7 @@ class TrackObjectPayload:
 
 
 CommandPayload = (
-    StartSkillPayload
-    | AbortSkillPayload
-    | OverrideTargetPayload
-    | DescribeScenePayload
-    | TrackObjectPayload
+    StartSkillPayload | AbortSkillPayload | OverrideTargetPayload | DescribeScenePayload | TrackObjectPayload
 )
 
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from halo.contracts.actions import Action, ZERO_ACTION
+from halo.contracts.actions import ZERO_ACTION, Action
 from halo.contracts.enums import SafetyReflexReason
 from halo.contracts.snapshots import TargetInfo
 from halo.services.control_service.config import ControlServiceConfig
@@ -36,6 +36,7 @@ def _target(hint_valid: bool = True, obs_age_ms: int = 100) -> TargetInfo:
 
 
 # --- check ---
+
 
 def test_check_safe_zero_action(guard: SafetyGuard):
     assert guard.check(ZERO_ACTION) == []
@@ -85,6 +86,7 @@ def test_check_no_duplicate_violations(guard: SafetyGuard):
 
 # --- clamp ---
 
+
 def test_clamp_leaves_sub_limit_untouched(guard: SafetyGuard):
     a = Action(0.005, -0.005, 0.003, 0.01, -0.01, 0.01, 0.5)
     assert guard.clamp(a) == a
@@ -117,6 +119,7 @@ def test_clamp_gripper_above_one(guard: SafetyGuard):
 
 
 # --- check_hint_freshness ---
+
 
 def test_freshness_true_when_target_none(guard: SafetyGuard, cfg: ControlServiceConfig):
     assert guard.check_hint_freshness(None, cfg) is True

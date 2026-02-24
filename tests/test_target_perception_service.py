@@ -45,16 +45,22 @@ def _good_hint(handle: str = "cube-1", distance_m: float = 0.3) -> TargetInfo:
 
 def _mock_observe(hint: TargetInfo | None = None) -> ObserveFn:
     """observe_fn that always returns the same hint (or None)."""
+
     async def observe(arm_id: str, target_handle: str) -> TargetInfo | None:
-        return hint if hint is None else TargetInfo(
-            handle=target_handle,
-            hint_valid=hint.hint_valid,
-            confidence=hint.confidence,
-            obs_age_ms=hint.obs_age_ms,
-            time_skew_ms=hint.time_skew_ms,
-            delta_xyz_ee=hint.delta_xyz_ee,
-            distance_m=hint.distance_m,
+        return (
+            hint
+            if hint is None
+            else TargetInfo(
+                handle=target_handle,
+                hint_valid=hint.hint_valid,
+                confidence=hint.confidence,
+                obs_age_ms=hint.obs_age_ms,
+                time_skew_ms=hint.time_skew_ms,
+                delta_xyz_ee=hint.delta_xyz_ee,
+                distance_m=hint.distance_m,
+            )
         )
+
     return observe
 
 
@@ -81,6 +87,7 @@ def _make_svc(
 
 # ─── tick: no target ─────────────────────────────────────────────────────────
 
+
 async def test_tick_no_target_publishes_idle(rt: HALORuntime):
     svc = _make_svc(rt)
     await svc.tick()
@@ -91,6 +98,7 @@ async def test_tick_no_target_publishes_idle(rt: HALORuntime):
 
 
 # ─── tick: tracking ───────────────────────────────────────────────────────────
+
 
 async def test_tick_with_target_publishes_tracking(rt: HALORuntime):
     svc = _make_svc(rt)
@@ -117,6 +125,7 @@ async def test_hint_stored_in_runtime_after_tick(rt: HALORuntime):
 
 # ─── tick: transient loss ─────────────────────────────────────────────────────
 
+
 async def test_tick_observe_none_publishes_relocalizing(rt: HALORuntime):
     svc = _make_svc(rt, observe_fn=_null_observe)
     await svc.set_tracking_target("cube-1")
@@ -128,6 +137,7 @@ async def test_tick_observe_none_publishes_relocalizing(rt: HALORuntime):
 
 
 # ─── tick: reacquire failure ──────────────────────────────────────────────────
+
 
 async def test_tick_reacquire_fail_limit_triggers_reacquire_failed(rt: HALORuntime):
     cfg = _cfg(reacquire_fail_limit=3)
@@ -172,6 +182,7 @@ async def test_tick_failure_event_emitted_only_once_on_transition(rt: HALORuntim
 
 # ─── tick: recovery ───────────────────────────────────────────────────────────
 
+
 async def test_tick_recovery_emits_perception_recovered_event(rt: HALORuntime):
     """Transition failure → OK emits PERCEPTION_RECOVERED."""
     cfg = _cfg(reacquire_fail_limit=1)
@@ -195,6 +206,7 @@ async def test_tick_recovery_emits_perception_recovered_event(rt: HALORuntime):
 
 
 # ─── plausibility gates ───────────────────────────────────────────────────────
+
 
 async def test_tick_stale_obs_age_invalidates_hint(rt: HALORuntime):
     cfg = _cfg(obs_age_limit_ms=100)
@@ -239,6 +251,7 @@ async def test_tick_stale_time_skew_invalidates_hint(rt: HALORuntime):
 
 # ─── set / clear target ───────────────────────────────────────────────────────
 
+
 async def test_set_tracking_target_resets_fail_count(rt: HALORuntime):
     cfg = _cfg(reacquire_fail_limit=3)
     svc = _make_svc(rt, observe_fn=_null_observe, cfg=cfg)
@@ -269,6 +282,7 @@ async def test_clear_tracking_target_publishes_lost(rt: HALORuntime):
 
 # ─── request_refresh ─────────────────────────────────────────────────────────
 
+
 async def test_request_refresh_sets_reacquiring_status(rt: HALORuntime):
     svc = _make_svc(rt)
     await svc.set_tracking_target("cube-1")
@@ -293,6 +307,7 @@ async def test_request_refresh_clears_after_successful_observe(rt: HALORuntime):
 
 # ─── lifecycle ────────────────────────────────────────────────────────────────
 
+
 async def test_start_stop_lifecycle(rt: HALORuntime):
     svc = _make_svc(rt)
     assert svc._loop_task is None
@@ -306,12 +321,16 @@ async def test_start_stop_lifecycle(rt: HALORuntime):
 
 # ─── VLM helpers ──────────────────────────────────────────────────────────────
 
+
 def _scene(*handles: str) -> VlmScene:
     """Build a VlmScene with one detection per handle."""
     dets = [
         VlmDetection(
-            handle=h, label=h, bbox=(0.0, 0.0, 100.0, 100.0),
-            centroid=(50.0, 50.0), is_graspable=True,
+            handle=h,
+            label=h,
+            bbox=(0.0, 0.0, 100.0, 100.0),
+            centroid=(50.0, 50.0),
+            is_graspable=True,
         )
         for h in handles
     ]
@@ -319,6 +338,7 @@ def _scene(*handles: str) -> VlmScene:
 
 
 # ─── VLM async path ───────────────────────────────────────────────────────────
+
 
 async def test_vlm_triggered_on_set_tracking_target(rt: HALORuntime):
     called: list[str] = []
@@ -493,6 +513,7 @@ async def test_stop_cancels_vlm_task(rt: HALORuntime):
 
 # ─── TARGET_ACQUIRED event ───────────────────────────────────────────────────
 
+
 async def test_target_acquired_emitted_on_first_tracking(rt: HALORuntime):
     """TARGET_ACQUIRED fires on the first tick that reaches TRACKING after set_tracking_target."""
     svc = _make_svc(rt)
@@ -520,8 +541,10 @@ async def test_target_acquired_not_emitted_on_subsequent_ticks(rt: HALORuntime):
 
 # ─── _drain_commands: TRACK_OBJECT ──────────────────────────────────────────
 
+
 async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
     """VLM triggered by set_tracking_target must NOT emit SCENE_DESCRIBED."""
+
     async def vlm(arm_id: str) -> VlmScene:
         return _scene("cube-1")
 

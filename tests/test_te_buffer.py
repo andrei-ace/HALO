@@ -2,8 +2,6 @@
 
 import math
 
-import pytest
-
 from halo.contracts.actions import Action, ActionChunk
 from halo.contracts.enums import PhaseId
 from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
@@ -28,10 +26,7 @@ def _chunk(n: int, dx_start: float = 0.0, arm: str = "arm0") -> ActionChunk:
 
 def _const_chunk(n: int, dx: float, arm: str = "arm0") -> ActionChunk:
     """Create an ActionChunk with n actions all having the same dx."""
-    actions = tuple(
-        Action(dx=dx, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
-        for _ in range(n)
-    )
+    actions = tuple(Action(dx=dx, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0) for _ in range(n))
     return ActionChunk(
         chunk_id=f"const-{n}-{dx}",
         arm_id=arm,
@@ -48,6 +43,7 @@ def _buf(temp: float = 0.0) -> TemporalEnsemblingBuffer:
 # ---------------------------------------------------------------------------
 # Single-chunk (FIFO-compatible) tests
 # ---------------------------------------------------------------------------
+
 
 def test_single_chunk_pops_in_order():
     buf = _buf()
@@ -102,6 +98,7 @@ def test_size_decrements_after_pop():
 # Ensembling tests (temp=0.0 → equal weights → simple average)
 # ---------------------------------------------------------------------------
 
+
 def test_two_chunks_same_tick_blend_equal_weight():
     """Two chunks pushed at the same tick get equal weight → 50/50 blend."""
     buf = _buf(temp=0.0)
@@ -126,6 +123,7 @@ def test_three_chunks_blend_average():
 # ---------------------------------------------------------------------------
 # Weight-decay tests (temp=1.0 → strong decay)
 # ---------------------------------------------------------------------------
+
 
 def test_newer_chunk_gets_higher_weight():
     """
@@ -154,6 +152,7 @@ def test_newer_chunk_gets_higher_weight():
 # ---------------------------------------------------------------------------
 # Expiry tests
 # ---------------------------------------------------------------------------
+
 
 def test_expired_chunk_not_blended():
     """A chunk with 1 action expires after one pop; second pop returns None."""
@@ -196,6 +195,7 @@ def test_second_chunk_fills_after_first_expires():
 # Trim tests
 # ---------------------------------------------------------------------------
 
+
 def test_trim_single_chunk_at_boundary():
     """Push chunk(10); trim_to_ms(300, 10) → keep 3 actions; size=3."""
     buf = _buf()
@@ -216,7 +216,7 @@ def test_trim_removes_entire_chunk_if_beyond_cutoff():
     buf.pop_action()  # tick now = 3; chunk(2) already expired
 
     buf.push_chunk(_chunk(5))  # pushed at tick=3
-    buf.trim_to_ms(0, RATE)   # cutoff_tick = 3+0 = 3; keep_len = 3-3 = 0
+    buf.trim_to_ms(0, RATE)  # cutoff_tick = 3+0 = 3; keep_len = 3-3 = 0
     assert buf.size == 0
 
 
@@ -254,6 +254,7 @@ def test_trim_returns_removed_count():
 # Phase-switch flow
 # ---------------------------------------------------------------------------
 
+
 def test_phase_switch_discards_tail_preserves_near_term():
     """
     Push chunk(10, dx=i); pop 2 times to advance tick to 2.
@@ -269,7 +270,7 @@ def test_phase_switch_discards_tail_preserves_near_term():
     assert r1.dx == 1.0
 
     buf.trim_to_ms(100, RATE)  # target=1 tick, cutoff=3; chunk[:3] kept
-    assert buf.size == 1       # ticks 2 is the only remaining one (3-2=1)
+    assert buf.size == 1  # ticks 2 is the only remaining one (3-2=1)
 
     r2 = buf.pop_action()
     assert r2 is not None

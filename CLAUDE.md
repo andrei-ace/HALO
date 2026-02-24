@@ -5,6 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Rules
 
 - Always use Context7 MCP when needing library/API documentation, code generation, setup or configuration steps — no need to ask explicitly.
+- Always run `make ruff` before committing to ensure code is linted and formatted.
 
 ## Commands
 
@@ -14,6 +15,7 @@ uv run python -m pytest               # run all unit tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
+make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
 make tui-live          # launch TUI wired to HALORuntime + PlannerAgent (requires Ollama)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/

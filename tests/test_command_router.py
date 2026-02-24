@@ -60,6 +60,7 @@ def _override(command_id: str, skill_run_id: str) -> CommandEnvelope:
 # Accept cases
 # ---------------------------------------------------------------------------
 
+
 async def test_accept_no_precondition(rt: HALORuntime):
     ack = await rt.submit_command(_start())
     assert ack.status == CommandAckStatus.ACCEPTED
@@ -81,6 +82,7 @@ async def test_accepted_ack_appears_in_next_snapshot(rt: HALORuntime):
 # Idempotency
 # ---------------------------------------------------------------------------
 
+
 async def test_duplicate_command_id_returns_already_applied(rt: HALORuntime):
     await rt.submit_command(_start(command_id="cmd-dup"))
     ack2 = await rt.submit_command(_start(command_id="cmd-dup"))
@@ -101,6 +103,7 @@ async def test_already_applied_does_not_add_another_ack(rt: HALORuntime):
 # ---------------------------------------------------------------------------
 # Stale precondition
 # ---------------------------------------------------------------------------
+
 
 async def test_stale_precondition_rejected(rt: HALORuntime):
     ack = await rt.submit_command(_start(command_id="cmd-stale", precondition="snap-arm0-9999"))
@@ -131,6 +134,7 @@ async def test_stale_ack_recorded_in_store(rt: HALORuntime):
 # ---------------------------------------------------------------------------
 # Wrong skill run
 # ---------------------------------------------------------------------------
+
 
 async def test_abort_wrong_skill_run_rejected(rt: HALORuntime):
     # No current skill set → any skill_run_id is wrong
@@ -166,6 +170,7 @@ async def test_override_matching_skill_run_accepted(rt: HALORuntime):
 # Concurrent submission
 # ---------------------------------------------------------------------------
 
+
 async def test_concurrent_unique_commands_all_accepted(rt: HALORuntime):
     cmds = [_start(command_id=f"cmd-{i}") for i in range(20)]
     acks = await asyncio.gather(*[rt.submit_command(c) for c in cmds])
@@ -186,6 +191,7 @@ async def test_concurrent_duplicate_commands_idempotent(rt: HALORuntime):
 # ---------------------------------------------------------------------------
 # TRACK_OBJECT
 # ---------------------------------------------------------------------------
+
 
 async def test_track_object_accepted_includes_target_handle(rt: HALORuntime):
     q = rt.bus.subscribe(ARM)

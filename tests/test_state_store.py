@@ -12,20 +12,16 @@ from halo.contracts.enums import (
     PhaseId,
     SafetyState,
     SkillName,
-    SkillOutcomeState,
     TrackingStatus,
 )
 from halo.contracts.snapshots import (
     ActInfo,
-    OutcomeInfo,
     PerceptionInfo,
-    ProgressInfo,
     SafetyInfo,
     SkillInfo,
     TargetInfo,
 )
 from halo.runtime.state_store import RuntimeStateStore
-
 
 ARM = "arm0"
 ARM2 = "arm1"
@@ -42,6 +38,7 @@ def store() -> RuntimeStateStore:
 # Registration
 # ---------------------------------------------------------------------------
 
+
 def test_register_arm_is_idempotent():
     s = RuntimeStateStore()
     s.register_arm(ARM)
@@ -56,6 +53,7 @@ async def test_unregistered_arm_raises(store: RuntimeStateStore):
 # ---------------------------------------------------------------------------
 # Per-field updates
 # ---------------------------------------------------------------------------
+
 
 async def test_update_skill(store: RuntimeStateStore):
     skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-1", phase=PhaseId.APPROACH_PREGRASP)
@@ -110,6 +108,7 @@ async def test_update_safety(store: RuntimeStateStore):
 # Snapshot identity and caching
 # ---------------------------------------------------------------------------
 
+
 async def test_snapshot_ids_increment(store: RuntimeStateStore):
     snap1 = await store.build_and_cache_snapshot(ARM, [])
     snap2 = await store.build_and_cache_snapshot(ARM, [])
@@ -130,6 +129,7 @@ async def test_get_latest_snapshot_returns_last(store: RuntimeStateStore):
 # Command ack ring
 # ---------------------------------------------------------------------------
 
+
 async def test_command_ack_ring_max_size(store: RuntimeStateStore):
     for i in range(RuntimeStateStore.COMMAND_ACK_RING_SIZE + 5):
         await store.add_command_ack(
@@ -146,6 +146,7 @@ async def test_command_ack_ring_max_size(store: RuntimeStateStore):
 # ---------------------------------------------------------------------------
 # Multi-arm isolation
 # ---------------------------------------------------------------------------
+
 
 async def test_two_arms_are_independent(store: RuntimeStateStore):
     store.register_arm(ARM2)
@@ -167,6 +168,7 @@ async def test_two_arms_are_independent(store: RuntimeStateStore):
 # ---------------------------------------------------------------------------
 # Concurrency
 # ---------------------------------------------------------------------------
+
 
 async def test_concurrent_updates_do_not_corrupt(store: RuntimeStateStore):
     async def update_skill(i: int) -> None:

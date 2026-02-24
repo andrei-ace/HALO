@@ -210,9 +210,7 @@ class SkillRunnerService:
                         EventType.SKILL_FAILED,
                         {
                             "skill_run_id": self._skill_run_id,
-                            "failure_code": self._fsm.failure_code.value
-                            if self._fsm.failure_code
-                            else None,
+                            "failure_code": self._fsm.failure_code.value if self._fsm.failure_code else None,
                         },
                     )
 

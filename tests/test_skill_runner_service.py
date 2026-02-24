@@ -2,7 +2,7 @@
 
 import pytest
 
-from halo.contracts.actions import Action, ActionChunk, ZERO_ACTION
+from halo.contracts.actions import ZERO_ACTION, ActionChunk
 from halo.contracts.enums import (
     ActStatus,
     PerceptionFailureCode,
@@ -13,7 +13,7 @@ from halo.contracts.enums import (
     TrackingStatus,
 )
 from halo.contracts.events import EventType
-from halo.contracts.snapshots import ActInfo, OutcomeInfo, PerceptionInfo, ProgressInfo, TargetInfo
+from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.service import SkillRunnerService
@@ -112,6 +112,7 @@ def _make_svc(
         chunk_fn = _fixed_chunk_fn
 
     if push_fn is None:
+
         async def push_fn(chunk: ActionChunk) -> None:
             chunks_pushed.append(chunk)
 
@@ -134,6 +135,7 @@ async def _seed_store(rt: HALORuntime, distance_m: float = 0.5) -> None:
 
 
 # --- start_skill publishes events ---
+
 
 async def test_start_skill_publishes_skill_started_and_phase_enter(rt: HALORuntime):
     svc, _ = _make_svc(rt)
@@ -160,6 +162,7 @@ async def test_start_skill_updates_store_skill_info(rt: HALORuntime):
 
 # --- tick before start ---
 
+
 async def test_tick_before_start_skill_returns_none(rt: HALORuntime):
     svc, _ = _make_svc(rt)
     result = await svc.tick()
@@ -167,6 +170,7 @@ async def test_tick_before_start_skill_returns_none(rt: HALORuntime):
 
 
 # --- tick advances phases ---
+
 
 async def test_tick_advances_to_align_with_close_target(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
@@ -209,6 +213,7 @@ async def test_tick_updates_store_skill_info_on_transition(rt: HALORuntime):
 
 # --- chunk scheduling ---
 
+
 async def test_tick_pushes_chunk_when_buffer_low(rt: HALORuntime):
     svc, chunks = _make_svc(rt, cfg=_cfg(buffer_target_ms=200))
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
@@ -237,25 +242,27 @@ async def test_tick_does_not_push_chunk_when_buffer_full(rt: HALORuntime):
 
 # --- happy-path full run ---
 
+
 async def test_tick_publishes_skill_succeeded_on_happy_path(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
     # Drive through all phases
-    await _seed_store(rt, distance_m=0.10)   # APPROACH→ALIGN
+    await _seed_store(rt, distance_m=0.10)  # APPROACH→ALIGN
     await svc.tick()
-    await _seed_store(rt, distance_m=0.03)   # ALIGN→DESCEND
+    await _seed_store(rt, distance_m=0.03)  # ALIGN→DESCEND
     await svc.tick()
-    await _seed_store(rt, distance_m=0.01)   # DESCEND→CLOSE (persistence=0 → immediate)
+    await _seed_store(rt, distance_m=0.01)  # DESCEND→CLOSE (persistence=0 → immediate)
     await svc.tick()
-    await svc.tick()                          # CLOSE→LIFT   (duration=0)
-    await svc.tick()                          # LIFT→DONE    (duration=0)
+    await svc.tick()  # CLOSE→LIFT   (duration=0)
+    await svc.tick()  # LIFT→DONE    (duration=0)
 
     events = rt.bus.get_recent_events(ARM)
     assert any(e.type == EventType.SKILL_SUCCEEDED for e in events)
 
 
 # --- timeout failure ---
+
 
 async def test_tick_publishes_skill_failed_on_timeout(rt: HALORuntime):
     cfg = _cfg(approach_timeout_ms=0, no_target_tolerance_ms=99999)
@@ -274,6 +281,7 @@ async def test_tick_publishes_skill_failed_on_timeout(rt: HALORuntime):
 
 # --- abort_skill ---
 
+
 async def test_abort_skill_publishes_skill_failed(rt: HALORuntime):
     svc, _ = _make_svc(rt)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
@@ -287,6 +295,7 @@ async def test_abort_skill_publishes_skill_failed(rt: HALORuntime):
 
 # --- start/stop lifecycle ---
 
+
 async def test_start_stop_lifecycle(rt: HALORuntime):
     svc, _ = _make_svc(rt)
     await svc.start()
@@ -297,6 +306,7 @@ async def test_start_stop_lifecycle(rt: HALORuntime):
 
 
 # --- store outcome/progress updates ---
+
 
 async def test_outcome_info_updated_in_store_on_success(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())

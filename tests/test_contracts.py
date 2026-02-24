@@ -8,8 +8,8 @@ from halo.contracts.commands import (
     AbortSkillPayload,
     CommandAck,
     CommandEnvelope,
-    OverrideTargetPayload,
     DescribeScenePayload,
+    OverrideTargetPayload,
     StartSkillPayload,
     TrackObjectPayload,
 )
@@ -38,10 +38,10 @@ from halo.contracts.snapshots import (
     TargetInfo,
 )
 
-
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
+
 
 def test_phase_id_values():
     assert PhaseId.RESET == 0
@@ -54,8 +54,14 @@ def test_phase_id_values():
 
 def test_perception_failure_codes_complete():
     expected = {
-        "OK", "OCCLUDED", "OUT_OF_VIEW", "DEPTH_INVALID",
-        "MULTIPLE_CANDIDATES", "CALIB_INVALID", "TRACK_JUMP_REJECTED", "REACQUIRE_FAILED",
+        "OK",
+        "OCCLUDED",
+        "OUT_OF_VIEW",
+        "DEPTH_INVALID",
+        "MULTIPLE_CANDIDATES",
+        "CALIB_INVALID",
+        "TRACK_JUMP_REJECTED",
+        "REACQUIRE_FAILED",
     }
     assert {c.value for c in PerceptionFailureCode} == expected
 
@@ -79,6 +85,7 @@ def test_str_enum_values_are_strings():
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
 
 def _make_command_envelope() -> CommandEnvelope:
     return CommandEnvelope(
@@ -131,6 +138,7 @@ def test_command_asdict():
 # Events
 # ---------------------------------------------------------------------------
 
+
 def _make_event() -> EventEnvelope:
     return EventEnvelope(
         event_id="evt-1",
@@ -162,6 +170,7 @@ def test_event_asdict():
 # ---------------------------------------------------------------------------
 # Snapshots
 # ---------------------------------------------------------------------------
+
 
 def _make_snapshot() -> PlannerSnapshot:
     return PlannerSnapshot(

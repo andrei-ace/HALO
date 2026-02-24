@@ -44,7 +44,7 @@ def build_tools(ctx: AgentContext) -> list:
             target_handle: Target object handle string (from perception).
             options: Optional key/value overrides for the skill.
         """
-        if (err := _once("start_skill")):
+        if err := _once("start_skill"):
             return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
@@ -69,7 +69,7 @@ def build_tools(ctx: AgentContext) -> list:
             skill_run_id: ID of the skill run to abort (from snapshot.skill.skill_run_id).
             reason: Human-readable reason for aborting.
         """
-        if (err := _once("abort_skill")):
+        if err := _once("abort_skill"):
             return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
@@ -93,7 +93,7 @@ def build_tools(ctx: AgentContext) -> list:
             skill_run_id: ID of the skill run to update.
             target_handle: New target object handle.
         """
-        if (err := _once("override_target")):
+        if err := _once("override_target"):
             return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
@@ -120,7 +120,7 @@ def build_tools(ctx: AgentContext) -> list:
         Args:
             reason: Human-readable reason for requesting the scene description.
         """
-        if (err := _once("describe_scene")):
+        if err := _once("describe_scene"):
             return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
@@ -149,7 +149,7 @@ def build_tools(ctx: AgentContext) -> list:
         Args:
             target_handle: Object handle string (from SCENE_DESCRIBED detections).
         """
-        if (err := _once("track_object")):
+        if err := _once("track_object"):
             return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
