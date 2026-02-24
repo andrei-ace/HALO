@@ -267,6 +267,36 @@ async def test_target_acquired_event_triggers_tick(rt: HALORuntime):
     await svc.stop()
 
 
+async def test_command_rejected_event_triggers_tick(rt: HALORuntime):
+    call_count = 0
+
+    async def decide(snap: PlannerSnapshot) -> list[CommandEnvelope]:
+        nonlocal call_count
+        call_count += 1
+        return []
+
+    cfg = PlannerServiceConfig(watchdog_interval_s=100.0)
+    svc = PlannerService(ARM, rt, decide, config=cfg)
+    await svc.start()
+
+    await asyncio.sleep(0.05)
+    assert call_count == 0
+
+    event = EventEnvelope(
+        event_id=rt.bus.make_event_id(),
+        type=EventType.COMMAND_REJECTED,
+        ts_ms=int(time.monotonic() * 1000),
+        arm_id=ARM,
+        data={"command_id": "cmd-1", "command_type": "START_SKILL"},
+    )
+    await rt.bus.publish(event)
+
+    await asyncio.sleep(0.15)
+    assert call_count == 1
+
+    await svc.stop()
+
+
 # ─── Snapshot serializer ──────────────────────────────────────────────────────
 
 def _make_snapshot(

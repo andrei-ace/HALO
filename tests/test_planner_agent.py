@@ -1,11 +1,17 @@
-"""Unit tests for PlannerService tools (AgentContext + build_tools).
+"""Unit tests for PlannerService tools (AgentContext + build_tools)
+and loop-detection helper.
 
 The LangGraph agent itself (PlannerAgent / make_decide_fn) requires a running
 Ollama instance and is not unit-tested here.
 """
 from __future__ import annotations
 
-from halo.contracts.enums import CommandType
+import time
+import uuid
+
+from halo.contracts.commands import CommandEnvelope, StartSkillPayload, TrackObjectPayload
+from halo.contracts.enums import CommandType, SkillName
+from halo.services.planner_service.agent import _command_key
 from halo.services.planner_service.tools import AgentContext, build_tools
 
 
@@ -106,15 +112,25 @@ def test_tool_commands_have_correct_arm_id() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_tool_commands_have_unique_ids() -> None:
+def test_duplicate_tool_call_rejected() -> None:
+    """Calling the same tool twice in one tick is rejected (once-per-tick guard)."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
+    result1 = tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
+    result2 = tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-2"})
+
+    assert len(ctx.commands) == 1, "Only the first call should produce a command"
+    assert "REJECTED" in result2
+
+
+def test_different_tools_allowed_same_tick() -> None:
+    """Different tools can each be called once in the same tick."""
+    ctx = _make_ctx()
+    tools = _tools_by_name(ctx)
+    tools["track_object"].invoke({"target_handle": "cube-1"})
     tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
-    tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-2"})
 
     assert len(ctx.commands) == 2
-    ids = {cmd.command_id for cmd in ctx.commands}
-    assert len(ids) == 2, "Both commands must have distinct UUIDs"
 
 
 # ---------------------------------------------------------------------------
@@ -132,3 +148,46 @@ def test_track_object_tool_appends_command() -> None:
     assert cmd.type == CommandType.TRACK_OBJECT
     assert cmd.payload.target_handle == "mug-2"
     assert cmd.precondition_snapshot_id is None
+
+
+# ---------------------------------------------------------------------------
+# _command_key (loop detection)
+# ---------------------------------------------------------------------------
+
+
+def _cmd(cmd_type: CommandType = CommandType.START_SKILL, **payload_kw) -> CommandEnvelope:
+    """Build a CommandEnvelope with unique id/ts but deterministic payload."""
+    if cmd_type == CommandType.START_SKILL:
+        payload = StartSkillPayload(
+            skill_name=payload_kw.get("skill_name", SkillName.PICK),
+            target_handle=payload_kw.get("target_handle", "cube-1"),
+        )
+    else:
+        payload = TrackObjectPayload(target_handle=payload_kw.get("target_handle", "cube-1"))
+    return CommandEnvelope(
+        command_id=str(uuid.uuid4()),
+        arm_id="arm0",
+        issued_at_ms=int(time.time() * 1000),
+        type=cmd_type,
+        payload=payload,
+    )
+
+
+def test_command_key_stable_across_ids() -> None:
+    """Same type+payload → same key despite different command_id/ts."""
+    a = _cmd()
+    b = _cmd()
+    assert a.command_id != b.command_id
+    assert _command_key(a) == _command_key(b)
+
+
+def test_command_key_differs_for_different_payloads() -> None:
+    a = _cmd(target_handle="cube-1")
+    b = _cmd(target_handle="cube-2")
+    assert _command_key(a) != _command_key(b)
+
+
+def test_command_key_differs_for_different_types() -> None:
+    a = _cmd(CommandType.START_SKILL, target_handle="cube-1")
+    b = _cmd(CommandType.TRACK_OBJECT, target_handle="cube-1")
+    assert _command_key(a) != _command_key(b)

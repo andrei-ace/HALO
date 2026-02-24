@@ -48,12 +48,17 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
         "delta_distance": pr.delta_distance,
     }
 
-    o = snap.outcome
-    outcome_dict = {
-        "state": o.state.value,
-        "reason_code": o.reason_code.value if o.reason_code is not None else None,
-        "needs_verify": o.needs_verify,
-    }
+    # Outcome is only meaningful when a skill is active.
+    # When skill is null, suppress outcome to avoid confusing the LLM.
+    if snap.skill is not None:
+        o = snap.outcome
+        outcome_dict = {
+            "state": o.state.value,
+            "reason_code": o.reason_code.value if o.reason_code is not None else None,
+            "needs_verify": o.needs_verify,
+        }
+    else:
+        outcome_dict = None
 
     s = snap.safety
     safety_dict = {
