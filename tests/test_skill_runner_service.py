@@ -160,6 +160,37 @@ async def test_start_skill_updates_store_skill_info(rt: HALORuntime):
     assert snap.skill.skill_run_id == RUN_ID
 
 
+async def test_start_skill_rejects_unsupported_skill(rt: HALORuntime):
+    svc, _ = _make_svc(rt)
+    await svc.start_skill(SkillName.PLACE, RUN_ID, "obj-1")
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.skill is not None
+    assert snap.skill.phase == PhaseId.DONE
+    assert snap.outcome.state == SkillOutcomeState.FAILURE
+    assert snap.outcome.reason_code == SkillFailureCode.UNSAFE_ABORT
+
+    events = rt.bus.get_recent_events(ARM)
+    failed = [e for e in events if e.type == EventType.SKILL_FAILED]
+    assert len(failed) == 1
+
+
+async def test_start_skill_rejects_unsupported_skill_without_clobbering_active(rt: HALORuntime):
+    svc, _ = _make_svc(rt)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+    await svc.start_skill(SkillName.PLACE, "run-place", "obj-1")
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.skill is not None
+    assert snap.skill.skill_run_id == RUN_ID
+    assert snap.skill.phase == PhaseId.APPROACH_PREGRASP
+    assert snap.outcome.state == SkillOutcomeState.IN_PROGRESS
+
+    events = rt.bus.get_recent_events(ARM)
+    failed = [e for e in events if e.type == EventType.SKILL_FAILED]
+    assert any(e.data.get("skill_run_id") == "run-place" for e in failed)
+
+
 # --- tick before start ---
 
 

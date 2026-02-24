@@ -5,7 +5,7 @@ import time
 from typing import Awaitable, Callable
 
 from halo.contracts.actions import ActionChunk
-from halo.contracts.enums import PhaseId, SkillName, SkillOutcomeState
+from halo.contracts.enums import PhaseId, SkillFailureCode, SkillName, SkillOutcomeState
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import OutcomeInfo, ProgressInfo, SkillInfo
 from halo.runtime.runtime import HALORuntime
@@ -76,6 +76,35 @@ class SkillRunnerService:
         target_handle: str,
     ) -> None:
         """Begin a new Pick skill run. Resets the FSM."""
+        if skill_name != SkillName.PICK:
+            await self._publish(
+                EventType.SKILL_FAILED,
+                {
+                    "skill_run_id": skill_run_id,
+                    "reason": "unsupported_skill",
+                    "failure_code": SkillFailureCode.UNSAFE_ABORT.value,
+                },
+            )
+            # If a skill is already active, do not clobber it.
+            if self._fsm.is_active:
+                return
+            await self._runtime.store.update_skill(
+                self._arm_id,
+                SkillInfo(
+                    name=skill_name,
+                    skill_run_id=skill_run_id,
+                    phase=PhaseId.DONE,
+                ),
+            )
+            await self._runtime.store.update_outcome(
+                self._arm_id,
+                OutcomeInfo(
+                    state=SkillOutcomeState.FAILURE,
+                    reason_code=SkillFailureCode.UNSAFE_ABORT,
+                    needs_verify=False,
+                ),
+            )
+            return
         now_ms = int(time.monotonic() * 1000)
 
         self._fsm = PickFSM(self._config)

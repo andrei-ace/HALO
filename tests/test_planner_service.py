@@ -33,6 +33,7 @@ from halo.runtime.runtime import HALORuntime
 from halo.services.planner_service.config import PlannerServiceConfig
 from halo.services.planner_service.service import PlannerService
 from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
+from halo.services.planner_service.tools import AgentContext, build_tools
 
 ARM = "arm0"
 
@@ -392,3 +393,14 @@ def test_snapshot_to_dict_recent_events_included():
     assert ev_dict["event_id"] == "ev-1"
     assert ev_dict["type"] == "SKILL_SUCCEEDED"
     assert ev_dict["data"] == {"run_id": "run-1"}
+
+
+def test_start_skill_tool_rejects_invalid_skill_name():
+    ctx = AgentContext(arm_id=ARM, snapshot_id="snap-1")
+    tools = build_tools(ctx)
+    start_tool = next(t for t in tools if t.name == "start_skill")
+
+    result = start_tool.invoke({"skill_name": "pick", "target_handle": "obj-1"})
+
+    assert "REJECTED" in result
+    assert ctx.commands == []

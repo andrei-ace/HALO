@@ -511,6 +511,24 @@ async def test_stop_cancels_vlm_task(rt: HALORuntime):
     assert svc._vlm_task is None
 
 
+async def test_vlm_mismatch_emits_failure(rt: HALORuntime):
+    async def vlm(arm_id: str) -> VlmScene:
+        return _scene("other-1")
+
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)
+
+    events = rt.bus.get_recent_events(ARM)
+    failures = [e for e in events if e.type == EventType.PERCEPTION_FAILURE]
+    assert len(failures) == 1
+    assert failures[0].data["failure_code"] == PerceptionFailureCode.REACQUIRE_FAILED.value
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
+    assert snap.perception.tracking_status == TrackingStatus.REACQUIRING
+
+
 # ─── TARGET_ACQUIRED event ───────────────────────────────────────────────────
 
 

@@ -36,25 +36,33 @@ def build_tools(ctx: AgentContext) -> list:
         return None
 
     @tool
-    def start_skill(skill_name: str, target_handle: str, options: dict = {}) -> str:
+    def start_skill(skill_name: str, target_handle: str, options: dict | None = None) -> str:
         """Start a named skill on the arm.
 
         Args:
-            skill_name: Skill to run. One of: PICK, PLACE.
+            skill_name: Skill to run. One of: PICK.
             target_handle: Target object handle string (from perception).
             options: Optional key/value overrides for the skill.
         """
         if err := _once("start_skill"):
             return err
+        try:
+            skill = SkillName(skill_name)
+        except Exception:
+            allowed = ", ".join(s.value for s in SkillName)
+            return (
+                f"REJECTED: invalid skill_name {skill_name!r}. "
+                f"Expected one of [{allowed}]."
+            )
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
             issued_at_ms=int(time.time() * 1000),
             type=CommandType.START_SKILL,
             payload=StartSkillPayload(
-                skill_name=SkillName(skill_name),
+                skill_name=skill,
                 target_handle=target_handle,
-                options=options,
+                options=options or {},
             ),
             precondition_snapshot_id=ctx.snapshot_id,
         )
