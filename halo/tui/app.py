@@ -109,10 +109,10 @@ _DATA = dict(
         ("Confidence", "86%"),
     ],
     events=[
-        ("14:32:08", "PHASE_ENTER PREGRASP_ALIGN"),
-        ("14:32:08", "PERCEPTION_RECOVERED"),
-        ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
         ("14:32:06", "SKILL_STARTED run-9"),
+        ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
+        ("14:32:08", "PERCEPTION_RECOVERED"),
+        ("14:32:08", "PHASE_ENTER PREGRASP_ALIGN"),
     ],
 )
 
@@ -192,6 +192,7 @@ def _format_cmd(cmd: object) -> str:
         OverrideTargetPayload,
         DescribeScenePayload,
         StartSkillPayload,
+        TrackObjectPayload,
     )
 
     p = cmd.payload  # type: ignore[attr-defined]
@@ -203,6 +204,8 @@ def _format_cmd(cmd: object) -> str:
         return f"OVERRIDE_TARGET({p.target_handle})"
     if isinstance(p, DescribeScenePayload):
         return f"DESCRIBE_SCENE({p.reason})"
+    if isinstance(p, TrackObjectPayload):
+        return f"TRACK_OBJECT({p.target_handle})"
     return str(cmd.type)  # type: ignore[attr-defined]
 
 
@@ -228,6 +231,9 @@ def _format_event(evt: object) -> str:
         scene = data.get("scene", "")
         snippet = (scene[:60] + "…") if len(scene) > 60 else scene
         return f"SCENE_DESCRIBED {count} obj  ({ms} ms)  {snippet}"
+    if name == "TARGET_ACQUIRED":
+        handle = data.get("target_handle", "?")
+        return f"TARGET_ACQUIRED {handle}"
     return name
 
 
@@ -644,7 +650,7 @@ class EventsPanel(Container):
             yield Static(t)
 
     def append_event(self, evt: object) -> None:
-        """Prepend a live EventEnvelope row (newest at top). Trims to 8 rows."""
+        """Append a live EventEnvelope row (newest at bottom). Trims to 8 rows."""
         from datetime import datetime
 
         ts_ms = getattr(evt, "ts_ms", 0)
@@ -653,11 +659,10 @@ class EventsPanel(Container):
         t.append(ts, style="grey62")
         t.append("  ")
         t.append(_format_event(evt))
-        first = next(iter(self.query("Static")), None)
-        self.mount(Static(t), before=first)
+        self.mount(Static(t))
         children = list(self.query("Static"))
         if len(children) > 8:
-            children[-1].remove()
+            children[0].remove()
 
 
 class PanicPanel(Container):
@@ -1154,6 +1159,15 @@ class HALOApp(App):
                     self.run_worker(
                         self._do_agent_call(
                             f"[scene update] VLM described {count} object(s): {snippet}"
+                        ),
+                        group="planner",
+                        exclusive=True,
+                    )
+                elif evt.type == EventType.TARGET_ACQUIRED and self._agent:
+                    handle = evt.data.get("target_handle", "?")
+                    self.run_worker(
+                        self._do_agent_call(
+                            f"[target acquired] Perception is now tracking: {handle}"
                         ),
                         group="planner",
                         exclusive=True,

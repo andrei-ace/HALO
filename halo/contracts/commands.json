@@ -49,6 +49,17 @@
         "reason": { "type": "string" }
       }
     },
+    "TrackObjectPayload": {
+      "type": "object",
+      "required": ["target_handle"],
+      "additionalProperties": false,
+      "properties": {
+        "target_handle": {
+          "description": "Object handle to track (from SCENE_DESCRIBED detections).",
+          "type": "string"
+        }
+      }
+    },
     "CommandEnvelope": {
       "description": "All planner commands must use this envelope. command_id enforces idempotency; precondition_snapshot_id guards against stale state.",
       "type": "object",
@@ -71,7 +82,8 @@
             { "$ref": "#/$defs/StartSkillPayload" },
             { "$ref": "#/$defs/AbortSkillPayload" },
             { "$ref": "#/$defs/OverrideTargetPayload" },
-            { "$ref": "#/$defs/DescribeScenePayload" }
+            { "$ref": "#/$defs/DescribeScenePayload" },
+            { "$ref": "#/$defs/TrackObjectPayload" }
           ]
         },
         "precondition_snapshot_id": {

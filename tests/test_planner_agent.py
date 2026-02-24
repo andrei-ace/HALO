@@ -115,3 +115,20 @@ def test_tool_commands_have_unique_ids() -> None:
     assert len(ctx.commands) == 2
     ids = {cmd.command_id for cmd in ctx.commands}
     assert len(ids) == 2, "Both commands must have distinct UUIDs"
+
+
+# ---------------------------------------------------------------------------
+# track_object
+# ---------------------------------------------------------------------------
+
+
+def test_track_object_tool_appends_command() -> None:
+    ctx = _make_ctx()
+    tools = _tools_by_name(ctx)
+    tools["track_object"].invoke({"target_handle": "mug-2"})
+
+    assert len(ctx.commands) == 1
+    cmd = ctx.commands[0]
+    assert cmd.type == CommandType.TRACK_OBJECT
+    assert cmd.payload.target_handle == "mug-2"
+    assert cmd.precondition_snapshot_id is None

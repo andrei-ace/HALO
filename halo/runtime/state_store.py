@@ -28,7 +28,7 @@ from halo.contracts.snapshots import (
 
 def _default_perception() -> PerceptionInfo:
     return PerceptionInfo(
-        tracking_status=TrackingStatus.LOST,
+        tracking_status=TrackingStatus.IDLE,
         failure_code=PerceptionFailureCode.OK,
         reacquire_fail_count=0,
         vlm_job_pending=False,

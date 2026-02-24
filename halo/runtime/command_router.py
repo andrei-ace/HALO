@@ -100,4 +100,12 @@ class CommandRouter:
             arm_id=cmd.arm_id,
             data={"command_id": cmd.command_id, "command_type": str(cmd.type)},
         )
+        if hasattr(cmd.payload, "target_handle"):
+            evt = EventEnvelope(
+                event_id=evt.event_id,
+                type=evt.type,
+                ts_ms=evt.ts_ms,
+                arm_id=evt.arm_id,
+                data={**evt.data, "target_handle": cmd.payload.target_handle},
+            )
         await self._bus.publish(evt)  # type: ignore[union-attr]
