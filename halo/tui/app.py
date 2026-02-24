@@ -11,12 +11,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Static
-from rich.text import Text
 
 from halo.tui.run_logger import RunLogger
 
@@ -190,8 +190,8 @@ def _format_cmd(cmd: object) -> str:
     """Convert a CommandEnvelope to a concise human-readable string."""
     from halo.contracts.commands import (
         AbortSkillPayload,
-        OverrideTargetPayload,
         DescribeScenePayload,
+        OverrideTargetPayload,
         StartSkillPayload,
         TrackObjectPayload,
     )
@@ -1154,11 +1154,17 @@ class HALOApp(App):
             return f"{system_msg}\nOperator task: {self._last_operator_msg}"
         return system_msg
 
-    _AGENT_WAKE_EVENTS = frozenset({
-        "SKILL_SUCCEEDED", "SKILL_FAILED", "SAFETY_REFLEX_TRIGGERED",
-        "PERCEPTION_FAILURE", "SCENE_DESCRIBED", "TARGET_ACQUIRED",
-        "COMMAND_REJECTED",
-    })
+    _AGENT_WAKE_EVENTS = frozenset(
+        {
+            "SKILL_SUCCEEDED",
+            "SKILL_FAILED",
+            "SAFETY_REFLEX_TRIGGERED",
+            "PERCEPTION_FAILURE",
+            "SCENE_DESCRIBED",
+            "TARGET_ACQUIRED",
+            "COMMAND_REJECTED",
+        }
+    )
 
     async def _listen_events(self) -> None:
         """Forward EventBus events to EventsPanel and wake agent on urgent events.
@@ -1177,9 +1183,7 @@ class HALOApp(App):
                 # Wake the agent — it reads event details from the snapshot
                 evt_type = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
                 if self._agent_queue is not None and evt_type in self._AGENT_WAKE_EVENTS:
-                    self._agent_queue.put_nowait(
-                        self._with_task_context(f"[event: {evt_type}]")
-                    )
+                    self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type}]"))
         except asyncio.CancelledError:
             pass
 
@@ -1221,6 +1225,7 @@ class HALOApp(App):
 
         try:
             import time as _time
+
             from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
 
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
@@ -1289,8 +1294,9 @@ class HALOApp(App):
             self.notify(str(exc), severity="error", title="Agent error")
 
     async def _do_abort(self) -> None:
-        from uuid import uuid4
         import time
+        from uuid import uuid4
+
         from halo.contracts.commands import AbortSkillPayload, CommandEnvelope, CommandType
 
         snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
@@ -1335,6 +1341,7 @@ def _take_screenshot(path: str = "halo_tui.svg") -> None:
 def _run_live(args: list[str]) -> None:
     """Start the TUI wired to a real HALORuntime + PlannerAgent."""
     from pathlib import Path
+
     from halo.runtime.runtime import HALORuntime
     from halo.services.planner_service.agent import PlannerAgent
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
@@ -1365,7 +1372,9 @@ def _run_live(args: list[str]) -> None:
     agent = PlannerAgent(model, base_url, prompts_dir)
 
     vlm_fn = make_ollama_vlm_fn(
-        base_url=base_url, model=vlm_model, run_logger=run_logger,
+        base_url=base_url,
+        model=vlm_model,
+        run_logger=run_logger,
     )
 
     perception_svc = TargetPerceptionService(

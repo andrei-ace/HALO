@@ -7,7 +7,6 @@ import pytest
 from halo.contracts.events import EventEnvelope, EventType
 from halo.runtime.event_bus import EventBus
 
-
 ARM = "arm0"
 ARM2 = "arm1"
 
@@ -30,6 +29,7 @@ def bus() -> EventBus:
 # ---------------------------------------------------------------------------
 # Basic pub/sub
 # ---------------------------------------------------------------------------
+
 
 async def test_subscriber_receives_event(bus: EventBus):
     q = bus.subscribe(ARM)
@@ -66,6 +66,7 @@ async def test_unsubscribe_unknown_queue_does_not_raise(bus: EventBus):
 # Arm isolation
 # ---------------------------------------------------------------------------
 
+
 async def test_events_only_reach_correct_arm_subscribers(bus: EventBus):
     q0 = bus.subscribe(ARM)
     q1 = bus.subscribe(ARM2)
@@ -85,6 +86,7 @@ async def test_events_only_reach_correct_arm_subscribers(bus: EventBus):
 # ---------------------------------------------------------------------------
 # Recent events ring
 # ---------------------------------------------------------------------------
+
 
 async def test_get_recent_events_empty_before_publish(bus: EventBus):
     assert bus.get_recent_events(ARM) == []
@@ -122,6 +124,7 @@ async def test_recent_events_arm_isolation(bus: EventBus):
 # Full queue — non-blocking drop
 # ---------------------------------------------------------------------------
 
+
 async def test_full_subscriber_queue_does_not_block(bus: EventBus):
     q = bus.subscribe(ARM, maxsize=2)
     # Fill the queue
@@ -135,6 +138,7 @@ async def test_full_subscriber_queue_does_not_block(bus: EventBus):
 # ---------------------------------------------------------------------------
 # Event ID generation
 # ---------------------------------------------------------------------------
+
 
 def test_make_event_id_is_unique(bus: EventBus):
     ids = [bus.make_event_id() for _ in range(100)]

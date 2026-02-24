@@ -4,14 +4,14 @@ import asyncio
 import time
 from typing import Awaitable, Callable
 
-from halo.contracts.actions import Action, ActionChunk, ZERO_ACTION
+from halo.contracts.actions import ZERO_ACTION, Action, ActionChunk
 from halo.contracts.enums import ActStatus, PhaseId, SafetyReflexReason, SafetyState
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import ActInfo, SafetyInfo
 from halo.runtime.runtime import HALORuntime
-from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
 from halo.services.control_service.config import ControlServiceConfig
 from halo.services.control_service.safety_guard import SafetyGuard
+from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
 
 ApplyFn = Callable[[str, Action], Awaitable[None]]
 
@@ -84,9 +84,7 @@ class ControlService:
     async def push_chunk(self, chunk: ActionChunk) -> None:
         """Enqueue an ActionChunk. Raises ValueError if arm_id mismatches."""
         if chunk.arm_id != self._arm_id:
-            raise ValueError(
-                f"chunk.arm_id {chunk.arm_id!r} != service arm_id {self._arm_id!r}"
-            )
+            raise ValueError(f"chunk.arm_id {chunk.arm_id!r} != service arm_id {self._arm_id!r}")
         async with self._lock:
             self._buffer.push_chunk(chunk)
 
@@ -112,9 +110,7 @@ class ControlService:
             await self._apply_fn(self._arm_id, ZERO_ACTION)
             async with self._lock:
                 fill = self._buffer.fill_ms(self._config.control_rate_hz)
-                low = self._buffer.is_low(
-                    self._config.buffer_low_threshold_ms, self._config.control_rate_hz
-                )
+                low = self._buffer.is_low(self._config.buffer_low_threshold_ms, self._config.control_rate_hz)
             await self._runtime.store.update_act(
                 self._arm_id,
                 ActInfo(status=ActStatus.STALE, buffer_fill_ms=fill, buffer_low=low),
@@ -125,9 +121,7 @@ class ControlService:
         async with self._lock:
             action = self._buffer.pop_action()
             fill = self._buffer.fill_ms(self._config.control_rate_hz)
-            low = self._buffer.is_low(
-                self._config.buffer_low_threshold_ms, self._config.control_rate_hz
-            )
+            low = self._buffer.is_low(self._config.buffer_low_threshold_ms, self._config.control_rate_hz)
 
         if action is None:
             await self._runtime.store.update_act(
@@ -183,9 +177,7 @@ class ControlService:
         """On PHASE_ENTER: trim buffer to config.buffer_trim_ms."""
         if event.type == EventType.PHASE_ENTER:
             async with self._lock:
-                self._buffer.trim_to_ms(
-                    self._config.buffer_trim_ms, self._config.control_rate_hz
-                )
+                self._buffer.trim_to_ms(self._config.buffer_trim_ms, self._config.control_rate_hz)
 
     async def _trigger_reflex(self, reasons: list[SafetyReflexReason]) -> None:
         """Set safety FAULT, publish SAFETY_REFLEX_TRIGGERED, update store."""
@@ -233,9 +225,7 @@ class ControlService:
     async def _drain_events(self) -> None:
         while not self._stop_event.is_set():
             try:
-                event = await asyncio.wait_for(
-                    self._phase_queue.get(), timeout=0.05
-                )
+                event = await asyncio.wait_for(self._phase_queue.get(), timeout=0.05)
                 await self._on_phase_event(event)
             except asyncio.TimeoutError:
                 continue

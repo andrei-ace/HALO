@@ -14,15 +14,17 @@ from halo.services.planner_service.config import PlannerServiceConfig
 
 DecideFn = Callable[[PlannerSnapshot], Awaitable[list[CommandEnvelope]]]
 
-_URGENT_EVENT_TYPES = frozenset({
-    EventType.SKILL_SUCCEEDED,
-    EventType.SKILL_FAILED,
-    EventType.SAFETY_REFLEX_TRIGGERED,
-    EventType.PERCEPTION_FAILURE,
-    EventType.SCENE_DESCRIBED,
-    EventType.TARGET_ACQUIRED,
-    EventType.COMMAND_REJECTED,
-})
+_URGENT_EVENT_TYPES = frozenset(
+    {
+        EventType.SKILL_SUCCEEDED,
+        EventType.SKILL_FAILED,
+        EventType.SAFETY_REFLEX_TRIGGERED,
+        EventType.PERCEPTION_FAILURE,
+        EventType.SCENE_DESCRIBED,
+        EventType.TARGET_ACQUIRED,
+        EventType.COMMAND_REJECTED,
+    }
+)
 
 
 class PlannerService:
@@ -148,9 +150,7 @@ class PlannerService:
     async def _drain_events(self) -> None:
         while not self._stop_event.is_set():
             try:
-                event: EventEnvelope = await asyncio.wait_for(
-                    self._event_queue.get(), timeout=0.05
-                )
+                event: EventEnvelope = await asyncio.wait_for(self._event_queue.get(), timeout=0.05)
                 if event.type in _URGENT_EVENT_TYPES:
                     self._urgent_event.set()
             except asyncio.TimeoutError:

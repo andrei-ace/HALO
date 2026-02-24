@@ -1,7 +1,5 @@
 """Tests for ActionBuffer: push, pop, trim, fill, is_low."""
 
-import pytest
-
 from halo.contracts.actions import Action, ActionChunk
 from halo.contracts.enums import PhaseId
 from halo.services.control_service.action_buffer import ActionBuffer
@@ -89,8 +87,8 @@ def test_size_property():
 
 def test_multiple_chunks_appended_in_order():
     buf = ActionBuffer()
-    buf.push_chunk(_chunk(2))      # dx=0, dx=1
-    buf.push_chunk(_chunk(2))      # dx=0, dx=1 (second chunk)
+    buf.push_chunk(_chunk(2))  # dx=0, dx=1
+    buf.push_chunk(_chunk(2))  # dx=0, dx=1 (second chunk)
     assert buf.size == 4
     assert buf.pop_action().dx == 0.0  # first chunk first
     assert buf.pop_action().dx == 1.0

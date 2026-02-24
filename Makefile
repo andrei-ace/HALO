@@ -1,4 +1,4 @@
-.PHONY: install test test-v test-file test-k test-integration tui-mock tui-live help
+.PHONY: install test test-v test-file test-k test-integration tui-mock tui-live ruff help
 
 install:
 	uv sync --extra dev
@@ -30,6 +30,10 @@ tui-live:
 		--vlm-model $(VLM_MODEL) \
 		--base-url $(OLLAMA_URL)
 
+ruff:
+	uv run ruff check --fix .
+	uv run ruff format .
+
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
 	mkdir -p $(RUN_DIR)
@@ -44,6 +48,7 @@ help:
 	@echo "test-v     run all tests (verbose)"
 	@echo "test-file  run one file:  make test-file FILE=tests/test_foo.py"
 	@echo "test-k     run by name:   make test-k K=test_snapshot_ids_increment"
+	@echo "ruff              run ruff check --fix + format"
 	@echo "test-integration  run LLM integration tests (requires Ollama)"
 	@echo "tui-mock          launch the HALO terminal dashboard (mock mode, no Ollama needed)"
 	@echo "tui-live          launch the TUI wired to HALORuntime + PlannerAgent (requires Ollama)"

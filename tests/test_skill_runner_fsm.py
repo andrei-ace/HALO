@@ -61,6 +61,7 @@ def _started_fsm(cfg: SkillRunnerConfig | None = None) -> PickFSM:
 
 # --- Initial state ---
 
+
 def test_fsm_starts_in_reset():
     fsm = PickFSM(_cfg())
     assert fsm.phase == PhaseId.RESET
@@ -83,6 +84,7 @@ def test_start_raises_if_not_in_reset():
 
 # --- APPROACH_PREGRASP ---
 
+
 def test_approach_transitions_to_align_on_close_target():
     fsm = _started_fsm(_cfg(approach_align_threshold_m=0.15))
     old = fsm.advance(T0 + 1, _target(distance_m=0.10), _perception(), _act())
@@ -99,6 +101,7 @@ def test_approach_stays_when_target_far():
 
 # --- ALIGN ---
 
+
 def test_align_transitions_to_descend():
     fsm = _started_fsm(_cfg(approach_align_threshold_m=0.15, descend_threshold_m=0.05))
     # Move to ALIGN
@@ -112,6 +115,7 @@ def test_align_transitions_to_descend():
 
 
 # --- DESCEND_GRASP ---
+
 
 def test_descend_grasp_close_triggers_deterministically():
     cfg = _cfg(
@@ -152,6 +156,7 @@ def test_descend_grasp_resets_persistence_if_distance_increases():
 
 # --- CLOSE ---
 
+
 def test_close_transitions_to_verify_after_duration():
     cfg = _cfg(
         approach_align_threshold_m=0.15,
@@ -162,8 +167,8 @@ def test_close_transitions_to_verify_after_duration():
         skip_verify_grasp=False,
     )
     fsm = _started_fsm(cfg)
-    fsm.advance(T0 + 1, _target(distance_m=0.10), _perception(), _act())   # APPROACH→ALIGN
-    fsm.advance(T0 + 2, _target(distance_m=0.03), _perception(), _act())   # ALIGN→DESCEND
+    fsm.advance(T0 + 1, _target(distance_m=0.10), _perception(), _act())  # APPROACH→ALIGN
+    fsm.advance(T0 + 2, _target(distance_m=0.03), _perception(), _act())  # ALIGN→DESCEND
     fsm.advance(T0 + 3, _target(distance_m=0.005), _perception(), _act())  # DESCEND→CLOSE
     assert fsm.phase == PhaseId.CLOSE
     phase_start = fsm.phase_start_ms
@@ -214,6 +219,7 @@ def test_skip_verify_grasp_when_configured():
 
 # --- VERIFY_GRASP ---
 
+
 def test_verify_grasp_transitions_to_lift():
     cfg = _cfg(
         approach_align_threshold_m=0.15,
@@ -240,6 +246,7 @@ def test_verify_grasp_transitions_to_lift():
 
 
 # --- LIFT ---
+
 
 def test_lift_transitions_to_done_with_success():
     cfg = _cfg(
@@ -273,6 +280,7 @@ def test_lift_transitions_to_done_with_success():
 
 
 # --- Timeouts ---
+
 
 def test_approach_timeout_causes_failure():
     cfg = _cfg(approach_timeout_ms=1000)
@@ -316,6 +324,7 @@ def test_descend_timeout_causes_no_grasp_failure():
 
 
 # --- Target loss & recovery ---
+
 
 def test_lost_target_from_approach_triggers_recovery():
     cfg = _cfg(no_target_tolerance_ms=500)
@@ -376,9 +385,9 @@ def test_max_reacquire_causes_failure():
         return recover_start + 200
 
     t = T0
-    t = _do_recovery_cycle(t)   # reacquire_count → 1, back to APPROACH
+    t = _do_recovery_cycle(t)  # reacquire_count → 1, back to APPROACH
     assert fsm._reacquire_count == 1
-    t = _do_recovery_cycle(t)   # reacquire_count → 2, back to APPROACH
+    t = _do_recovery_cycle(t)  # reacquire_count → 2, back to APPROACH
     assert fsm._reacquire_count == 2
 
     # Third recovery: count would become 3 > 2 → FAIL
@@ -386,12 +395,13 @@ def test_max_reacquire_causes_failure():
     fsm.advance(t + 1 + 500, _no_target(), _perception(), _act())
     assert fsm.phase == PhaseId.RECOVER_RETRY_APPROACH
     recover_start = fsm.phase_start_ms
-    old = fsm.advance(recover_start + 200, _target(distance_m=0.5), _perception(), _act())
+    fsm.advance(recover_start + 200, _target(distance_m=0.5), _perception(), _act())
     assert fsm.phase == PhaseId.DONE
     assert fsm.failure_code == SkillFailureCode.TIMEOUT
 
 
 # --- Abort ---
+
 
 def test_abort_sets_failure_unsafe_abort():
     fsm = _started_fsm()
@@ -412,6 +422,7 @@ def test_abort_idempotent_on_done():
 
 
 # --- needs_chunk ---
+
 
 def test_needs_chunk_when_buffer_low():
     cfg = _cfg(buffer_target_ms=200)

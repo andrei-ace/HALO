@@ -44,9 +44,7 @@ class PickFSM:
 
     def start(self, now_ms: int) -> None:
         if self._phase != PhaseId.RESET:
-            raise RuntimeError(
-                f"start() called in phase {self._phase!r}, expected RESET"
-            )
+            raise RuntimeError(f"start() called in phase {self._phase!r}, expected RESET")
         self._grasp_qualify_start_ms = None
         self._no_target_start_ms = None
         self._reacquire_count = 0

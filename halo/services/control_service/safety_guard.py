@@ -23,16 +23,8 @@ class SafetyGuard:
         max_l = self._config.max_linear_delta_m
         max_a = self._config.max_angular_delta_rad
 
-        linear_violation = (
-            abs(action.dx) > max_l
-            or abs(action.dy) > max_l
-            or abs(action.dz) > max_l
-        )
-        angular_violation = (
-            abs(action.droll) > max_a
-            or abs(action.dpitch) > max_a
-            or abs(action.dyaw) > max_a
-        )
+        linear_violation = abs(action.dx) > max_l or abs(action.dy) > max_l or abs(action.dz) > max_l
+        angular_violation = abs(action.droll) > max_a or abs(action.dpitch) > max_a or abs(action.dyaw) > max_a
 
         if linear_violation or angular_violation:
             return [SafetyReflexReason.JOINT_LIMIT]
@@ -59,9 +51,7 @@ class SafetyGuard:
             gripper_cmd=max(0.0, min(1.0, action.gripper_cmd)),
         )
 
-    def check_hint_freshness(
-        self, target: TargetInfo | None, config: ControlServiceConfig
-    ) -> bool:
+    def check_hint_freshness(self, target: TargetInfo | None, config: ControlServiceConfig) -> bool:
         """
         Returns True (fresh) if target is None OR (hint_valid AND obs_age_ms < max_obs_age_ms).
         Returns False → ControlService should hold position.

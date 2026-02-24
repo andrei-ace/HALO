@@ -4,6 +4,7 @@ and loop-detection helper.
 The LangGraph agent itself (PlannerAgent / make_decide_fn) requires a running
 Ollama instance and is not unit-tested here.
 """
+
 from __future__ import annotations
 
 import time
@@ -116,7 +117,7 @@ def test_duplicate_tool_call_rejected() -> None:
     """Calling the same tool twice in one tick is rejected (once-per-tick guard)."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    result1 = tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
+    tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
     result2 = tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-2"})
 
     assert len(ctx.commands) == 1, "Only the first call should produce a command"

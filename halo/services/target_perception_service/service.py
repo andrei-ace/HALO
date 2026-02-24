@@ -81,7 +81,7 @@ class TargetPerceptionService:
         # VLM async state
         self._vlm_task: asyncio.Task | None = None
         self._vlm_seed: TargetInfo | None = None  # latest VLM result, consumed by tick()
-        self._last_obs: TargetInfo | None = None   # VLM-only: last good observation to re-publish
+        self._last_obs: TargetInfo | None = None  # VLM-only: last good observation to re-publish
 
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -179,12 +179,15 @@ class TargetPerceptionService:
             # Consume seed when it arrives; re-publish cached obs on every tick.
             if self._vlm_seed is not None:
                 self._last_obs = dataclasses.replace(
-                    self._vlm_seed, obs_age_ms=0, time_skew_ms=0,
+                    self._vlm_seed,
+                    obs_age_ms=0,
+                    time_skew_ms=0,
                 )
                 self._vlm_seed = None
             if self._last_obs is not None:
                 await self._update_success(
-                    tracking_status=TrackingStatus.TRACKING, target=self._last_obs,
+                    tracking_status=TrackingStatus.TRACKING,
+                    target=self._last_obs,
                 )
             else:
                 # Initial VLM call in flight — wait quietly.
@@ -258,9 +261,7 @@ class TargetPerceptionService:
         """
         while not self._stop_event.is_set():
             try:
-                event: EventEnvelope = await asyncio.wait_for(
-                    self._cmd_queue.get(), timeout=0.05
-                )
+                event: EventEnvelope = await asyncio.wait_for(self._cmd_queue.get(), timeout=0.05)
                 if event.type == EventType.COMMAND_ACCEPTED:
                     cmd_type = event.data.get("command_type")
                     if cmd_type == CommandType.DESCRIBE_SCENE:
@@ -367,7 +368,10 @@ class TargetPerceptionService:
         self._vlm_task = None
 
     async def _run_vlm(
-        self, target_handle: str | None, *, emit_scene_described: bool = True,
+        self,
+        target_handle: str | None,
+        *,
+        emit_scene_described: bool = True,
     ) -> None:
         """
         Background VLM coroutine. Runs asynchronously — never awaited by tick().
@@ -384,10 +388,7 @@ class TargetPerceptionService:
             scene = await self._vlm_fn(self._arm_id)
             inference_ms = int((time.monotonic() - t0) * 1000)
 
-            det_summary = [
-                {"handle": d.handle, "label": d.label}
-                for d in scene.detections
-            ]
+            det_summary = [{"handle": d.handle, "label": d.label} for d in scene.detections]
 
             if emit_scene_described:
                 await self._emit_event(
@@ -404,7 +405,8 @@ class TargetPerceptionService:
             # If tracking a target, seed the tracker for reacquisition.
             if target_handle is not None:
                 match = next(
-                    (d for d in scene.detections if d.handle == target_handle), None,
+                    (d for d in scene.detections if d.handle == target_handle),
+                    None,
                 )
                 if match is None and scene.detections:
                     match = scene.detections[0]

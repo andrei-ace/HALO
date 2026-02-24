@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
-from collections import deque
 from pathlib import Path
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import before_model
-from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.messages import HumanMessage, RemoveMessage
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -35,9 +33,7 @@ def _deprecate_old_snapshots(state: AgentState, runtime: object) -> dict | None:
     indices = [
         i
         for i, m in enumerate(messages)
-        if isinstance(m, HumanMessage)
-        and isinstance(m.content, str)
-        and m.content.startswith(_SNAPSHOT_PREFIX)
+        if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content.startswith(_SNAPSHOT_PREFIX)
     ]
     if len(indices) <= 1:
         return None
@@ -182,8 +178,7 @@ class PlannerAgent:
             # Check if any command hit the limit
             max_streak = max(self._cmd_streak.values())
             if max_streak >= self.MAX_LOOP_RETRIES:
-                looped = [k.split(":")[0] for k, v in self._cmd_streak.items()
-                          if v >= self.MAX_LOOP_RETRIES]
+                looped = [k.split(":")[0] for k, v in self._cmd_streak.items() if v >= self.MAX_LOOP_RETRIES]
                 self._last_reasoning = (
                     f"Loop detected: {', '.join(looped)} issued "
                     f"{self.MAX_LOOP_RETRIES}+ times in a row. "

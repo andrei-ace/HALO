@@ -59,8 +59,7 @@ class CommandRouter:
                     return await self._reject(
                         cmd,
                         CommandAckStatus.REJECTED_STALE,
-                        f"expected snapshot {cmd.precondition_snapshot_id!r}, "
-                        f"current is {current_id!r}",
+                        f"expected snapshot {cmd.precondition_snapshot_id!r}, current is {current_id!r}",
                     )
 
             # --- 3. Skill-run match (abort / override only) ---
@@ -71,8 +70,7 @@ class CommandRouter:
                     return await self._reject(
                         cmd,
                         CommandAckStatus.REJECTED_WRONG_SKILL_RUN,
-                        f"expected skill_run_id {cmd.payload.skill_run_id!r}, "
-                        f"current is {current_run_id!r}",
+                        f"expected skill_run_id {cmd.payload.skill_run_id!r}, current is {current_run_id!r}",
                     )
 
             # --- Accept ---
@@ -82,9 +80,7 @@ class CommandRouter:
             await self._publish(cmd, EventType.COMMAND_ACCEPTED)
             return ack
 
-    async def _reject(
-        self, cmd: CommandEnvelope, status: CommandAckStatus, reason: str
-    ) -> CommandAck:
+    async def _reject(self, cmd: CommandEnvelope, status: CommandAckStatus, reason: str) -> CommandAck:
         ack = CommandAck(command_id=cmd.command_id, status=status, reason=reason)
         await self._store.add_command_ack(cmd.arm_id, ack)
         await self._publish(cmd, EventType.COMMAND_REJECTED)

@@ -28,10 +28,10 @@ class SkillRunnerConfig:
     # Recovery
     recover_wait_ms: int = 500
     max_reacquire_attempts: int = 3
-    no_target_tolerance_ms: int = 2_000   # target absent this long → recovery
+    no_target_tolerance_ms: int = 2_000  # target absent this long → recovery
 
     # Chunk scheduling
     buffer_target_ms: int = 200
-    chunk_horizon_steps: int = 10         # v0: 10 steps @ 10 Hz = 1 s horizon
+    chunk_horizon_steps: int = 10  # v0: 10 steps @ 10 Hz = 1 s horizon
 
     skip_verify_grasp: bool = False

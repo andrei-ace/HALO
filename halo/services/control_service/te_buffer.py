@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from halo.contracts.actions import Action, ActionChunk
 
@@ -123,7 +123,4 @@ class TemporalEnsemblingBuffer:
 
     def _prune(self) -> None:
         """Remove entries whose last action has already been consumed."""
-        self._entries = [
-            e for e in self._entries
-            if e.push_tick + len(e.chunk.actions) > self._tick
-        ]
+        self._entries = [e for e in self._entries if e.push_tick + len(e.chunk.actions) > self._tick]

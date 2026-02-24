@@ -67,14 +67,10 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
         "reason_codes": [r.value for r in s.reason_codes],
     }
 
-    command_acks_list = [
-        {"command_id": ack.command_id, "status": ack.status.value}
-        for ack in snap.command_acks
-    ]
+    command_acks_list = [{"command_id": ack.command_id, "status": ack.status.value} for ack in snap.command_acks]
 
     recent_events_list = [
-        {"event_id": ev.event_id, "type": ev.type.value, "data": ev.data}
-        for ev in snap.recent_events
+        {"event_id": ev.event_id, "type": ev.type.value, "data": ev.data} for ev in snap.recent_events
     ]
 
     return {

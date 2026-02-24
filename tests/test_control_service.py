@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from halo.contracts.actions import Action, ActionChunk, ZERO_ACTION
+from halo.contracts.actions import ZERO_ACTION, Action, ActionChunk
 from halo.contracts.enums import ActStatus, PhaseId, SafetyState
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import TargetInfo
@@ -27,18 +27,14 @@ def _safe_chunk(
     phase: PhaseId = PhaseId.APPROACH_PREGRASP,
 ) -> ActionChunk:
     """Chunk with actions well within safety limits (dx=0.001)."""
-    actions = tuple(
-        Action(0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(n)
-    )
+    actions = tuple(Action(0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(n))
     return ActionChunk(chunk_id="c", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)
 
 
 def _bad_chunk(arm_id: str = ARM) -> ActionChunk:
     """Chunk with a single over-limit action (dx=0.1 >> 0.01 limit)."""
     actions = (Action(dx=0.1, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0),)
-    return ActionChunk(
-        chunk_id="bad", arm_id=arm_id, phase_id=PhaseId.APPROACH_PREGRASP, actions=actions, ts_ms=0
-    )
+    return ActionChunk(chunk_id="bad", arm_id=arm_id, phase_id=PhaseId.APPROACH_PREGRASP, actions=actions, ts_ms=0)
 
 
 @pytest.fixture
@@ -63,6 +59,7 @@ def svc(rt: HALORuntime, applied: list) -> ControlService:
 
 # --- tick on empty buffer ---
 
+
 async def test_tick_empty_buffer_returns_none(svc: ControlService, rt: HALORuntime):
     result = await svc.tick()
     assert result is None
@@ -70,18 +67,15 @@ async def test_tick_empty_buffer_returns_none(svc: ControlService, rt: HALORunti
     assert snap.act.status == ActStatus.IDLE
 
 
-async def test_tick_empty_buffer_does_not_call_apply_fn(
-    svc: ControlService, applied: list
-):
+async def test_tick_empty_buffer_does_not_call_apply_fn(svc: ControlService, applied: list):
     await svc.tick()
     assert len(applied) == 0
 
 
 # --- tick after push_chunk ---
 
-async def test_tick_after_push_applies_action(
-    svc: ControlService, rt: HALORuntime, applied: list
-):
+
+async def test_tick_after_push_applies_action(svc: ControlService, rt: HALORuntime, applied: list):
     await svc.push_chunk(_safe_chunk(10))
     result = await svc.tick()
     assert result is not None
@@ -101,6 +95,7 @@ async def test_tick_returns_clamped_action(svc: ControlService, applied: list):
 
 # --- buffer drops below threshold ---
 
+
 async def test_tick_buffer_low_status(rt: HALORuntime):
     actions_applied: list[Action] = []
 
@@ -118,6 +113,7 @@ async def test_tick_buffer_low_status(rt: HALORuntime):
 
 
 # --- safety violation → reflex ---
+
 
 async def test_tick_safety_violation_triggers_reflex(rt: HALORuntime):
     actions_applied: list[Action] = []
@@ -146,7 +142,7 @@ async def test_tick_safety_violation_triggers_reflex(rt: HALORuntime):
 
 async def test_tick_safety_violation_does_not_re_trigger_reflex(rt: HALORuntime):
     """Second tick with same violation should not publish a second SAFETY_REFLEX_TRIGGERED."""
-    events_published: list[EventEnvelope] = []
+    events_published: list[EventEnvelope] = []  # noqa: F841
 
     async def apply_fn(arm_id: str, action: Action) -> None:
         pass
@@ -157,18 +153,17 @@ async def test_tick_safety_violation_does_not_re_trigger_reflex(rt: HALORuntime)
     await svc.push_chunk(_bad_chunk())
     await svc.tick()  # triggers reflex
     reflex_count_after_first = sum(
-        1 for e in rt.bus.get_recent_events(ARM)
-        if e.type == EventType.SAFETY_REFLEX_TRIGGERED
+        1 for e in rt.bus.get_recent_events(ARM) if e.type == EventType.SAFETY_REFLEX_TRIGGERED
     )
     await svc.tick()  # reflex already active — should not publish again
     reflex_count_after_second = sum(
-        1 for e in rt.bus.get_recent_events(ARM)
-        if e.type == EventType.SAFETY_REFLEX_TRIGGERED
+        1 for e in rt.bus.get_recent_events(ARM) if e.type == EventType.SAFETY_REFLEX_TRIGGERED
     )
     assert reflex_count_after_first == reflex_count_after_second
 
 
 # --- stale hint → hold, no reflex ---
+
 
 async def test_tick_stale_hint_applies_zero_action(rt: HALORuntime):
     actions_applied: list[Action] = []
@@ -224,6 +219,7 @@ async def test_tick_stale_hint_does_not_set_reflex_active(rt: HALORuntime):
 
 # --- push_chunk from wrong arm ---
 
+
 async def test_push_chunk_wrong_arm_raises(svc: ControlService):
     bad_chunk = _safe_chunk(3, arm_id="arm1")
     with pytest.raises(ValueError, match="arm_id"):
@@ -231,6 +227,7 @@ async def test_push_chunk_wrong_arm_raises(svc: ControlService):
 
 
 # --- phase PHASE_ENTER event trims buffer ---
+
 
 async def test_phase_enter_event_trims_buffer(rt: HALORuntime):
     async def apply_fn(arm_id: str, action: Action) -> None:
@@ -273,6 +270,7 @@ async def test_non_phase_enter_event_does_not_trim(rt: HALORuntime):
 
 # --- start / stop lifecycle ---
 
+
 async def test_start_stop_cleans_up_tasks(rt: HALORuntime):
     async def apply_fn(arm_id: str, action: Action) -> None:
         pass
@@ -306,6 +304,7 @@ async def test_start_stop_loop_runs_ticks(rt: HALORuntime):
 
 
 # --- reflex clears on clean tick ---
+
 
 async def test_reflex_clears_on_clean_tick(rt: HALORuntime):
     async def apply_fn(arm_id: str, action: Action) -> None:
