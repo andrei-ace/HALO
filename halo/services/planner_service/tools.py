@@ -9,8 +9,8 @@ from langchain_core.tools import tool
 from halo.contracts.commands import (
     AbortSkillPayload,
     CommandEnvelope,
+    DescribeScenePayload,
     OverrideTargetPayload,
-    RequestPerceptionRefreshPayload,
     StartSkillPayload,
 )
 from halo.contracts.enums import CommandType, SkillName
@@ -95,28 +95,30 @@ def build_tools(ctx: AgentContext) -> list:
         return f"Queued OVERRIDE_TARGET run_id={skill_run_id} target={target_handle}"
 
     @tool
-    def request_perception_refresh(mode: str = "reacquire", reason: str = "") -> str:
-        """Ask TargetPerceptionService to re-run VLM localisation.
+    def describe_scene(reason: str = "") -> str:
+        """Ask TargetPerceptionService to run VLM scene analysis.
+
+        Triggers a full VLM pass that describes the scene and returns
+        bounding boxes for all detected objects.  The result is delivered
+        asynchronously via a SCENE_DESCRIBED event.
 
         Args:
-            mode: Refresh mode. Use "reacquire" to trigger a full VLM pass.
-            reason: Human-readable reason for the refresh request.
+            reason: Human-readable reason for requesting the scene description.
         """
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
             issued_at_ms=int(time.time() * 1000),
-            type=CommandType.REQUEST_PERCEPTION_REFRESH,
-            payload=RequestPerceptionRefreshPayload(
-                mode=mode,
+            type=CommandType.DESCRIBE_SCENE,
+            payload=DescribeScenePayload(
                 reason=reason,
             ),
-            # No precondition: perception refresh is a stateless side-effect.
+            # No precondition: scene description is a stateless side-effect.
             # Pinning it to a snapshot_id causes REJECTED_STALE as soon as the
             # snapshot advances between decide() and submit().
             precondition_snapshot_id=None,
         )
         ctx.commands.append(cmd)
-        return f"Queued REQUEST_PERCEPTION_REFRESH mode={mode}"
+        return f"Queued DESCRIBE_SCENE reason={reason}"
 
-    return [start_skill, abort_skill, override_target, request_perception_refresh]
+    return [start_skill, abort_skill, override_target, describe_scene]

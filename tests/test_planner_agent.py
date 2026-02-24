@@ -69,19 +69,18 @@ def test_override_target_tool_appends_command() -> None:
 
 
 # ---------------------------------------------------------------------------
-# request_perception_refresh
+# describe_scene
 # ---------------------------------------------------------------------------
 
 
-def test_perception_refresh_tool_appends_command() -> None:
+def test_describe_scene_tool_appends_command() -> None:
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["request_perception_refresh"].invoke({"mode": "reacquire", "reason": "lost target"})
+    tools["describe_scene"].invoke({"reason": "lost target"})
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
-    assert cmd.type == CommandType.REQUEST_PERCEPTION_REFRESH
-    assert cmd.payload.mode == "reacquire"
+    assert cmd.type == CommandType.DESCRIBE_SCENE
     assert cmd.payload.reason == "lost target"
 
 
@@ -96,7 +95,7 @@ def test_tool_commands_have_correct_arm_id() -> None:
     tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
     tools["abort_skill"].invoke({"skill_run_id": "run-1", "reason": "test"})
     tools["override_target"].invoke({"skill_run_id": "run-1", "target_handle": "box-2"})
-    tools["request_perception_refresh"].invoke({"mode": "reacquire", "reason": ""})
+    tools["describe_scene"].invoke({"reason": ""})
 
     for cmd in ctx.commands:
         assert cmd.arm_id == "arm0"

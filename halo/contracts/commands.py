@@ -25,8 +25,7 @@ class OverrideTargetPayload:
 
 
 @dataclass(frozen=True)
-class RequestPerceptionRefreshPayload:
-    mode: str
+class DescribeScenePayload:
     reason: str
 
 
@@ -34,7 +33,7 @@ CommandPayload = (
     StartSkillPayload
     | AbortSkillPayload
     | OverrideTargetPayload
-    | RequestPerceptionRefreshPayload
+    | DescribeScenePayload
 )
 
 

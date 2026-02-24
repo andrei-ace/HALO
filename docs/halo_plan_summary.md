@@ -95,7 +95,7 @@ Fallback (optional):
 
 ### Decision path (LLM)
 - Planner reads **compact runtime snapshot** and emits high-level commands:
-  - Start skill, abort, override target, request refresh (rare)
+  - Start skill, abort, override target, describe scene
 - Planner does not transport control floats.
 
 ---
@@ -193,7 +193,7 @@ Planner sends high-level commands; results appear in subsequent snapshots/events
 - `start_skill(skill, target_handle, options/profile)`
 - `abort_skill(skill_run_id, reason)`
 - `override_target(skill_run_id, target_handle)`
-- `request_perception_refresh(mode, reason)` (rare)
+- `describe_scene(reason)` — triggers VLM scene analysis; result delivered via SCENE_DESCRIBED event
 
 #### Command sequencing + idempotency (must-have)
 Each planner command should carry:
@@ -215,7 +215,7 @@ Execution contract:
 
 ### Planner → Perception
 - `set_tracking_target(arm_id, target_spec | target_handle, task_role, optional_roi, tolerance)`
-- (optional) `request_refresh(reason)` when planner wants a forced reacquire/verify
+- `describe_scene(reason)` — triggers async VLM scene analysis; result delivered via `SCENE_DESCRIBED` event
 
 ### Perception → Runtime state (for SkillRunner + planner summary)
 Publishes:

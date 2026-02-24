@@ -41,15 +41,11 @@
         "target_handle": { "type": "string" }
       }
     },
-    "RequestPerceptionRefreshPayload": {
+    "DescribeScenePayload": {
       "type": "object",
-      "required": ["mode", "reason"],
+      "required": ["reason"],
       "additionalProperties": false,
       "properties": {
-        "mode": {
-          "description": "Refresh mode, e.g. 'full' or 'reseed'.",
-          "type": "string"
-        },
         "reason": { "type": "string" }
       }
     },
@@ -75,7 +71,7 @@
             { "$ref": "#/$defs/StartSkillPayload" },
             { "$ref": "#/$defs/AbortSkillPayload" },
             { "$ref": "#/$defs/OverrideTargetPayload" },
-            { "$ref": "#/$defs/RequestPerceptionRefreshPayload" }
+            { "$ref": "#/$defs/DescribeScenePayload" }
           ]
         },
         "precondition_snapshot_id": {

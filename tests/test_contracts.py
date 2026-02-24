@@ -9,7 +9,7 @@ from halo.contracts.commands import (
     CommandAck,
     CommandEnvelope,
     OverrideTargetPayload,
-    RequestPerceptionRefreshPayload,
+    DescribeScenePayload,
     StartSkillPayload,
 )
 from halo.contracts.enums import (
@@ -115,7 +115,7 @@ def test_all_payload_types_instantiate():
     StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1")
     AbortSkillPayload(skill_run_id="run-1", reason="operator abort")
     OverrideTargetPayload(skill_run_id="run-1", target_handle="cube-2")
-    RequestPerceptionRefreshPayload(mode="full", reason="lost target")
+    DescribeScenePayload(reason="lost target")
 
 
 def test_command_asdict():

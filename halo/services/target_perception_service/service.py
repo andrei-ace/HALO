@@ -149,7 +149,7 @@ class TargetPerceptionService:
         Request a VLM scene analysis / reacquisition.
 
         Works with or without an active tracking target:
-        - No target: runs VLM for scene analysis only, emits VLM_RESULT.
+        - No target: runs VLM for scene analysis only, emits SCENE_DESCRIBED.
         - With target: additionally seeds the tracker for reacquisition.
         """
         if self._target_handle is not None:
@@ -251,8 +251,8 @@ class TargetPerceptionService:
 
     async def _drain_commands(self) -> None:
         """
-        Listen for COMMAND_ACCEPTED events and trigger VLM reacquisition when
-        a REQUEST_PERCEPTION_REFRESH command is accepted by the router.
+        Listen for COMMAND_ACCEPTED events and trigger VLM scene analysis when
+        a DESCRIBE_SCENE command is accepted by the router.
         """
         while not self._stop_event.is_set():
             try:
@@ -261,9 +261,9 @@ class TargetPerceptionService:
                 )
                 if (
                     event.type == EventType.COMMAND_ACCEPTED
-                    and event.data.get("command_type") == CommandType.REQUEST_PERCEPTION_REFRESH
+                    and event.data.get("command_type") == CommandType.DESCRIBE_SCENE
                 ):
-                    await self.request_refresh(reason="command:REQUEST_PERCEPTION_REFRESH")
+                    await self.request_refresh(reason="command:DESCRIBE_SCENE")
             except asyncio.TimeoutError:
                 continue
 
@@ -357,7 +357,7 @@ class TargetPerceptionService:
         """
         Background VLM coroutine. Runs asynchronously — never awaited by tick().
 
-        Always emits VLM_RESULT with full scene data.
+        Always emits SCENE_DESCRIBED with full scene data.
         If a target_handle is set, also seeds the tracker for reacquisition.
         """
         if self._vlm_fn is None:
@@ -374,7 +374,7 @@ class TargetPerceptionService:
 
             # Always emit scene analysis result.
             await self._emit_event(
-                EventType.VLM_RESULT,
+                EventType.SCENE_DESCRIBED,
                 {
                     "target_handle": target_handle or "",
                     "scene": scene.scene,
