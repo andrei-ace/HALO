@@ -353,11 +353,11 @@ Track dataset stats continuously:
 
 ## 11) Implementation structure (processes/threads)
 
-All services are implemented as async Python classes with dependency injection:
-- `PlannerService` (`halo/services/planner_service/service.py`) — LLM agent via LangGraph ReAct + 4 tools
-- `TargetPerceptionService` (`halo/services/target_perception_service/service.py`) — fast loop + async VLM
-- `SkillRunnerService` (`halo/services/skill_runner_service/service.py`) — FSM + ACT chunk scheduling
-- `ControlService` (`halo/services/control_service/service.py`) — real-time executor + safety/reflex
+All services are implemented as async Python classes with dependency injection. Each service directory contains a `CLAUDE.md` with detailed docs (tick order, config tables, integration points, testing notes):
+- `PlannerService` (`halo/services/planner_service/`) — LLM agent via LangGraph ReAct + 5 tools
+- `TargetPerceptionService` (`halo/services/target_perception_service/`) — fast loop + async VLM
+- `SkillRunnerService` (`halo/services/skill_runner_service/`) — FSM + ACT chunk scheduling
+- `ControlService` (`halo/services/control_service/`) — real-time executor + safety/reflex
 - `HALORuntime` (`halo/runtime/runtime.py`) — owns `RuntimeStateStore`, `EventBus`, `CommandRouter`
 
 Planner reads snapshots and emits commands; no blocking in the motion loop.

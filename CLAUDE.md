@@ -57,7 +57,7 @@ halo/
   contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
                     # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
-  services/
+  services/                    # each service has its own CLAUDE.md with detailed docs
     control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
     skill_runner_service/      # config.py, fsm.py, service.py
     planner_service/           # config.py, snapshot_serializer.py, tools.py, agent.py, service.py
