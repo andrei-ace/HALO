@@ -408,19 +408,23 @@ class TargetPerceptionService:
                     (d for d in scene.detections if d.handle == target_handle),
                     None,
                 )
-                if match is None and scene.detections:
-                    match = scene.detections[0]
-                if match is not None:
-                    self._vlm_seed = TargetInfo(
-                        handle=target_handle,
-                        hint_valid=True,
-                        confidence=1.0,
-                        obs_age_ms=0,
-                        time_skew_ms=0,
-                        delta_xyz_ee=(0.0, 0.0, 0.0),
-                        distance_m=0.0,
+                if match is None:
+                    await self._update_failure(
+                        tracking_status=TrackingStatus.REACQUIRING,
+                        failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
+                        target=None,
                     )
-                    self._reacquire_fail_count = 0
+                    return
+                self._vlm_seed = TargetInfo(
+                    handle=target_handle,
+                    hint_valid=True,
+                    confidence=1.0,
+                    obs_age_ms=0,
+                    time_skew_ms=0,
+                    delta_xyz_ee=(0.0, 0.0, 0.0),
+                    distance_m=0.0,
+                )
+                self._reacquire_fail_count = 0
         except asyncio.CancelledError:
             raise
         finally:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from typing import Awaitable, Callable
 
 from halo.contracts.commands import (
     AbortSkillPayload,
@@ -31,9 +32,15 @@ class CommandRouter:
     once the caller has corrected the precondition.
     """
 
-    def __init__(self, store: RuntimeStateStore, bus: object | None = None) -> None:
+    def __init__(
+        self,
+        store: RuntimeStateStore,
+        bus: object | None = None,
+        build_snapshot: Callable[[str], Awaitable[object]] | None = None,
+    ) -> None:
         self._store = store
         self._bus = bus  # EventBus | None
+        self._build_snapshot = build_snapshot
         self._accepted: set[str] = set()  # command_ids that were accepted
         self._lock = asyncio.Lock()
 
@@ -51,6 +58,8 @@ class CommandRouter:
                 cmd.payload, (AbortSkillPayload, OverrideTargetPayload)
             )
             latest = await self._store.get_latest_snapshot(cmd.arm_id) if needs_snapshot else None
+            if needs_snapshot and latest is None and self._build_snapshot is not None:
+                latest = await self._build_snapshot(cmd.arm_id)  # type: ignore[misc]
 
             # --- 2. Precondition check ---
             if cmd.precondition_snapshot_id is not None:

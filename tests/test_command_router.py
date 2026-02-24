@@ -122,7 +122,7 @@ async def test_stale_precondition_when_no_snapshot_built_yet(rt: HALORuntime):
         precondition_snapshot_id="snap-arm2-1",
     )
     ack = await rt.submit_command(cmd)
-    assert ack.status == CommandAckStatus.REJECTED_STALE
+    assert ack.status == CommandAckStatus.ACCEPTED
 
 
 async def test_stale_ack_recorded_in_store(rt: HALORuntime):
@@ -152,6 +152,14 @@ async def test_abort_matching_skill_run_accepted(rt: HALORuntime):
     assert ack.status == CommandAckStatus.ACCEPTED
 
 
+async def test_abort_matching_skill_run_accepted_without_cached_snapshot(rt: HALORuntime):
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-3", phase=PhaseId.APPROACH_PREGRASP)
+    await rt.store.update_skill(ARM, skill)
+
+    ack = await rt.submit_command(_abort("cmd-abort-no-snap", skill_run_id="run-3"))
+    assert ack.status == CommandAckStatus.ACCEPTED
+
+
 async def test_override_wrong_skill_run_rejected(rt: HALORuntime):
     ack = await rt.submit_command(_override("cmd-override-bad", skill_run_id="run-wrong"))
     assert ack.status == CommandAckStatus.REJECTED_WRONG_SKILL_RUN
@@ -163,6 +171,14 @@ async def test_override_matching_skill_run_accepted(rt: HALORuntime):
     await rt.get_latest_runtime_snapshot(ARM)
 
     ack = await rt.submit_command(_override("cmd-override-ok", skill_run_id="run-2"))
+    assert ack.status == CommandAckStatus.ACCEPTED
+
+
+async def test_override_matching_skill_run_accepted_without_cached_snapshot(rt: HALORuntime):
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-4", phase=PhaseId.APPROACH_PREGRASP)
+    await rt.store.update_skill(ARM, skill)
+
+    ack = await rt.submit_command(_override("cmd-override-no-snap", skill_run_id="run-4"))
     assert ack.status == CommandAckStatus.ACCEPTED
 
 
