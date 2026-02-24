@@ -21,6 +21,7 @@ _URGENT_EVENT_TYPES = frozenset({
     EventType.PERCEPTION_FAILURE,
     EventType.SCENE_DESCRIBED,
     EventType.TARGET_ACQUIRED,
+    EventType.COMMAND_REJECTED,
 })
 
 

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import json
+from collections import deque
 from pathlib import Path
 
-from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain.agents import AgentState, create_agent
+from langchain.agents.middleware import before_model
+from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
 from langchain_ollama import ChatOllama
+from langgraph.checkpoint.memory import InMemorySaver
 
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
@@ -16,32 +20,34 @@ from halo.services.planner_service.tools import AgentContext, build_tools
 
 _SNAPSHOT_PREFIX = "Current robot state:"
 _DEPRECATED_CONTENT = "[DEPRECATED - superseded by a more recent snapshot]"
+_THREAD_ID = "planner"  # single-thread; one conversation per PlannerAgent
 
 
-class _DeprecateOldSnapshotsMiddleware(AgentMiddleware):
+@before_model
+def _deprecate_old_snapshots(state: AgentState, runtime: object) -> dict | None:
     """Enforce the 'exactly one snapshot' invariant from the architecture spec.
 
     Before every model call, replace the content of all but the most recent
     "Current robot state:" HumanMessage with a deprecation notice so the LLM
     only ever reasons about the latest snapshot and the context stays small.
     """
-
-    @staticmethod
-    def _deprecate(messages: list) -> list:
-        indices = [
-            i
-            for i, m in enumerate(messages)
-            if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content.startswith(_SNAPSHOT_PREFIX)
-        ]
-        for i in indices[:-1]:
-            messages[i] = HumanMessage(content=_DEPRECATED_CONTENT)
-        return messages
-
-    def wrap_model_call(self, request: ModelRequest, handler) -> ModelResponse:
-        return handler(request.override(messages=self._deprecate(list(request.messages))))
-
-    async def awrap_model_call(self, request: ModelRequest, handler) -> ModelResponse:
-        return await handler(request.override(messages=self._deprecate(list(request.messages))))
+    messages = state["messages"]
+    indices = [
+        i
+        for i, m in enumerate(messages)
+        if isinstance(m, HumanMessage)
+        and isinstance(m.content, str)
+        and m.content.startswith(_SNAPSHOT_PREFIX)
+    ]
+    if len(indices) <= 1:
+        return None
+    # Replace all but last snapshot with deprecation notice
+    updates = []
+    for i in indices[:-1]:
+        msg = messages[i]
+        updates.append(RemoveMessage(id=msg.id))
+        updates.append(HumanMessage(content=_DEPRECATED_CONTENT, id=msg.id))
+    return {"messages": updates}
 
 
 def _load_prompts(prompts_dir: Path) -> str:
@@ -77,8 +83,16 @@ def _extract_reasoning(result: object) -> str:
     return ""
 
 
+def _command_key(cmd: CommandEnvelope) -> str:
+    """Stable key for a command (type + payload, ignoring IDs and timestamps)."""
+    payload_dict = dataclasses.asdict(cmd.payload)
+    return f"{cmd.type}:{json.dumps(payload_dict, sort_keys=True)}"
+
+
 class PlannerAgent:
     """LangGraph ReAct agent that implements the DecideFn protocol."""
+
+    MAX_LOOP_RETRIES = 4
 
     def __init__(
         self,
@@ -86,21 +100,29 @@ class PlannerAgent:
         base_url: str,
         prompts_dir: Path,
     ) -> None:
-        self._system_prompt = _load_prompts(prompts_dir)
+        system_prompt = _load_prompts(prompts_dir)
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         self._tools = build_tools(self._ctx)
         llm = ChatOllama(model=model_name, base_url=base_url)
+        self._checkpointer = InMemorySaver()
         self._agent = create_agent(
             llm,
             self._tools,
-            middleware=[_DeprecateOldSnapshotsMiddleware()],
+            system_prompt=system_prompt,
+            middleware=[_deprecate_old_snapshots],
+            checkpointer=self._checkpointer,
         )
         self._last_reasoning: str = ""
+        self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
 
     @property
     def last_reasoning(self) -> str:
         """Final LLM text from the most recent decide() call (empty if none)."""
         return self._last_reasoning
+
+    def reset_loop_state(self) -> None:
+        """Clear the loop-detection history (e.g. on new operator instruction)."""
+        self._cmd_streak.clear()
 
     async def decide(
         self,
@@ -108,6 +130,11 @@ class PlannerAgent:
         operator_cmd: str | None = None,
     ) -> list[CommandEnvelope]:
         """DecideFn implementation. Thread-safe per design (never called concurrently).
+
+        Uses InMemorySaver checkpointer to persist conversation history across
+        calls.  The _deprecate_old_snapshots middleware replaces all but the
+        latest snapshot with a short deprecation notice before each model call,
+        keeping the context window manageable.
 
         Args:
             snap: Current runtime snapshot.
@@ -118,17 +145,55 @@ class PlannerAgent:
         self._ctx.arm_id = snap.arm_id
         self._ctx.snapshot_id = snap.snapshot_id
         self._ctx.commands.clear()
+        self._ctx.used_tools.clear()
+
+        # New operator instruction always resets loop detection so the
+        # agent gets a clean slate to act on the command.
+        if operator_cmd:
+            self._cmd_streak.clear()
 
         snap_json = json.dumps(snapshot_to_dict(snap), indent=2)
-        messages = [
-            SystemMessage(content=self._system_prompt),
+
+        messages: list = [
             HumanMessage(content=f"{_SNAPSHOT_PREFIX}\n```json\n{snap_json}\n```"),
         ]
         if operator_cmd:
             messages.append(HumanMessage(content=f"Operator: {operator_cmd}"))
-        result = await self._agent.ainvoke({"messages": messages})
+
+        config = {"configurable": {"thread_id": _THREAD_ID}}
+        result = await self._agent.ainvoke({"messages": messages}, config)
         self._last_reasoning = _extract_reasoning(result)
-        return list(self._ctx.commands)
+
+        commands = list(self._ctx.commands)
+
+        # Loop detection: track how many consecutive times each command
+        # (type+payload) has been issued. If any command hits the limit,
+        # suppress the entire batch. This catches loops even when the
+        # agent varies the number of commands per tick.
+        if commands:
+            current_keys = {_command_key(c) for c in commands}
+            # Increment streaks for commands seen this tick
+            for key in current_keys:
+                self._cmd_streak[key] = self._cmd_streak.get(key, 0) + 1
+            # Decay streaks for commands NOT seen this tick
+            for key in list(self._cmd_streak):
+                if key not in current_keys:
+                    del self._cmd_streak[key]
+            # Check if any command hit the limit
+            max_streak = max(self._cmd_streak.values())
+            if max_streak >= self.MAX_LOOP_RETRIES:
+                looped = [k.split(":")[0] for k, v in self._cmd_streak.items()
+                          if v >= self.MAX_LOOP_RETRIES]
+                self._last_reasoning = (
+                    f"Loop detected: {', '.join(looped)} issued "
+                    f"{self.MAX_LOOP_RETRIES}+ times in a row. "
+                    f"Stopping to avoid an infinite loop. "
+                    f"Awaiting operator intervention."
+                )
+                self._cmd_streak.clear()
+                return []
+
+        return commands
 
 
 def make_decide_fn(

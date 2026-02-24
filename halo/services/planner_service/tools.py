@@ -22,10 +22,18 @@ class AgentContext:
     arm_id: str
     snapshot_id: str | None
     commands: list[CommandEnvelope] = field(default_factory=list)
+    used_tools: set[str] = field(default_factory=set)
 
 
 def build_tools(ctx: AgentContext) -> list:
     """Build LangChain tool list that close over ctx."""
+
+    def _once(name: str) -> str | None:
+        """Return an error string if tool was already called this tick, else mark it used."""
+        if name in ctx.used_tools:
+            return f"REJECTED: {name} already called this tick. Wait for the next tick."
+        ctx.used_tools.add(name)
+        return None
 
     @tool
     def start_skill(skill_name: str, target_handle: str, options: dict = {}) -> str:
@@ -36,6 +44,8 @@ def build_tools(ctx: AgentContext) -> list:
             target_handle: Target object handle string (from perception).
             options: Optional key/value overrides for the skill.
         """
+        if (err := _once("start_skill")):
+            return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
@@ -59,6 +69,8 @@ def build_tools(ctx: AgentContext) -> list:
             skill_run_id: ID of the skill run to abort (from snapshot.skill.skill_run_id).
             reason: Human-readable reason for aborting.
         """
+        if (err := _once("abort_skill")):
+            return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
@@ -81,6 +93,8 @@ def build_tools(ctx: AgentContext) -> list:
             skill_run_id: ID of the skill run to update.
             target_handle: New target object handle.
         """
+        if (err := _once("override_target")):
+            return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
@@ -106,6 +120,8 @@ def build_tools(ctx: AgentContext) -> list:
         Args:
             reason: Human-readable reason for requesting the scene description.
         """
+        if (err := _once("describe_scene")):
+            return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
@@ -133,6 +149,8 @@ def build_tools(ctx: AgentContext) -> list:
         Args:
             target_handle: Object handle string (from SCENE_DESCRIBED detections).
         """
+        if (err := _once("track_object")):
+            return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,

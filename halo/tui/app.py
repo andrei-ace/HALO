@@ -8,6 +8,7 @@ Run with:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from textual.app import App, ComposeResult
@@ -633,7 +634,7 @@ class SystemPanel(Container):
             self.query_one(f"#sys-tgt-{label}", Static).update(text)
 
 
-class EventsPanel(Container):
+class EventsPanel(VerticalScroll):
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = data
@@ -649,7 +650,7 @@ class EventsPanel(Container):
             t.append(desc)
             yield Static(t)
 
-    def append_event(self, evt: object) -> None:
+    async def append_event(self, evt: object) -> None:
         """Append a live EventEnvelope row (newest at bottom). Trims to 8 rows."""
         from datetime import datetime
 
@@ -659,10 +660,11 @@ class EventsPanel(Container):
         t.append(ts, style="grey62")
         t.append("  ")
         t.append(_format_event(evt))
-        self.mount(Static(t))
+        await self.mount(Static(t))
         children = list(self.query("Static"))
         if len(children) > 8:
-            children[0].remove()
+            await children[0].remove()
+        self.scroll_end(animate=False)
 
 
 class PanicPanel(Container):
@@ -1003,13 +1005,18 @@ class HALOApp(App):
             self._run_logger: RunLogger | None = run_logger
         else:
             self._run_logger = RunLogger(_RUNS_DIR, arm_id) if runtime is not None else None
+        self._last_operator_msg: str | None = None
+        self._agent_queue: asyncio.Queue[str] | None = None
 
     async def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
         if self._runtime:
             self.set_interval(2.0, self._poll_system_panel)
-            self._event_queue = self._runtime.bus.subscribe(self._arm_id)  # type: ignore[union-attr]
+            self._event_queue = self._runtime.bus.subscribe(self._arm_id, maxsize=0)  # type: ignore[union-attr]
             self.run_worker(self._listen_events(), name="event_listener")
+        if self._runtime and self._agent:
+            self._agent_queue = asyncio.Queue()
+            self.run_worker(self._agent_processor_loop(), name="agent_processor")
         if self._perception_svc is not None:
             # Start the service so it listens for planner commands,
             # but don't set a tracking target — the planner decides when.
@@ -1056,9 +1063,9 @@ class HALOApp(App):
             inp.focus()
             inp.cursor_position = len(inp.value)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "planner-input":
-            self.action_send_message()
+            await self.action_send_message()
 
     # ── Actions ──
 
@@ -1078,7 +1085,7 @@ class HALOApp(App):
         if self._runtime:
             self.run_worker(self._do_abort(), name="abort_worker")
 
-    def action_send_message(self) -> None:
+    async def action_send_message(self) -> None:
         from datetime import datetime
 
         inp = self.query_one("#planner-input", Input)
@@ -1094,15 +1101,14 @@ class HALOApp(App):
         t.append("  ")
         t.append(msg, style="#b0bcd0")
         history = self.query_one("#prompt-history", VerticalScroll)
-        history.mount(Static(t, classes="history-item"))
+        await history.mount(Static(t, classes="history-item"))
         history.scroll_end(animate=False)
-        # Launch agent call if live
-        if self._runtime and self._agent:
-            self.run_worker(
-                self._do_agent_call(msg),
-                group="planner",
-                exclusive=True,
-            )
+        # Queue agent call if live
+        if self._agent_queue is not None:
+            self._last_operator_msg = msg
+            if hasattr(self._agent, "reset_loop_state"):
+                self._agent.reset_loop_state()
+            self._agent_queue.put_nowait(msg)
         self.set_focus(None)
 
     def action_cancel_input(self) -> None:
@@ -1142,36 +1148,59 @@ class HALOApp(App):
         except Exception:
             pass
 
-    async def _listen_events(self) -> None:
-        """Forward EventBus events to EventsPanel and trigger agent on scene results."""
-        import asyncio
-        from halo.contracts.events import EventType
+    def _with_task_context(self, system_msg: str) -> str:
+        """Append the last operator instruction so the agent keeps task context."""
+        if self._last_operator_msg:
+            return f"{system_msg}\nOperator task: {self._last_operator_msg}"
+        return system_msg
 
+    _AGENT_WAKE_EVENTS = frozenset({
+        "SKILL_SUCCEEDED", "SKILL_FAILED", "SAFETY_REFLEX_TRIGGERED",
+        "PERCEPTION_FAILURE", "SCENE_DESCRIBED", "TARGET_ACQUIRED",
+        "COMMAND_REJECTED",
+    })
+
+    async def _listen_events(self) -> None:
+        """Forward EventBus events to EventsPanel and wake agent on urgent events.
+
+        The agent reads actual event data from the snapshot's recent_events,
+        not from the TUI. The TUI only sends a wake signal.
+        """
         events_panel = self.query_one("#events-panel", EventsPanel)
         try:
             while True:
                 evt = await self._event_queue.get()  # type: ignore[union-attr]
-                events_panel.append_event(evt)
-                if evt.type == EventType.SCENE_DESCRIBED and self._agent:
-                    count = evt.data.get("count", "?")
-                    scene = evt.data.get("scene", "")
-                    snippet = (scene[:120] + "…") if len(scene) > 120 else scene
-                    self.run_worker(
-                        self._do_agent_call(
-                            f"[scene update] VLM described {count} object(s): {snippet}"
-                        ),
-                        group="planner",
-                        exclusive=True,
+                try:
+                    await events_panel.append_event(evt)
+                except Exception:
+                    pass  # DOM error must not kill the listener
+                # Wake the agent — it reads event details from the snapshot
+                evt_type = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
+                if self._agent_queue is not None and evt_type in self._AGENT_WAKE_EVENTS:
+                    self._agent_queue.put_nowait(
+                        self._with_task_context(f"[event: {evt_type}]")
                     )
-                elif evt.type == EventType.TARGET_ACQUIRED and self._agent:
-                    handle = evt.data.get("target_handle", "?")
-                    self.run_worker(
-                        self._do_agent_call(
-                            f"[target acquired] Perception is now tracking: {handle}"
-                        ),
-                        group="planner",
-                        exclusive=True,
-                    )
+        except asyncio.CancelledError:
+            pass
+
+    async def _agent_processor_loop(self) -> None:
+        """Single-threaded agent call processor. Reads from _agent_queue,
+        batches messages that arrived during inference, and calls the agent."""
+        assert self._agent_queue is not None
+        try:
+            while True:
+                # Wait for the first message
+                msg = await self._agent_queue.get()
+                # Brief yield so burst events can queue up
+                await asyncio.sleep(0.05)
+                # Drain any additional messages into one batch
+                while not self._agent_queue.empty():
+                    try:
+                        extra = self._agent_queue.get_nowait()
+                        msg = msg + "\n" + extra
+                    except asyncio.QueueEmpty:
+                        break
+                await self._do_agent_call(msg)
         except asyncio.CancelledError:
             pass
 
@@ -1195,8 +1224,13 @@ class HALOApp(App):
             from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
 
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
+            # Event wake signals (e.g. "[event: COMMAND_REJECTED]\nOperator task: ...")
+            # are NOT operator commands — pass them as context only so they don't
+            # reset loop detection.  Real operator messages never start with "[".
+            is_event_wake = msg is not None and msg.startswith("[")
+            operator_cmd = None if is_event_wake else msg
             _t0 = _time.monotonic()
-            commands = await self._agent.decide(snap, operator_cmd=msg)  # type: ignore[union-attr]
+            commands = await self._agent.decide(snap, operator_cmd=operator_cmd)  # type: ignore[union-attr]
             inference_ms = int((_time.monotonic() - _t0) * 1000)
             reasoning = getattr(self._agent, "last_reasoning", "") or ""
             self._last_reasoning = reasoning
