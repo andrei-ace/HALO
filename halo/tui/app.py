@@ -1160,7 +1160,10 @@ class HALOApp(App):
             panel_data = _snap_to_panel_data(snap, self._panel_data)
             self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
             self.query_one("#planner-panel", PlannerPanel).refresh_live(panel_data)
-            self.query_one("#perception-panel", TargetPerceptionPanel).refresh_live(panel_data)
+            inp = self.query_one("#planner-input", Input)
+            typing_active = self.focused is inp and bool(inp.value)
+            if not typing_active:
+                self.query_one("#perception-panel", TargetPerceptionPanel).refresh_live(panel_data)
         except Exception:
             pass
 

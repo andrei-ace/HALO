@@ -7,7 +7,6 @@ Each run creates a directory under ``runs/``::
         vlm_001.jpg        # image sent to VLM
         vlm_002.jpg
         scene_001.txt      # SCENE_DESCRIBED text
-        scene_001.jpg      # SCENE_DESCRIBED image
         ...
 """
 
@@ -32,7 +31,6 @@ class RunLogger:
     - ``run.jsonl`` — planner interactions and VLM inference entries
     - ``vlm_NNN.jpg`` — image sent to VLM for each inference call
     - ``scene_NNN.txt`` — SCENE_DESCRIBED scene text
-    - ``scene_NNN.jpg`` — SCENE_DESCRIBED camera image
     """
 
     def __init__(self, runs_dir: Path, arm_id: str) -> None:
@@ -124,7 +122,7 @@ class RunLogger:
         image: object | None = None,
         inference_ms: int = 0,
     ) -> None:
-        """Save SCENE_DESCRIBED artifacts: text file + image (if available).
+        """Save SCENE_DESCRIBED artifacts: text file.
 
         Also appends a ``scene`` entry to the JSONL log.
         """
@@ -138,13 +136,16 @@ class RunLogger:
             encoding="utf-8",
         )
 
-        # Save image
-        img_fname: str | None = None
-        if image is not None:
-            fname = f"scene_{idx}.jpg"
+        # Reuse the corresponding VLM image instead of writing scene_NNN.jpg.
+        # If we have detections with bbox data, rewrite the overlay so labels
+        # match any handle stabilisation done after VLM inference.
+        vlm_fname = f"vlm_{idx}.jpg"
+        vlm_path = self._run_dir / vlm_fname
+        img_fname = vlm_fname if vlm_path.exists() else None
+        if image is not None and img_fname is not None:
             try:
-                _save_image(image, self._run_dir / fname)
-                img_fname = fname
+                annotated = _annotate_image(image, detections)
+                _save_image(annotated, vlm_path)
             except Exception:
                 pass
 

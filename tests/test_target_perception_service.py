@@ -18,6 +18,7 @@ from halo.services.target_perception_service.service import (
     TargetPerceptionService,
     TrackerFactoryFn,
     VlmFn,
+    _stabilize_scene_for_tracked_target,
 )
 from halo.services.target_perception_service.vlm_parser import VlmDetection, VlmScene
 
@@ -293,7 +294,11 @@ async def test_clear_tracking_target_publishes_lost(rt: HALORuntime):
 
 
 async def test_request_refresh_sets_reacquiring_status(rt: HALORuntime):
-    svc = _make_svc(rt)
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        await asyncio.sleep(0.05)
+        return _scene("cube-1")
+
+    svc = _make_svc(rt, vlm_fn=vlm)
     await svc.set_tracking_target("cube-1")
     await svc.tick()  # → TRACKING
 
@@ -312,6 +317,26 @@ async def test_request_refresh_clears_after_successful_observe(rt: HALORuntime):
     assert svc._vlm_job_pending is False
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.perception.tracking_status == TrackingStatus.TRACKING
+
+
+async def test_request_refresh_without_vlm_fn_does_not_set_pending(rt: HALORuntime):
+    svc = _make_svc(rt, vlm_fn=None)
+    await svc.request_refresh(reason="no-vlm")
+
+    assert svc._vlm_job_pending is False
+
+
+async def test_request_refresh_scene_only_clears_pending_after_vlm_finish(rt: HALORuntime):
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        return _scene("cube-1")
+
+    svc = _make_svc(rt, vlm_fn=vlm)
+    await svc.request_refresh(mode="scene_only", reason="test")
+    assert svc._vlm_job_pending is True
+
+    await asyncio.sleep(0.05)
+
+    assert svc._vlm_job_pending is False
 
 
 # ─── lifecycle ────────────────────────────────────────────────────────────────
@@ -346,6 +371,53 @@ def _scene(*handles: str) -> VlmScene:
     return VlmScene(scene="test scene", detections=dets)
 
 
+# ─── handle stabilization ─────────────────────────────────────────────────────
+
+
+def test_stabilize_scene_for_tracked_target_remaps_when_near_anchor():
+    scene = VlmScene(
+        scene="table",
+        detections=[
+            VlmDetection(
+                handle="black_cube_02",
+                label="cube",
+                bbox=(102.0, 101.0, 201.0, 199.0),
+                centroid=(151.5, 150.0),
+                is_graspable=True,
+            )
+        ],
+    )
+
+    stabilized = _stabilize_scene_for_tracked_target(
+        scene,
+        tracked_handle="black_cube_01",
+        tracked_center_px=(150.0, 150.0),
+    )
+    assert stabilized.detections[0].handle == "black_cube_01"
+
+
+def test_stabilize_scene_for_tracked_target_keeps_handle_when_far():
+    scene = VlmScene(
+        scene="table",
+        detections=[
+            VlmDetection(
+                handle="black_cube_02",
+                label="cube",
+                bbox=(700.0, 400.0, 760.0, 460.0),
+                centroid=(730.0, 430.0),
+                is_graspable=True,
+            )
+        ],
+    )
+
+    stabilized = _stabilize_scene_for_tracked_target(
+        scene,
+        tracked_handle="black_cube_01",
+        tracked_center_px=(20.0, 20.0),
+    )
+    assert stabilized.detections[0].handle == "black_cube_02"
+
+
 # ─── VLM async path ───────────────────────────────────────────────────────────
 
 
@@ -362,6 +434,51 @@ async def test_vlm_triggered_on_set_tracking_target(rt: HALORuntime):
     await asyncio.sleep(0.05)  # yield so the VLM task can run
 
     assert called == [ARM]
+
+
+async def test_supports_vlm_target_handle_false_for_three_arg_fn(rt: HALORuntime):
+    seen: dict[str, object] = {}
+
+    async def vlm3(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        seen["arm_id"] = arm_id
+        seen["known_handles"] = list(known_handles or [])
+        return _scene("cube-1")
+
+    svc = _make_svc(rt, vlm_fn=vlm3)
+    svc._known_handles = ["h1", "h2"]
+
+    assert svc._supports_vlm_target_handle() is False
+    out = await svc._call_vlm(vlm_image="img", target_handle="cube-1")
+
+    assert out.detections[0].handle == "cube-1"
+    assert seen["arm_id"] == ARM
+    assert seen["known_handles"] == ["h1", "h2"]
+
+
+async def test_supports_vlm_target_handle_true_for_four_arg_fn(rt: HALORuntime):
+    seen: dict[str, object] = {}
+
+    async def vlm4(
+        arm_id: str,
+        image: object = None,
+        known_handles=None,
+        target_handle: str | None = None,
+    ) -> VlmScene:
+        seen["arm_id"] = arm_id
+        seen["known_handles"] = list(known_handles or [])
+        seen["target_handle"] = target_handle
+        return _scene(target_handle or "cube-1")
+
+    svc = _make_svc(rt, vlm_fn=vlm4)
+    svc._known_handles = ["h3"]
+
+    assert svc._supports_vlm_target_handle() is True
+    out = await svc._call_vlm(vlm_image="img", target_handle="cube-9")
+
+    assert out.detections[0].handle == "cube-9"
+    assert seen["arm_id"] == ARM
+    assert seen["known_handles"] == ["h3"]
+    assert seen["target_handle"] == "cube-9"
 
 
 async def test_vlm_triggered_on_request_refresh(rt: HALORuntime):
@@ -573,6 +690,38 @@ async def test_vlm_mismatch_emits_failure(rt: HALORuntime):
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
     assert snap.perception.tracking_status == TrackingStatus.LOST
+
+
+async def test_fuzzy_reacquire_keeps_requested_target_handle(rt: HALORuntime):
+    """If fuzzy fallback picks another detection, keep the requested handle as canonical."""
+
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        return _scene("black_cube_02")
+
+    cap_fn = make_mock_capture_fn()
+    factory_fn = make_mock_tracker_factory_fn()
+    svc = _make_svc(
+        rt,
+        observe_fn=_null_observe,
+        vlm_fn=vlm,
+        capture_fn=cap_fn,
+        tracker_factory_fn=factory_fn,
+    )
+    await svc.set_tracking_target("black_cube_01")
+
+    await svc.tick()  # push frame for replay init
+    await asyncio.sleep(0.1)  # let VLM + replay complete
+    await svc.tick()  # consume seed / publish TRACKING + TARGET_ACQUIRED
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert svc._target_handle == "black_cube_01"
+    assert snap.target is not None
+    assert snap.target.handle == "black_cube_01"
+
+    events = rt.bus.get_recent_events(ARM)
+    acquired = [e for e in events if e.type == EventType.TARGET_ACQUIRED]
+    assert acquired
+    assert acquired[-1].data["target_handle"] == "black_cube_01"
 
 
 # ─── TARGET_ACQUIRED event ───────────────────────────────────────────────────
@@ -972,6 +1121,39 @@ async def test_cancel_vlm_without_respawn_deactivates_buffer(rt: HALORuntime):
     assert not svc._replay_buffer.is_active
     assert len(svc._replay_buffer) == 0
 
+    await svc.stop()
+
+
+async def test_retarget_during_vlm_keeps_new_buffer_active(rt: HALORuntime):
+    first_started = asyncio.Event()
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+    calls = 0
+
+    async def blocking_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            first_started.set()
+            await asyncio.sleep(60.0)
+            return _scene("cube-1")
+        second_started.set()
+        await release_second.wait()
+        return _scene("cube-2")
+
+    cap_fn = make_mock_capture_fn()
+    svc = _make_svc(rt, vlm_fn=blocking_vlm, capture_fn=cap_fn)
+    await svc.set_tracking_target("cube-1")
+    await first_started.wait()
+    assert svc._replay_buffer.is_active
+
+    await svc.set_tracking_target("cube-2")
+    await second_started.wait()
+    await asyncio.sleep(0.02)
+    assert svc._replay_buffer.is_active
+
+    release_second.set()
+    await asyncio.sleep(0.05)
     await svc.stop()
 
 

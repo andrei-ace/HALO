@@ -118,7 +118,12 @@ def make_ollama_vlm_fn(
     """
     prompt = prompt_path.read_text(encoding="utf-8")
 
-    async def vlm_fn(arm_id: str, image: object, known_handles: list[str] | None = None) -> VlmScene:
+    async def vlm_fn(
+        arm_id: str,
+        image: object,
+        known_handles: list[str] | None = None,
+        target_handle: str | None = None,
+    ) -> VlmScene:
         if image is None:
             return VlmScene(scene="", detections=[])
 
@@ -138,9 +143,10 @@ def make_ollama_vlm_fn(
         except Exception as exc:
             error = str(exc)
             if run_logger is not None:
-                run_logger.log_vlm_inference(
+                await asyncio.to_thread(
+                    run_logger.log_vlm_inference,
                     arm_id=arm_id,
-                    target_handle="",
+                    target_handle=target_handle or "",
                     model=model,
                     raw_response={k: v for k, v in result.items() if k != "context"},
                     target_info=None,
@@ -156,9 +162,10 @@ def make_ollama_vlm_fn(
         if run_logger is not None:
             loggable = {k: v for k, v in result.items() if k != "context"}
             det_dicts = [{"handle": d.handle, "bbox": d.bbox} for d in vlm_scene.detections]
-            run_logger.log_vlm_inference(
+            await asyncio.to_thread(
+                run_logger.log_vlm_inference,
                 arm_id=arm_id,
-                target_handle="",
+                target_handle=target_handle or "",
                 model=model,
                 raw_response=loggable,
                 target_info=None,
