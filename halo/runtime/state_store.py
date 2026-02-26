@@ -113,6 +113,15 @@ class RuntimeStateStore:
             self._require_arm(arm_id)
             self._perception[arm_id] = perception
 
+    async def update_target_and_perception(
+        self, arm_id: str, target: TargetInfo | None, perception: PerceptionInfo
+    ) -> None:
+        """Atomically update both target and perception under a single lock."""
+        async with self._lock:
+            self._require_arm(arm_id)
+            self._target[arm_id] = target
+            self._perception[arm_id] = perception
+
     async def update_act(self, arm_id: str, act: ActInfo) -> None:
         async with self._lock:
             self._require_arm(arm_id)

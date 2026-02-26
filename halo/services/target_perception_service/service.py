@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 import time
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from halo.contracts.enums import CommandType, PerceptionFailureCode, TrackingStatus
 from halo.contracts.events import EventEnvelope, EventType
@@ -13,15 +14,19 @@ from halo.services.target_perception_service.config import TargetPerceptionServi
 from halo.services.target_perception_service.frame_buffer import CapturedFrame, FrameRingBuffer
 from halo.services.target_perception_service.vlm_parser import VlmDetection, VlmScene
 
+if TYPE_CHECKING:
+    from halo.tui.run_logger import RunLogger
+
 # observe_fn(arm_id, target_handle) -> TargetInfo | None
 # Wraps the tracker + depth fusion steady-state path (10–30 Hz).
 # Returns None when the target is momentarily lost.
 ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]
 
-# vlm_fn(arm_id) -> VlmScene
-# Scene analysis — returns all detections. The service picks the matching
-# target from the scene. Runs asynchronously, never on the fast-loop path.
-VlmFn = Callable[[str], Awaitable[VlmScene]]
+# vlm_fn(arm_id, image, known_handles) -> VlmScene
+# Scene analysis — receives a camera frame and previously known handles.
+# The service picks the matching target from the scene.
+# Runs asynchronously, never on the fast-loop path.
+VlmFn = Callable[[str, object, list[str]], Awaitable[VlmScene]]
 
 # capture_fn(arm_id) -> CapturedFrame
 # Grab the latest camera frame. Must be fast (sub-ms, from a pre-filled
@@ -38,6 +43,22 @@ TrackerUpdateFn = Callable[[CapturedFrame], Awaitable[TargetInfo | None]]
 # Returns the initial TargetInfo and a bound update function that closes
 # over the tracker state.
 TrackerFactoryFn = Callable[[CapturedFrame, VlmDetection], Awaitable[tuple[TargetInfo, TrackerUpdateFn]]]
+
+
+def _find_detection(target_handle: str, detections: list[VlmDetection]) -> VlmDetection | None:
+    """Find a detection matching *target_handle*, with fuzzy fallback.
+
+    1. Exact handle match.
+    2. Fuzzy: strip trailing ``_NN`` suffix and match on prefix
+       (e.g. ``black_cube_01`` matches ``black_cube_02``).
+       If multiple candidates share the prefix, pick the first.
+    """
+    exact = next((d for d in detections if d.handle == target_handle), None)
+    if exact is not None:
+        return exact
+    prefix = re.sub(r"_\d+$", "", target_handle)
+    candidates = [d for d in detections if re.sub(r"_\d+$", "", d.handle) == prefix]
+    return candidates[0] if candidates else None
 
 
 class TargetPerceptionService:
@@ -101,6 +122,7 @@ class TargetPerceptionService:
         capture_fn: CaptureFn | None = None,
         tracker_factory_fn: TrackerFactoryFn | None = None,
         config: TargetPerceptionServiceConfig = TargetPerceptionServiceConfig(),
+        run_logger: RunLogger | None = None,
     ) -> None:
         self._arm_id = arm_id
         self._runtime = runtime
@@ -109,11 +131,13 @@ class TargetPerceptionService:
         self._capture_fn = capture_fn
         self._tracker_factory_fn = tracker_factory_fn
         self._config = config
+        self._run_logger = run_logger
 
         self._target_handle: str | None = None
         self._tracking_status = TrackingStatus.IDLE
         self._failure_code = PerceptionFailureCode.OK
         self._reacquire_fail_count = 0
+        self._tracker_init_attempts = 0  # VLM+replay retry counter for tracker init
         self._vlm_job_pending = False
         self._awaiting_acquisition = False
 
@@ -121,6 +145,7 @@ class TargetPerceptionService:
         self._vlm_task: asyncio.Task | None = None
         self._vlm_seed: TargetInfo | None = None  # latest VLM result, consumed by tick()
         self._last_obs: TargetInfo | None = None  # VLM-only: last good observation to re-publish
+        self._known_handles: list[str] = []  # handles from last VLM scene, for ID stability
 
         # Frame buffer + tracker switchover
         self._replay_buffer = FrameRingBuffer(max_size=config.frame_buffer_max_size)
@@ -176,6 +201,7 @@ class TargetPerceptionService:
         """
         self._target_handle = target_handle
         self._reacquire_fail_count = 0
+        self._tracker_init_attempts = 0
         self._failure_code = PerceptionFailureCode.OK
         self._vlm_seed = None
         self._last_obs = None
@@ -198,14 +224,17 @@ class TargetPerceptionService:
         """
         Request a VLM scene analysis / reacquisition.
 
-        Works with or without an active tracking target:
-        - No target: runs VLM for scene analysis only, emits SCENE_DESCRIBED.
-        - With target: additionally seeds the tracker for reacquisition.
+        *mode*:
+        - ``"reacquire"`` (default): scene analysis **and** tracker
+          reacquisition if a target is set.
+        - ``"scene_only"``: scene analysis only — never attempts tracker
+          init, even if a target is active (used by DESCRIBE_SCENE).
         """
-        if self._target_handle is not None:
+        reacquire = mode != "scene_only" and self._target_handle is not None
+        if reacquire:
             self._tracking_status = TrackingStatus.REACQUIRING
         self._vlm_job_pending = True
-        self._spawn_vlm(for_new_target=self._target_handle is not None)
+        self._spawn_vlm(for_new_target=reacquire)
 
     # --- Testable internal ---
 
@@ -265,7 +294,7 @@ class TargetPerceptionService:
                     tracking_status=TrackingStatus.TRACKING,
                     target=self._last_obs,
                 )
-            else:
+            elif self._tracking_status != TrackingStatus.LOST:
                 # Initial VLM call in flight — wait quietly.
                 await self._publish_state(
                     target=None,
@@ -289,6 +318,9 @@ class TargetPerceptionService:
     async def _apply_gates_and_publish(self, obs: TargetInfo | None) -> None:
         """Apply plausibility gates to *obs* and publish the result."""
         if obs is None:
+            # If tracker init retries are exhausted (LOST), don't overwrite.
+            if self._tracking_status == TrackingStatus.LOST:
+                return
             self._reacquire_fail_count += 1
             if self._reacquire_fail_count >= self._config.reacquire_fail_limit:
                 self._spawn_vlm(for_new_target=True)
@@ -347,7 +379,7 @@ class TargetPerceptionService:
                 if event.type == EventType.COMMAND_ACCEPTED:
                     cmd_type = event.data.get("command_type")
                     if cmd_type == CommandType.DESCRIBE_SCENE:
-                        await self.request_refresh(reason="command:DESCRIBE_SCENE")
+                        await self.request_refresh(mode="scene_only", reason="command:DESCRIBE_SCENE")
                     elif cmd_type == CommandType.TRACK_OBJECT:
                         handle = event.data.get("target_handle", "")
                         if handle:
@@ -371,9 +403,9 @@ class TargetPerceptionService:
     ) -> None:
         self._tracking_status = tracking_status
         self._failure_code = failure_code
-        await self._runtime.store.update_target(self._arm_id, target)
-        await self._runtime.store.update_perception(
+        await self._runtime.store.update_target_and_perception(
             self._arm_id,
+            target,
             PerceptionInfo(
                 tracking_status=tracking_status,
                 failure_code=failure_code,
@@ -442,9 +474,8 @@ class TargetPerceptionService:
         # Start buffering frames for replay if this VLM run is for a new target
         if for_new_target and self._capture_fn is not None:
             self._replay_buffer.start()
-        self._vlm_task = asyncio.create_task(
-            self._run_vlm(self._target_handle, emit_scene_described=emit_scene_described)
-        )
+        target = self._target_handle if for_new_target else None
+        self._vlm_task = asyncio.create_task(self._run_vlm(target, emit_scene_described=emit_scene_described))
 
     def _cancel_vlm(self) -> None:
         """Cancel the running VLM task (fire-and-forget; stop() awaits it properly)."""
@@ -466,16 +497,28 @@ class TargetPerceptionService:
         Emits SCENE_DESCRIBED unless *emit_scene_described* is False (e.g. when
         the VLM run was triggered by set_tracking_target / TRACK_OBJECT — only
         TARGET_ACQUIRED matters in that case).
-        If a target_handle is set, also seeds the tracker for reacquisition,
-        either via frame-buffer replay (preferred) or a synthetic seed (fallback).
+        If a target_handle is set, attempts to seed the tracker via
+        frame-buffer replay.  Retries up to ``tracker_init_retries`` times
+        (re-running VLM + replay each attempt).  Status stays REACQUIRING
+        during retries; on final failure it transitions to LOST.
         """
         if self._vlm_fn is None:
             return
         try:
+            # Capture a frame for the VLM to analyse.
+            vlm_image: object = None
+            if self._capture_fn is not None:
+                try:
+                    vlm_frame = await self._capture_fn(self._arm_id)
+                    vlm_image = vlm_frame.image
+                except Exception:
+                    pass  # VLM will receive None — implementation decides how to handle
+
             t0 = time.monotonic()
-            scene = await self._vlm_fn(self._arm_id)
+            scene = await self._vlm_fn(self._arm_id, vlm_image, self._known_handles)
             inference_ms = int((time.monotonic() - t0) * 1000)
 
+            self._known_handles = [d.handle for d in scene.detections]
             det_summary = [{"handle": d.handle, "label": d.label} for d in scene.detections]
 
             if emit_scene_described:
@@ -489,59 +532,138 @@ class TargetPerceptionService:
                         "inference_ms": inference_ms,
                     },
                 )
+                if self._run_logger is not None:
+                    self._run_logger.log_scene_described(
+                        scene_text=scene.scene,
+                        detections=det_summary,
+                        image=vlm_image,
+                        inference_ms=inference_ms,
+                    )
 
             # If tracking a target, seed the tracker for reacquisition.
+            # On failure, re-spawn the full VLM+buffer+replay pipeline
+            # (up to tracker_init_retries total attempts). During retries
+            # the status stays REACQUIRING; after exhaustion → LOST.
             if target_handle is not None:
-                match = next(
-                    (d for d in scene.detections if d.handle == target_handle),
-                    None,
-                )
+                self._tracker_init_attempts += 1
+                max_attempts = self._config.tracker_init_retries
+
+                match = _find_detection(target_handle, scene.detections)
                 if match is None:
+                    if self._run_logger is not None:
+                        got = [d.handle for d in scene.detections]
+                        self._run_logger.log_tracker(
+                            event="handle_not_found",
+                            target_handle=target_handle,
+                            detail=f"vlm returned {got} (attempt {self._tracker_init_attempts}/{max_attempts})",
+                        )
                     self._replay_buffer.stop()
                     self._replay_buffer.clear()
-                    await self._update_failure(
-                        tracking_status=TrackingStatus.REACQUIRING,
-                        failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
-                        target=None,
-                    )
+                    await self._tracker_init_retry_or_lost(target_handle, max_attempts)
                     return
 
-                # Try frame-buffer replay; fall back to synthetic seed.
                 replay_result = await self._replay_and_init_tracker(match)
                 if replay_result is not None:
                     latest, update_fn = replay_result
                     self._active_tracker_fn = update_fn
                     self._vlm_seed = latest
+                    self._reacquire_fail_count = 0
+                    attempt_num = self._tracker_init_attempts
+                    self._tracker_init_attempts = 0
+                    if self._run_logger is not None:
+                        self._run_logger.log_tracker(
+                            event="init_ok",
+                            target_handle=match.handle,
+                            detail=f"center_px={latest.center_px} bbox={match.bbox}"
+                            + (f" (attempt {attempt_num})" if attempt_num > 1 else ""),
+                        )
                 else:
-                    self._vlm_seed = TargetInfo(
-                        handle=target_handle,
-                        hint_valid=True,
-                        confidence=1.0,
-                        obs_age_ms=0,
-                        time_skew_ms=0,
-                        delta_xyz_ee=(0.0, 0.0, 0.0),
-                        distance_m=0.0,
-                    )
-                self._reacquire_fail_count = 0
+                    if self._run_logger is not None:
+                        self._run_logger.log_tracker(
+                            event="init_failed",
+                            target_handle=match.handle,
+                            detail=f"replay returned None, bbox={match.bbox}"
+                            f" (attempt {self._tracker_init_attempts}/{max_attempts})",
+                        )
+                    await self._tracker_init_retry_or_lost(target_handle, max_attempts)
         except asyncio.CancelledError:
             self._replay_buffer.stop()
             self._replay_buffer.clear()
             raise
         finally:
-            self._vlm_job_pending = False
+            # Don't clear vlm_job_pending if a retry was spawned (new _vlm_task
+            # was created by _tracker_init_retry_or_lost).
+            if self._vlm_task is None or self._vlm_task.done():
+                self._vlm_job_pending = False
+
+    async def _tracker_init_retry_or_lost(self, target_handle: str, max_attempts: int) -> None:
+        """Re-spawn VLM for another attempt, or declare LOST if exhausted.
+
+        Called from ``_run_vlm`` (a background task).  During retries the
+        status is set to REACQUIRING without emitting an event.  On
+        exhaustion the status is set to LOST **first**, then
+        ``PERCEPTION_FAILURE`` is emitted so the planner snapshot already
+        reflects the terminal state when it wakes.
+        """
+        if self._tracker_init_attempts < max_attempts:
+            if self._run_logger is not None:
+                self._run_logger.log_tracker(
+                    event="retry",
+                    target_handle=target_handle,
+                    detail=f"scheduling attempt {self._tracker_init_attempts + 1}/{max_attempts}",
+                )
+            await self._publish_state(
+                tracking_status=TrackingStatus.REACQUIRING,
+                failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
+                target=None,
+            )
+            # Mark current task as done so _spawn_vlm can create a new one.
+            self._vlm_task = None
+            self._spawn_vlm(emit_scene_described=False, for_new_target=True)
+        else:
+            if self._run_logger is not None:
+                self._run_logger.log_tracker(
+                    event="init_exhausted",
+                    target_handle=target_handle,
+                    detail=f"all {max_attempts} attempts failed",
+                )
+            self._tracker_init_attempts = 0
+            self._vlm_task = None  # allow finally to clear _vlm_job_pending
+            self._vlm_job_pending = False  # no retry spawned — clear before publishing
+            # Set LOST in the store first, then emit the event so the
+            # planner snapshot already shows LOST when it wakes.
+            await self._publish_state(
+                tracking_status=TrackingStatus.LOST,
+                failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
+                target=None,
+            )
+            await self._emit_event(
+                EventType.PERCEPTION_FAILURE,
+                {"failure_code": PerceptionFailureCode.REACQUIRE_FAILED.value},
+            )
 
     async def _replay_and_init_tracker(self, detection: VlmDetection) -> tuple[TargetInfo, TrackerUpdateFn] | None:
         """Replay buffered frames through a new tracker initialised with *detection*.
 
         Returns ``(final_target_info, update_fn)`` on success, or ``None`` if
-        the replay path is unavailable or fails (triggering the synthetic-seed
-        fallback in the caller).
+        the replay path is unavailable or fails.
 
         Runs inside ``_run_vlm()`` (a background task) so it does **not** block
         ``tick()``.  New frames keep arriving in the buffer via ``tick()`` during
         replay; we consume them incrementally until caught up.
         """
         if self._tracker_factory_fn is None or self._capture_fn is None:
+            if self._run_logger is not None:
+                missing = []
+                if self._tracker_factory_fn is None:
+                    missing.append("tracker_factory_fn")
+                if self._capture_fn is None:
+                    missing.append("capture_fn")
+                self._run_logger.log_tracker(
+                    event="replay_skip",
+                    target_handle=detection.handle,
+                    detail=f"missing {', '.join(missing)}",
+                )
             self._replay_buffer.stop()
             self._replay_buffer.clear()
             return None
@@ -559,14 +681,33 @@ class TargetPerceptionService:
                     live = await self._capture_fn(self._arm_id)
                     frames = [live]
                     break
-                except Exception:
+                except Exception as exc:
+                    if self._run_logger is not None:
+                        self._run_logger.log_tracker(
+                            event="replay_capture_failed",
+                            target_handle=detection.handle,
+                            detail=str(exc),
+                        )
                     return None
             await asyncio.sleep(0)  # yield for tick() to push
+
+        if self._run_logger is not None:
+            self._run_logger.log_tracker(
+                event="replay_start",
+                target_handle=detection.handle,
+                detail=f"frames={len(frames)} bbox={detection.bbox}",
+            )
 
         # Initialise tracker on the first frame.
         try:
             latest, update_fn = await self._tracker_factory_fn(frames[0], detection)
-        except Exception:
+        except Exception as exc:
+            if self._run_logger is not None:
+                self._run_logger.log_tracker(
+                    event="replay_error",
+                    target_handle=detection.handle,
+                    detail=f"tracker_factory raised: {exc}",
+                )
             self._replay_buffer.stop()
             self._replay_buffer.clear()
             return None

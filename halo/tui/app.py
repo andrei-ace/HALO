@@ -66,6 +66,7 @@ _DATA = dict(
     # ── Target Perception state ──
     perc_tracking="TRACKING",
     perc_target="cube-1",
+    perc_center_px=(487, 312),
     perc_distance_m=0.09,
     perc_confidence=0.86,
     perc_obs_age_ms=45,
@@ -130,6 +131,7 @@ _EMPTY_DATA = dict(
     elapsed_ms=None,
     perc_tracking=None,
     perc_target=None,
+    perc_center_px=None,
     perc_distance_m=None,
     perc_confidence=None,
     perc_obs_age_ms=None,
@@ -272,6 +274,7 @@ def _snap_to_panel_data(snap: object, base: dict) -> dict:
         data["perc_failure"] = str(getattr(getattr(perc, "failure_code", None), "value", ""))
     if target is not None:
         data["perc_target"] = getattr(target, "handle", None)
+        data["perc_center_px"] = getattr(target, "center_px", None)
         data["perc_distance_m"] = getattr(target, "distance_m", None)
         data["perc_confidence"] = getattr(target, "confidence", None)
         data["perc_obs_age_ms"] = getattr(target, "obs_age_ms", None)
@@ -408,14 +411,18 @@ class PlannerPanel(Container):
 
 
 class TargetPerceptionPanel(Container):
-    _ROW_IDS = ("status", "target", "distance", "confidence", "obs-age", "code")
+    _ROW_IDS = ("status", "target", "center", "distance", "confidence", "obs-age", "code")
 
-    def __init__(self, data: dict = _DATA, **kwargs) -> None:
+    def __init__(self, data: dict = _DATA, tracker_name: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self._data = data
+        self._tracker_name = tracker_name
 
     def on_mount(self) -> None:
-        self.border_title = "Target Perception"
+        if self._tracker_name:
+            self.border_title = f"Target Perception ({self._tracker_name})"
+        else:
+            self.border_title = "Target Perception"
 
     @staticmethod
     def _build_texts(data: dict) -> list[Text]:
@@ -450,6 +457,13 @@ class TargetPerceptionPanel(Container):
         # Target
         target = data["perc_target"]
         texts.append(row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e"))
+
+        # Bbox center (px)
+        ctr = data.get("perc_center_px")
+        if ctr is not None:
+            texts.append(row("Center:", f"{ctr[0]:.0f}, {ctr[1]:.0f} px", "white"))
+        else:
+            texts.append(row("Center:", "—", "#9e9e9e"))
 
         # Distance
         dist = data["perc_distance_m"]
@@ -992,12 +1006,14 @@ class HALOApp(App):
         arm_id: str = "arm0",
         perception_svc: object | None = None,
         run_logger: RunLogger | None = None,
+        tracker_name: str = "",
     ) -> None:
         super().__init__()
         self._runtime = runtime
         self._agent = agent
         self._arm_id = arm_id
         self._perception_svc = perception_svc
+        self._tracker_name = tracker_name
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
@@ -1040,7 +1056,7 @@ class HALOApp(App):
                 with Vertical(id="left-col"):
                     with Vertical(id="left-info"):
                         yield PlannerPanel(data=d, id="planner-panel")
-                        yield TargetPerceptionPanel(data=d, id="perception-panel")
+                        yield TargetPerceptionPanel(data=d, tracker_name=self._tracker_name, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
                 with Vertical(id="right-col"):
                     with Vertical(id="right-info"):
@@ -1346,6 +1362,8 @@ def _run_live(args: list[str]) -> None:
     from halo.services.planner_service.agent import PlannerAgent
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.service import TargetPerceptionService
+    from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
+    from halo.services.target_perception_service.video_capture_fn import make_video_capture_fn
 
     # Parse --arm, --model, --vlm-model, --base-url from args
     arm_id = "arm0"
@@ -1377,10 +1395,16 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
     )
 
+    capture_fn = make_video_capture_fn()
+    tracker_factory_fn = make_tracker_factory_fn()
+
     perception_svc = TargetPerceptionService(
         arm_id=arm_id,
         runtime=runtime,
         vlm_fn=vlm_fn,
+        capture_fn=capture_fn,
+        tracker_factory_fn=tracker_factory_fn,
+        run_logger=run_logger,
     )
 
     HALOApp(
@@ -1389,6 +1413,7 @@ def _run_live(args: list[str]) -> None:
         arm_id=arm_id,
         perception_svc=perception_svc,
         run_logger=run_logger,
+        tracker_name=get_tracker_name(),
     ).run()
 
 

@@ -352,11 +352,12 @@ def _scene(*handles: str) -> VlmScene:
 async def test_vlm_triggered_on_set_tracking_target(rt: HALORuntime):
     called: list[str] = []
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         called.append(arm_id)
         return _scene("cube-1")
 
-    svc = _make_svc(rt, vlm_fn=vlm)
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(rt, vlm_fn=vlm, cfg=cfg)
     await svc.set_tracking_target("cube-1")
     await asyncio.sleep(0.05)  # yield so the VLM task can run
 
@@ -366,11 +367,12 @@ async def test_vlm_triggered_on_set_tracking_target(rt: HALORuntime):
 async def test_vlm_triggered_on_request_refresh(rt: HALORuntime):
     called: list[str] = []
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         called.append(arm_id)
         return _scene("cube-1")
 
-    svc = _make_svc(rt, vlm_fn=vlm)
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(rt, vlm_fn=vlm, cfg=cfg)
     await svc.set_tracking_target("cube-1")
     await asyncio.sleep(0.05)  # drain initial VLM from set_tracking_target
     called.clear()
@@ -385,7 +387,7 @@ async def test_vlm_triggered_on_request_refresh_without_target(rt: HALORuntime):
     """request_refresh works even without a tracking target (scene-only)."""
     called: list[str] = []
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         called.append(arm_id)
         return _scene("cube-1")
 
@@ -398,18 +400,22 @@ async def test_vlm_triggered_on_request_refresh_without_target(rt: HALORuntime):
 
 
 async def test_vlm_triggered_on_reacquire_fail_limit(rt: HALORuntime):
+    """When observe_fn returns None enough times, VLM is re-spawned for reacquisition."""
     call_count = 0
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         nonlocal call_count
         call_count += 1
-        return VlmScene(scene="empty", detections=[])  # no match
+        return _scene("cube-1")  # return matching detection (no tracker → exhausts)
 
-    cfg = _cfg(reacquire_fail_limit=2)
+    cfg = _cfg(reacquire_fail_limit=2, tracker_init_retries=1)
     svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, cfg=cfg)
     await svc.set_tracking_target("cube-1")
-    await asyncio.sleep(0.05)  # drain initial VLM
+    await asyncio.sleep(0.05)  # drain initial VLM (sets LOST because no tracker)
     call_count = 0
+    # Reset from LOST so the observe path can work again
+    svc._tracking_status = TrackingStatus.RELOCALIZING
+    svc._reacquire_fail_count = 0
 
     await svc.tick()  # fail 1 — not at limit yet
     await svc.tick()  # fail 2 — hits limit, spawns VLM
@@ -418,26 +424,56 @@ async def test_vlm_triggered_on_reacquire_fail_limit(rt: HALORuntime):
     assert call_count == 1
 
 
-async def test_vlm_seed_used_when_observe_returns_none(rt: HALORuntime):
-    async def vlm(arm_id: str) -> VlmScene:
+async def test_vlm_replay_tracker_used_when_observe_returns_none(rt: HALORuntime):
+    """VLM finds target → replay inits tracker → tick uses active tracker → TRACKING."""
+
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
-    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm)
-    await svc.set_tracking_target("cube-1")
-    await asyncio.sleep(0.05)  # VLM completes and places seed
+    capture_fn = make_mock_capture_fn()
+    tracker_factory_fn = make_mock_tracker_factory_fn()
 
-    await svc.tick()  # observe=None but seed available → TRACKING
+    svc = _make_svc(
+        rt,
+        observe_fn=_null_observe,
+        vlm_fn=vlm,
+        capture_fn=capture_fn,
+        tracker_factory_fn=tracker_factory_fn,
+    )
+    await svc.set_tracking_target("cube-1")
+    # tick() pushes a frame into the replay buffer; the VLM task (already
+    # running) picks it up, inits the tracker, and sets _active_tracker_fn.
+    await svc.tick()
+    await asyncio.sleep(0.05)  # let VLM + replay task finish
+
+    await svc.tick()  # active tracker produces hint → TRACKING
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.perception.tracking_status == TrackingStatus.TRACKING
     assert snap.target is not None
 
 
+async def test_vlm_reacquire_fails_without_tracker(rt: HALORuntime):
+    """VLM finds target but no tracker available → retries exhaust → LOST."""
+
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        return _scene("cube-1")
+
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, cfg=cfg)
+    await svc.set_tracking_target("cube-1")
+    await asyncio.sleep(0.05)  # VLM completes, no tracker → failure
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.LOST
+    assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
+
+
 async def test_vlm_does_not_block_tick(rt: HALORuntime):
     """tick() must return promptly even when VLM is still running."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)  # intentionally very slow
         return _scene("cube-1")
@@ -457,7 +493,7 @@ async def test_vlm_does_not_block_tick(rt: HALORuntime):
 async def test_vlm_job_pending_while_task_running(rt: HALORuntime):
     vlm_proceed = asyncio.Event()
 
-    async def blocking_vlm(arm_id: str) -> VlmScene:
+    async def blocking_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         await vlm_proceed.wait()
         return _scene("cube-1")
 
@@ -478,7 +514,7 @@ async def test_vlm_not_stacked(rt: HALORuntime):
     call_count = 0
     vlm_proceed = asyncio.Event()
 
-    async def counting_vlm(arm_id: str) -> VlmScene:
+    async def counting_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         nonlocal call_count
         call_count += 1
         await vlm_proceed.wait()
@@ -501,7 +537,7 @@ async def test_vlm_not_stacked(rt: HALORuntime):
 async def test_stop_cancels_vlm_task(rt: HALORuntime):
     cancelled = False
 
-    async def long_vlm(arm_id: str) -> VlmScene:
+    async def long_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         nonlocal cancelled
         try:
             await asyncio.sleep(60.0)
@@ -521,10 +557,11 @@ async def test_stop_cancels_vlm_task(rt: HALORuntime):
 
 
 async def test_vlm_mismatch_emits_failure(rt: HALORuntime):
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("other-1")
 
-    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm)
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, cfg=cfg)
     await svc.set_tracking_target("cube-1")
     await asyncio.sleep(0.05)
 
@@ -535,7 +572,7 @@ async def test_vlm_mismatch_emits_failure(rt: HALORuntime):
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
-    assert snap.perception.tracking_status == TrackingStatus.REACQUIRING
+    assert snap.perception.tracking_status == TrackingStatus.LOST
 
 
 # ─── TARGET_ACQUIRED event ───────────────────────────────────────────────────
@@ -572,7 +609,7 @@ async def test_target_acquired_not_emitted_on_subsequent_ticks(rt: HALORuntime):
 async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
     """VLM triggered by set_tracking_target must NOT emit SCENE_DESCRIBED."""
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     svc = _make_svc(rt, vlm_fn=vlm)
@@ -628,7 +665,7 @@ async def test_replay_produces_caught_up_seed(rt: HALORuntime):
         distance_m=0.12,
     )
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
@@ -661,7 +698,7 @@ async def test_switchover_tick_uses_active_tracker(rt: HALORuntime):
         observe_calls.append(target_handle)
         return _good_hint(handle=target_handle)
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
@@ -690,7 +727,7 @@ async def test_frames_captured_during_vlm_are_replayed(rt: HALORuntime):
     """Frames pushed via tick() during VLM inference are consumed by replay."""
     replayed_frames: list[CapturedFrame] = []
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         # Slow enough for a few ticks to push frames
         await asyncio.sleep(0.15)
         return _scene("cube-1")
@@ -733,7 +770,7 @@ async def test_observe_fn_keeps_running_during_vlm(rt: HALORuntime):
         observe_calls.append(target_handle)
         return _good_hint(handle=target_handle)
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)
         return _scene("cube-1")
@@ -755,7 +792,7 @@ async def test_active_tracker_keeps_running_during_vlm(rt: HALORuntime):
     """If active tracker is set and a new VLM fires, the active tracker keeps being fed frames."""
     active_calls: list[str] = []
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
@@ -794,7 +831,7 @@ async def test_active_tracker_keeps_running_during_vlm(rt: HALORuntime):
 async def test_set_tracking_target_resets_active_tracker(rt: HALORuntime):
     """set_tracking_target clears the active tracker, reverting to observe_fn."""
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
@@ -818,37 +855,39 @@ async def test_set_tracking_target_resets_active_tracker(rt: HALORuntime):
     assert svc._active_tracker_fn is None
 
 
-async def test_fallback_synthetic_seed_without_capture_fn(rt: HALORuntime):
-    """Without capture_fn, VLM produces the synthetic seed (backward compat)."""
+async def test_reacquire_failed_without_capture_fn(rt: HALORuntime):
+    """Without capture_fn, replay fails → retries exhaust → LOST."""
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
-    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm)  # no capture_fn
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, cfg=cfg)  # no capture_fn
     await svc.set_tracking_target("cube-1")
     await asyncio.sleep(0.05)
 
-    # Synthetic seed: distance=0, confidence=1.0
-    assert svc._vlm_seed is not None
-    assert svc._vlm_seed.distance_m == 0.0
-    assert svc._vlm_seed.confidence == 1.0
-    assert svc._active_tracker_fn is None  # no switchover
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.LOST
+    assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
+    assert svc._active_tracker_fn is None
 
 
-async def test_fallback_synthetic_seed_without_tracker_factory(rt: HALORuntime):
-    """Without tracker_factory_fn, VLM produces the synthetic seed."""
+async def test_reacquire_failed_without_tracker_factory(rt: HALORuntime):
+    """Without tracker_factory_fn, replay fails → retries exhaust → LOST."""
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
-    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, capture_fn=cap_fn)  # no tracker_factory
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, capture_fn=cap_fn, cfg=cfg)  # no tracker_factory
     await svc.set_tracking_target("cube-1")
     await svc.tick()  # push a frame
     await asyncio.sleep(0.1)
 
-    assert svc._vlm_seed is not None
-    assert svc._vlm_seed.distance_m == 0.0
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.LOST
+    assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
     assert svc._active_tracker_fn is None
 
 
@@ -856,7 +895,7 @@ async def test_buffer_starts_on_spawn_vlm_for_new_target(rt: HALORuntime):
     """Frame buffer becomes active when VLM is spawned for a new target."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)
         return _scene("cube-1")
@@ -873,7 +912,7 @@ async def test_buffer_starts_on_spawn_vlm_for_new_target(rt: HALORuntime):
 async def test_buffer_not_started_on_describe_scene(rt: HALORuntime):
     """describe_scene (no new target) should NOT start frame capture."""
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
@@ -889,7 +928,7 @@ async def test_cancel_vlm_stops_and_clears_buffer(rt: HALORuntime):
     """Cancelling VLM clears old buffered frames; new VLM spawn may re-activate."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)
         return _scene("cube-1")
@@ -916,7 +955,7 @@ async def test_cancel_vlm_without_respawn_deactivates_buffer(rt: HALORuntime):
     """clear_tracking_target calls _cancel_vlm without respawn, so buffer is inactive."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)
         return _scene("cube-1")
@@ -937,9 +976,9 @@ async def test_cancel_vlm_without_respawn_deactivates_buffer(rt: HALORuntime):
 
 
 async def test_replay_handles_tracker_init_failure(rt: HALORuntime):
-    """If tracker_factory_fn raises, fall back to synthetic seed."""
+    """If tracker_factory_fn raises on all retries → LOST."""
 
-    async def vlm(arm_id: str) -> VlmScene:
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         return _scene("cube-1")
 
     cap_fn = make_mock_capture_fn()
@@ -947,22 +986,102 @@ async def test_replay_handles_tracker_init_failure(rt: HALORuntime):
     async def failing_factory(frame: CapturedFrame, detection: VlmDetection):
         raise RuntimeError("tracker init failed")
 
-    svc = _make_svc(rt, observe_fn=_null_observe, vlm_fn=vlm, capture_fn=cap_fn, tracker_factory_fn=failing_factory)
+    cfg = _cfg(tracker_init_retries=1)
+    svc = _make_svc(
+        rt, observe_fn=_null_observe, vlm_fn=vlm, capture_fn=cap_fn, tracker_factory_fn=failing_factory, cfg=cfg
+    )
     await svc.set_tracking_target("cube-1")
     await svc.tick()  # push a frame
     await asyncio.sleep(0.1)
 
-    # Should fall back to synthetic seed
-    assert svc._vlm_seed is not None
-    assert svc._vlm_seed.distance_m == 0.0
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.LOST
+    assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
     assert svc._active_tracker_fn is None
+
+
+async def test_tracker_init_retries_then_succeeds(rt: HALORuntime):
+    """tracker_factory fails twice, succeeds on 3rd attempt → TRACKING."""
+    attempt = 0
+
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        return _scene("cube-1")
+
+    cap_fn = make_mock_capture_fn()
+
+    async def flaky_factory(frame: CapturedFrame, detection: VlmDetection):
+        nonlocal attempt
+        attempt += 1
+        if attempt < 3:
+            raise RuntimeError(f"fail #{attempt}")
+        return await make_mock_tracker_factory_fn()(frame, detection)
+
+    cfg = _cfg(tracker_init_retries=3)
+    svc = _make_svc(
+        rt, observe_fn=_null_observe, vlm_fn=vlm, capture_fn=cap_fn, tracker_factory_fn=flaky_factory, cfg=cfg
+    )
+    await svc.start()
+    await svc.set_tracking_target("cube-1")
+    # Let the service loop run: each retry re-spawns VLM, tick() captures
+    # frames, replay inits the tracker.
+    for _ in range(30):
+        await asyncio.sleep(0.05)
+        if attempt >= 3:
+            break
+
+    assert attempt == 3
+    # Let the final successful replay complete
+    await asyncio.sleep(0.1)
+    assert svc._active_tracker_fn is not None
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.TRACKING
+    await svc.stop()
+
+
+async def test_tracker_init_retries_exhausted_sets_lost(rt: HALORuntime):
+    """tracker_factory fails on all attempts → LOST."""
+    attempt = 0
+
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        return _scene("cube-1")
+
+    cap_fn = make_mock_capture_fn()
+
+    async def always_failing_factory(frame: CapturedFrame, detection: VlmDetection):
+        nonlocal attempt
+        attempt += 1
+        raise RuntimeError(f"fail #{attempt}")
+
+    # Use high reacquire_fail_limit so observe_fn=None ticks don't re-spawn
+    # VLM before all 3 tracker init attempts are exhausted.
+    cfg = _cfg(tracker_init_retries=3, reacquire_fail_limit=100)
+    svc = _make_svc(
+        rt, observe_fn=_null_observe, vlm_fn=vlm, capture_fn=cap_fn, tracker_factory_fn=always_failing_factory, cfg=cfg
+    )
+    await svc.start()
+    await svc.set_tracking_target("cube-1")
+    for _ in range(30):
+        await asyncio.sleep(0.05)
+        if attempt >= 3:
+            break
+    await asyncio.sleep(0.1)
+
+    assert attempt == 3
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.perception.tracking_status == TrackingStatus.LOST
+    assert snap.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED
+    assert svc._active_tracker_fn is None
+    # Counter should be reset after exhaustion
+    assert svc._tracker_init_attempts == 0
+    await svc.stop()
 
 
 async def test_replay_does_not_block_tick(rt: HALORuntime):
     """tick() returns promptly even while replay is running in _run_vlm."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)
         return _scene("cube-1")
@@ -986,7 +1105,7 @@ async def test_tick_pushes_frames_during_vlm(rt: HALORuntime):
     """Each tick during VLM inference pushes a frame into the replay buffer."""
     vlm_started = asyncio.Event()
 
-    async def slow_vlm(arm_id: str) -> VlmScene:
+    async def slow_vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         vlm_started.set()
         await asyncio.sleep(60.0)
         return _scene("cube-1")

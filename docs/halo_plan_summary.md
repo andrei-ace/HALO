@@ -241,7 +241,8 @@ The following are implemented:
 - **`TargetPerceptionService`** (`service.py`): fast-loop (10 Hz default) + async VLM reacquisition. Accepts injected `ObserveFn` (tracker) and optional `VlmFn` (scene analysis). At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when observe returns `None`.
 - **`vlm_parser.py`**: `VlmDetection`, `VlmScene`, `parse_vlm_response()` — typed parsing of VLM JSON output.
 - **`ollama_vlm_fn.py`**: `make_ollama_vlm_fn()` — factory returning async `VlmFn` backed by Ollama (`qwen2.5vl`). Images resized to 1024px width. Prompt loaded from `configs/perception/scene_analysis.md`.
-- **`mock_fns.py`**: `make_mock_observe_fn()`, `make_mock_vlm_fn()` — mock perception backed by `docs/data/mock/` JSON fixtures.
+- **`video_capture_fn.py`**: `make_video_capture_fn()` — `CaptureFn` backed by a looping video file (OpenCV).
+- **`mock_fns.py`**: `make_mock_capture_fn()`, `make_mock_tracker_factory_fn()` — test factories for capture and tracker.
 - **VLM prompt** (`configs/perception/scene_analysis.md`): structured JSON output for object detection on table surface.
 
 ---

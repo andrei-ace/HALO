@@ -185,14 +185,18 @@ If `obs_age_ms` or `time_skew_ms` exceeds thresholds:
 - `make_ollama_vlm_fn(base_url, model, prompt_path, ...) -> VlmFn` — factory returning async fn
 - Input images resized to `_VLM_INPUT_WIDTH = 1024` for stable bbox coords
 - Prompt loaded from `configs/perception/scene_analysis.md`
-- `VlmFn = Callable[[str], Awaitable[VlmScene]]` — arm_id → scene analysis result
+- `VlmFn = Callable[[str, object], Awaitable[VlmScene]]` — (arm_id, image) → scene analysis result
+- Image provided per-call by the service (captured from camera via `capture_fn`)
 
-**`mock_fns.py`** — Mock perception functions backed by `docs/data/mock/` JSON fixtures:
-- `make_mock_observe_fn(mock_dir) -> ObserveFn` — returns async fn for tracker simulation
-- `make_mock_vlm_fn(mock_dir) -> VlmFn` — returns async fn for VLM simulation (with simulated latency)
+**`video_capture_fn.py`** — Video file camera simulation:
+- `make_video_capture_fn(video_path) -> CaptureFn` — factory returning async fn backed by a looping video file (OpenCV)
+
+**`mock_fns.py`** — Test factories:
+- `make_mock_capture_fn() -> CaptureFn` — synthetic frames with counter
+- `make_mock_tracker_factory_fn(init_hint, update_hint) -> TrackerFactoryFn` — predictable tracker
 
 **`service.py`** — TargetPerceptionService orchestrates the fast loop + async VLM:
-- Type aliases: `ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]`, `VlmFn = Callable[[str], Awaitable[VlmScene]]`
+- Type aliases: `ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]`, `VlmFn = Callable[[str, object], Awaitable[VlmScene]]`
 - VLM is optional (`vlm_fn=None` disables async reacquisition)
 - At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`
 - VLM result publishes `SCENE_DESCRIBED` event and is logged via `RunLogger.log_vlm_result()`
@@ -469,7 +473,9 @@ halo/
       service.py            # TargetPerceptionService (fast loop + async VLM)
       vlm_parser.py         # VlmDetection, VlmScene, parse_vlm_response()
       ollama_vlm_fn.py      # make_ollama_vlm_fn() — Ollama VLM client factory
-      mock_fns.py           # make_mock_observe_fn(), make_mock_vlm_fn() — mock perception
+      video_capture_fn.py   # make_video_capture_fn() — looping video file CaptureFn
+      frame_buffer.py       # CapturedFrame, FrameRingBuffer — replay buffer
+      mock_fns.py           # make_mock_capture_fn(), make_mock_tracker_factory_fn()
     skill_runner_service/
       CLAUDE.md             # FSM phase flow, advance() check order, grasp persistence, recovery
       config.py             # SkillRunnerConfig
@@ -501,7 +507,7 @@ halo/
 docs/
   halo_architecture.md        # this file
   halo_plan_summary.md        # project plan + Isaac Lab strategy
-  data/mock/                  # mock data: observe_fn_result.json, vlm_response.json, perception_info.json, mock.png
+  data/                       # gitignored; video.mp4 for video capture simulation
 tests/                        # 219 unit tests
 integration/                  # LLM integration tests (require Ollama)
   conftest.py                 # Ollama health-check; auto-skip if model unavailable

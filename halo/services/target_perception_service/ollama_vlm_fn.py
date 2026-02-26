@@ -10,6 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import numpy as np
 from PIL import Image
 
 from halo.services.target_perception_service.vlm_parser import VlmScene, parse_vlm_response
@@ -22,7 +23,6 @@ _VLM_INPUT_WIDTH = 1024
 if TYPE_CHECKING:
     from halo.tui.run_logger import RunLogger
 
-_DEFAULT_IMAGE = Path(__file__).parents[3] / "docs" / "data" / "mock" / "mock.png"
 _DEFAULT_PROMPT = Path(__file__).parents[3] / "configs" / "perception" / "scene_analysis.md"
 
 
@@ -54,6 +54,32 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
+def _image_to_b64(image: object) -> str:
+    """Convert an image (numpy BGR HWC, PIL Image, or bytes) to base64 PNG."""
+    if isinstance(image, np.ndarray):
+        # OpenCV BGR → RGB → PIL
+        import cv2
+
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+    elif isinstance(image, Image.Image):
+        pil = image
+    elif isinstance(image, (bytes, bytearray)):
+        pil = Image.open(io.BytesIO(image))
+    else:
+        raise TypeError(f"Unsupported image type: {type(image)}")
+
+    # Resize to known width for consistent bbox coordinate space.
+    aspect = pil.height / pil.width
+    new_w = _VLM_INPUT_WIDTH
+    new_h = int(new_w * aspect)
+    pil = pil.resize((new_w, new_h), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) -> dict:
     """Blocking Ollama /api/generate call — run via asyncio.to_thread."""
     payload = json.dumps(
@@ -76,39 +102,39 @@ def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) ->
 def make_ollama_vlm_fn(
     base_url: str = "http://localhost:11434",
     model: str = "qwen2.5vl",
-    image_path: Path = _DEFAULT_IMAGE,
     prompt_path: Path = _DEFAULT_PROMPT,
     run_logger: RunLogger | None = None,
 ):
     """
-    Return an async callable that sends *image_path* to *model* via Ollama
+    Return an async VlmFn that sends a camera image to *model* via Ollama
     and returns a VlmScene (scene description + list of detections).
 
-    The image and prompt are loaded once at construction time.  Each call is
-    non-blocking (asyncio.to_thread) so it never stalls the event loop.
+    The image is provided per-call by the service (captured from the camera).
+    The prompt is loaded once at construction time.  Each call is non-blocking
+    (asyncio.to_thread) so it never stalls the event loop.
 
     If *run_logger* is provided every inference (success or failure) is
     appended to the session JSONL log alongside the full raw Ollama response.
     """
-    # Resize to a known width so model bbox coords map to a known pixel space.
-    img = Image.open(image_path)
-    aspect = img.height / img.width
-    new_w = _VLM_INPUT_WIDTH
-    new_h = int(new_w * aspect)
-    img = img.resize((new_w, new_h), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    image_b64 = base64.b64encode(buf.getvalue()).decode()
-
     prompt = prompt_path.read_text(encoding="utf-8")
 
-    async def vlm_fn(arm_id: str) -> VlmScene:
+    async def vlm_fn(arm_id: str, image: object, known_handles: list[str] | None = None) -> VlmScene:
+        if image is None:
+            return VlmScene(scene="", detections=[])
+
+        image_b64 = _image_to_b64(image)
+
+        effective_prompt = prompt
+        if known_handles:
+            handles_str = ", ".join(known_handles)
+            effective_prompt += f"\nPreviously known: {handles_str}. Reuse these handles for the same objects."
+
         t0 = time.monotonic()
         result: dict = {}
         error: str | None = None
 
         try:
-            result = await asyncio.to_thread(_call_ollama_sync, base_url, model, prompt, image_b64)
+            result = await asyncio.to_thread(_call_ollama_sync, base_url, model, effective_prompt, image_b64)
         except Exception as exc:
             error = str(exc)
             if run_logger is not None:
@@ -120,6 +146,7 @@ def make_ollama_vlm_fn(
                     target_info=None,
                     inference_ms=int((time.monotonic() - t0) * 1000),
                     error=error,
+                    image=image,
                 )
             return VlmScene(scene="", detections=[])
 
@@ -128,6 +155,7 @@ def make_ollama_vlm_fn(
 
         if run_logger is not None:
             loggable = {k: v for k, v in result.items() if k != "context"}
+            det_dicts = [{"handle": d.handle, "bbox": d.bbox} for d in vlm_scene.detections]
             run_logger.log_vlm_inference(
                 arm_id=arm_id,
                 target_handle="",
@@ -136,6 +164,8 @@ def make_ollama_vlm_fn(
                 target_info=None,
                 inference_ms=int((time.monotonic() - t0) * 1000),
                 error=error,
+                image=image,
+                detections=det_dicts,
             )
 
         return vlm_scene

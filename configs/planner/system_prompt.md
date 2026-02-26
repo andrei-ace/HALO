@@ -84,6 +84,17 @@ do not wait for another operator message.
 Typical flow: `describe_scene` → (SCENE_DESCRIBED) → `track_object` →
 (TARGET_ACQUIRED) → `start_skill`.
 
+**If `track_object` fails** (you see a `PERCEPTION_FAILURE` event with
+`REACQUIRE_FAILED` and `tracking_status` is `LOST`), the perception system
+already retried internally (3 VLM+tracker attempts). Do **not** immediately
+re-issue `track_object` for the same handle — that creates an infinite retry
+loop. Instead:
+1. Try `describe_scene` to get a fresh view of the workspace.
+2. If the scene description shows the object with a different handle, use the
+   new handle with `track_object`.
+3. If the object is still not found after one `describe_scene` + `track_object`
+   cycle, **stop and report to the operator** — do not keep retrying.
+
 ## Using scene descriptions
 
 When you call `describe_scene`, the VLM runs asynchronously and fires a

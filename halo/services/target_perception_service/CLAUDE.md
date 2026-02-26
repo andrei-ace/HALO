@@ -10,14 +10,15 @@ Fast-loop (10 Hz) perception service for target tracking and async VLM scene ana
 | `service.py` | `TargetPerceptionService` — tick loop, VLM orchestration, frame-buffer replay, tracker switchover, state transitions, command listener |
 | `frame_buffer.py` | `CapturedFrame`, `FrameRingBuffer` — append-only buffer with read-cursor for replay |
 | `vlm_parser.py` | `VlmDetection`, `VlmScene`, `parse_vlm_response()` — structured VLM output |
-| `ollama_vlm_fn.py` | `make_ollama_vlm_fn()` — factory for async Ollama VLM callable (`qwen2.5vl`) |
-| `mock_fns.py` | `make_mock_observe_fn()`, `make_mock_vlm_fn()`, `make_mock_capture_fn()`, `make_mock_tracker_factory_fn()` — test factories |
+| `ollama_vlm_fn.py` | `make_ollama_vlm_fn()` — factory for async Ollama VLM callable (`qwen2.5vl`); accepts live camera frames |
+| `video_capture_fn.py` | `make_video_capture_fn()` — factory for `CaptureFn` backed by a looping video file (OpenCV) |
+| `mock_fns.py` | `make_mock_capture_fn()`, `make_mock_tracker_factory_fn()` — test factories |
 
 ## Key Types
 
 ```python
 ObserveFn          = Callable[[str, str], Awaitable[TargetInfo | None]]          # (arm_id, handle)
-VlmFn              = Callable[[str], Awaitable[VlmScene]]                        # (arm_id)
+VlmFn              = Callable[[str, object], Awaitable[VlmScene]]               # (arm_id, image)
 CaptureFn          = Callable[[str], Awaitable[CapturedFrame]]                   # (arm_id) — fast frame grab
 TrackerUpdateFn    = Callable[[CapturedFrame], Awaitable[TargetInfo | None]]      # feed frame to tracker
 TrackerFactoryFn   = Callable[[CapturedFrame, VlmDetection], Awaitable[tuple[TargetInfo, TrackerUpdateFn]]]
@@ -60,6 +61,14 @@ When VLM runs for a new target (`for_new_target=True`), frames are buffered:
 - `set_tracking_target()` resets `_active_tracker_fn = None`, reverting to `observe_fn`
 
 **Fallback:** If `capture_fn` or `tracker_factory_fn` is not provided, the original synthetic-seed behaviour is used (full backward compatibility).
+
+## VLM Image Pipeline
+
+The VLM receives a live camera frame on each invocation:
+1. `_run_vlm()` calls `capture_fn(arm_id)` to grab the latest frame
+2. The frame's `image` field (numpy BGR HWC, PIL, or bytes) is passed to `vlm_fn(arm_id, image)`
+3. `ollama_vlm_fn` converts to base64 PNG, resized to 1024px width, then sends to Ollama
+4. `video_capture_fn` provides frames from a looping video file (`data/video.mp4`) for dev/testing
 
 ## State Transitions & Events
 
@@ -106,4 +115,4 @@ Listens on EventBus for `COMMAND_ACCEPTED` events:
 
 ## Testing
 
-`tick()` is directly callable. Use `make_mock_observe_fn()`, `make_mock_vlm_fn()`, `make_mock_capture_fn()`, and `make_mock_tracker_factory_fn()` for tests without Ollama. Tests verify: state transitions, plausibility gates, VLM async (never blocks tick), frame-buffer replay and tracker switchover, event emission (once per transition), command handling, lifecycle cleanup.
+`tick()` is directly callable. Use `make_mock_capture_fn()` and `make_mock_tracker_factory_fn()` for tests without Ollama. Tests verify: state transitions, plausibility gates, VLM async (never blocks tick), frame-buffer replay and tracker switchover, event emission (once per transition), command handling, lifecycle cleanup.

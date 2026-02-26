@@ -79,7 +79,7 @@ halo/
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
   halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
-  data/mock/             # mock data: observe_fn_result.json, vlm_response.json, perception_info.json, mock.png
+  data/                  # gitignored; video.mp4 for video capture simulation
 runs/               # live TUI session logs (JSONL, one file per session; git-ignored except .gitkeep)
 tests/
 integration/        # LLM integration tests (require Ollama)

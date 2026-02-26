@@ -26,3 +26,6 @@ runs/
 .idea/
 .vscode/
 *.swp
+
+# data
+data/

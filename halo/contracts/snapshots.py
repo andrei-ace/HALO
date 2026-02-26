@@ -33,6 +33,7 @@ class TargetInfo:
     time_skew_ms: int
     delta_xyz_ee: tuple[float, float, float]
     distance_m: float
+    center_px: tuple[float, float] | None = None  # bbox centroid in pixel coords (cx, cy)
 
 
 @dataclass(frozen=True)
