@@ -6,32 +6,60 @@ Fast-loop (10 Hz) perception service for target tracking and async VLM scene ana
 
 | File | Purpose |
 |------|---------|
-| `config.py` | `TargetPerceptionServiceConfig` — loop rate, plausibility thresholds |
-| `service.py` | `TargetPerceptionService` — tick loop, VLM orchestration, state transitions, command listener |
+| `config.py` | `TargetPerceptionServiceConfig` — loop rate, plausibility thresholds, buffer cap |
+| `service.py` | `TargetPerceptionService` — tick loop, VLM orchestration, frame-buffer replay, tracker switchover, state transitions, command listener |
+| `frame_buffer.py` | `CapturedFrame`, `FrameRingBuffer` — append-only buffer with read-cursor for replay |
 | `vlm_parser.py` | `VlmDetection`, `VlmScene`, `parse_vlm_response()` — structured VLM output |
 | `ollama_vlm_fn.py` | `make_ollama_vlm_fn()` — factory for async Ollama VLM callable (`qwen2.5vl`) |
-| `mock_fns.py` | `make_mock_observe_fn()`, `make_mock_vlm_fn()` — test factories (no Ollama needed) |
+| `mock_fns.py` | `make_mock_observe_fn()`, `make_mock_vlm_fn()`, `make_mock_capture_fn()`, `make_mock_tracker_factory_fn()` — test factories |
 
 ## Key Types
 
 ```python
-ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]  # (arm_id, target_handle)
-VlmFn    = Callable[[str], Awaitable[VlmScene]]                 # (arm_id)
+ObserveFn          = Callable[[str, str], Awaitable[TargetInfo | None]]          # (arm_id, handle)
+VlmFn              = Callable[[str], Awaitable[VlmScene]]                        # (arm_id)
+CaptureFn          = Callable[[str], Awaitable[CapturedFrame]]                   # (arm_id) — fast frame grab
+TrackerUpdateFn    = Callable[[CapturedFrame], Awaitable[TargetInfo | None]]      # feed frame to tracker
+TrackerFactoryFn   = Callable[[CapturedFrame, VlmDetection], Awaitable[tuple[TargetInfo, TrackerUpdateFn]]]
 
-TargetPerceptionService(arm_id, runtime, observe_fn=None, vlm_fn=None, config=...)
+TargetPerceptionService(arm_id, runtime, observe_fn=None, vlm_fn=None,
+                        capture_fn=None, tracker_factory_fn=None, config=...)
 ```
 
 ## tick() Logic
 
 1. No target handle → publish LOST, return
-2. Call `observe_fn(arm_id, target_handle)`
-3. If observe=None and VLM seed pending → use seed as observation
+2. **Frame capture**: if `capture_fn` is set and replay buffer is active, capture a frame and push it
+3. **Obtain observation** from the active tracking source:
+   - If `_active_tracker_fn` (post-switchover): feed captured frame to it
+   - Elif `observe_fn` (pre-switchover): call it; consume VLM seed if observe=None
+   - Else: VLM-only mode — re-publish cached observation
 4. If observe=None → increment reacquire counter; if limit hit → REACQUIRE_FAILED + spawn VLM
 5. **Plausibility gates** on valid observation:
    - `obs_age_ms > obs_age_limit_ms` → hint_valid=False, DEPTH_INVALID
    - `|time_skew_ms| > time_skew_limit_ms` → hint_valid=False, CALIB_INVALID
 6. Update store (target + perception info)
 7. Emit events on state transitions (once per transition, not every tick)
+
+## Frame-Buffer Replay & Tracker Switchover
+
+When VLM runs for a new target (`for_new_target=True`), frames are buffered:
+
+**During VLM inference:**
+- The existing tracker (`observe_fn` or `_active_tracker_fn`) keeps running uninterrupted
+- Every tick also captures a frame into the replay buffer via `capture_fn`
+
+**When VLM completes:**
+- `_replay_and_init_tracker(detection)` runs in the background task
+- Initialises a new tracker on the first buffered frame using `tracker_factory_fn`
+- Replays remaining frames sequentially; new frames keep arriving during replay
+- Once caught up, sets `_active_tracker_fn` — tick() switches to the new tracker
+
+**Switchover:**
+- Post-switchover: tick() captures a fresh frame and feeds it to `_active_tracker_fn` each tick
+- `set_tracking_target()` resets `_active_tracker_fn = None`, reverting to `observe_fn`
+
+**Fallback:** If `capture_fn` or `tracker_factory_fn` is not provided, the original synthetic-seed behaviour is used (full backward compatibility).
 
 ## State Transitions & Events
 
@@ -67,6 +95,7 @@ Listens on EventBus for `COMMAND_ACCEPTED` events:
 | `obs_age_limit_ms` | 150 | Gate: invalidate if obs too old |
 | `time_skew_limit_ms` | 50 | Gate: invalidate on clock skew |
 | `reacquire_fail_limit` | 3 | Consecutive observe=None before REACQUIRE_FAILED |
+| `frame_buffer_max_size` | 300 | Safety cap: max frames buffered during VLM inference |
 
 ## Integration
 
@@ -77,4 +106,4 @@ Listens on EventBus for `COMMAND_ACCEPTED` events:
 
 ## Testing
 
-`tick()` is directly callable. Use `make_mock_observe_fn()` and `make_mock_vlm_fn()` for tests without Ollama. Tests verify: state transitions, plausibility gates, VLM async (never blocks tick), event emission (once per transition), command handling, lifecycle cleanup.
+`tick()` is directly callable. Use `make_mock_observe_fn()`, `make_mock_vlm_fn()`, `make_mock_capture_fn()`, and `make_mock_tracker_factory_fn()` for tests without Ollama. Tests verify: state transitions, plausibility gates, VLM async (never blocks tick), frame-buffer replay and tracker switchover, event emission (once per transition), command handling, lifecycle cleanup.

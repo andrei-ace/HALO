@@ -50,10 +50,7 @@ def build_tools(ctx: AgentContext) -> list:
             skill = SkillName(skill_name)
         except Exception:
             allowed = ", ".join(s.value for s in SkillName)
-            return (
-                f"REJECTED: invalid skill_name {skill_name!r}. "
-                f"Expected one of [{allowed}]."
-            )
+            return f"REJECTED: invalid skill_name {skill_name!r}. Expected one of [{allowed}]."
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
