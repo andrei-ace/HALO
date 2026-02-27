@@ -55,15 +55,21 @@ class VideoSource:
         Maximum frames buffered for the sequential consumer.  If the
         consumer falls behind, oldest frames are silently dropped (like
         a real camera that overwrites its ring buffer).
+    queue_stride : int
+        Only enqueue every Nth frame for the tracker (default 3).  At
+        30 FPS this gives the tracker ~10 frames/s while the feed viewer
+        still sees every frame for smooth display.
     """
 
     def __init__(
         self,
         video_path: str | Path = _DEFAULT_VIDEO,
         max_queue_size: int = 30,
+        queue_stride: int = 3,
     ) -> None:
         self._video_path = Path(video_path)
         self._max_queue_size = max_queue_size
+        self._queue_stride = max(1, queue_stride)
 
         # Producer-consumer queue with condition variable
         self._cond = threading.Condition()
@@ -163,6 +169,7 @@ class VideoSource:
         self._fps = fps
         frame_interval = 1.0 / fps
 
+        frame_count = 0
         try:
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -170,14 +177,20 @@ class VideoSource:
                 ok, frame = cap.read()
                 if not ok:
                     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    frame_count = 0
                     ok, frame = cap.read()
                     if not ok:
                         break
 
+                frame_count += 1
+
                 with self._cond:
+                    # Always update latest frame (feed viewer stays smooth)
                     self._latest_frame = frame
-                    self._frame_queue.append(frame)
-                    self._cond.notify_all()
+                    # Only enqueue every Nth frame for the tracker
+                    if frame_count % self._queue_stride == 0:
+                        self._frame_queue.append(frame)
+                        self._cond.notify_all()
 
                 # Sleep to maintain real-time rate
                 elapsed = time.monotonic() - t0
