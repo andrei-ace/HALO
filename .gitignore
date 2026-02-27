@@ -29,3 +29,9 @@ runs/
 
 # data
 data/
+datasets/
+
+# model weights (binary, use Git LFS or download separately)
+models/*.onnx
+models/*.pt
+models/*.bin

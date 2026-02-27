@@ -118,7 +118,7 @@ class SkillRunnerService:
         store = self._runtime.store
         await store.update_skill(
             self._arm_id,
-            SkillInfo(name=skill_name, skill_run_id=skill_run_id, phase=PhaseId.APPROACH_PREGRASP),
+            SkillInfo(name=skill_name, skill_run_id=skill_run_id, phase=PhaseId.SELECT_GRASP),
         )
         await store.update_outcome(
             self._arm_id,
@@ -143,7 +143,7 @@ class SkillRunnerService:
         )
         await self._publish(
             EventType.PHASE_ENTER,
-            {"phase_id": int(PhaseId.APPROACH_PREGRASP)},
+            {"phase_id": int(PhaseId.SELECT_GRASP)},
         )
 
     async def abort_skill(self) -> None:

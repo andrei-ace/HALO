@@ -22,14 +22,18 @@ ControlService(arm_id, runtime, apply_fn, config=ControlServiceConfig())
 
 ## tick() Order (critical path)
 
-1. Get latest snapshot from runtime
+1. Get latest snapshot from runtime; derive `wrist_enabled` from phase
 2. **Hint freshness check** — stale target (obs_age > max or hint_valid=False) → ZERO_ACTION, status=STALE, **no reflex**
 3. Pop blended action from `TemporalEnsemblingBuffer` (under lock)
 4. **Safety check** — violation → trigger reflex (once), apply ZERO_ACTION
 5. **Reflex recovery** — first clean tick after reflex → emit SAFETY_RECOVERED
 6. Clamp via `SafetyGuard.clamp()`
-7. `apply_fn(arm_id, clamped_action)`
-8. Update store with `ActInfo` (status, buffer_fill_ms, buffer_low)
+7. `apply_fn(arm_id, clamped_action)` — if `BridgeTransportError` raised, write STALE and return None
+8. Update store with `ActInfo` (status, buffer_fill_ms, buffer_low, wrist_enabled)
+
+### Bridge transport failure handling
+
+All three `apply_fn` call sites (stale-hint hold, reflex hold, normal apply) catch `BridgeTransportError` from `halo.bridge`. On the normal apply path, a transport failure writes `ActStatus.STALE` to the store and returns `None` — the rest of the system sees that actuation is not happening. On the stale-hint and reflex paths, transport failures are logged but the existing status (STALE / reflex) already signals the problem.
 
 ## Temporal Ensembling
 
@@ -60,8 +64,9 @@ Subscribes to `PHASE_ENTER` events from EventBus. On phase switch: trims TE buff
 
 ## Integration
 
-- **Reads**: target hint freshness from RuntimeStateStore
-- **Writes**: `ActInfo` (status, buffer_fill_ms, buffer_low), `SafetyInfo` (state, reflex_active)
+- **Reads**: target hint freshness from RuntimeStateStore; `WRIST_ACTIVE_PHASES` from `contracts.enums`
+- **Writes**: `ActInfo` (status, buffer_fill_ms, buffer_low, wrist_enabled), `SafetyInfo` (state, reflex_active)
+- **Catches**: `BridgeTransportError` from `halo.bridge` (apply_fn failures → STALE status)
 - **Publishes**: `SAFETY_REFLEX_TRIGGERED`, `SAFETY_RECOVERED`
 - **Subscribes to**: `PHASE_ENTER` (for buffer trim)
 - **Called by**: SkillRunnerService via `push_chunk()`

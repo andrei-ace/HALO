@@ -26,21 +26,38 @@ class SkillName(StrEnum):
 
 
 class PhaseId(IntEnum):
-    RESET = 0
-    APPROACH_PREGRASP = 1
-    ALIGN = 2
-    DESCEND_GRASP = 3
-    CLOSE = 4
-    LIFT = 5
-    VERIFY_GRASP = 6
-    TRANSIT_PREPLACE = 7
-    DESCEND_PLACE = 8
-    OPEN = 9
-    RETREAT = 10
-    DONE = 11
-    RECOVER_RETRY_APPROACH = 20
-    RECOVER_RETRY_DESCEND = 21
-    RECOVER_REGRASP = 22
+    # -- PICK sub-phases --
+    IDLE = 0
+    SELECT_GRASP = 1
+    PLAN_APPROACH = 2
+    MOVE_PREGRASP = 3
+    VISUAL_ALIGN = 4
+    EXECUTE_APPROACH = 5
+    CLOSE_GRIPPER = 6
+    VERIFY_GRASP = 7
+    LIFT = 8
+    DONE = 9
+    # -- PLACE sub-phases (reserved, not used in milestone 1) --
+    TRANSIT_PREPLACE = 30
+    DESCEND_PLACE = 31
+    OPEN = 32
+    RETREAT = 33
+    # -- Recovery --
+    RECOVER_RETRY_APPROACH = 50
+    RECOVER_REGRASP = 51
+    RECOVER_ABORT = 52
+
+
+# Phases where the wrist camera provides real frames (vs. black/masked).
+# Shared contract consumed by PickFSM, ControlService, and sim constants.
+WRIST_ACTIVE_PHASES: frozenset[PhaseId] = frozenset(
+    {
+        PhaseId.VISUAL_ALIGN,
+        PhaseId.EXECUTE_APPROACH,
+        PhaseId.CLOSE_GRIPPER,
+        PhaseId.VERIFY_GRASP,
+    }
+)
 
 
 class SkillOutcomeState(StrEnum):

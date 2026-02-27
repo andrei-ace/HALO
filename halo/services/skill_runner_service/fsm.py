@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from halo.contracts.enums import PhaseId, SkillFailureCode, SkillOutcomeState
+from halo.contracts.enums import WRIST_ACTIVE_PHASES, PhaseId, SkillFailureCode, SkillOutcomeState
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 
@@ -10,7 +10,7 @@ class PickFSM:
 
     def __init__(self, config: SkillRunnerConfig) -> None:
         self._config = config
-        self._phase: PhaseId = PhaseId.RESET
+        self._phase: PhaseId = PhaseId.IDLE
         self._outcome: SkillOutcomeState = SkillOutcomeState.IN_PROGRESS
         self._failure_code: SkillFailureCode | None = None
         self._phase_start_ms: int = 0
@@ -38,19 +38,23 @@ class PickFSM:
 
     @property
     def is_active(self) -> bool:
-        return self._phase != PhaseId.RESET and self._phase != PhaseId.DONE
+        return self._phase != PhaseId.IDLE and self._phase != PhaseId.DONE
+
+    @property
+    def wrist_camera_active(self) -> bool:
+        return self._phase in WRIST_ACTIVE_PHASES
 
     # --- Commands ---
 
     def start(self, now_ms: int) -> None:
-        if self._phase != PhaseId.RESET:
-            raise RuntimeError(f"start() called in phase {self._phase!r}, expected RESET")
+        if self._phase != PhaseId.IDLE:
+            raise RuntimeError(f"start() called in phase {self._phase!r}, expected IDLE")
         self._grasp_qualify_start_ms = None
         self._no_target_start_ms = None
         self._reacquire_count = 0
         self._outcome = SkillOutcomeState.IN_PROGRESS
         self._failure_code = None
-        self._transition(now_ms, PhaseId.APPROACH_PREGRASP)
+        self._transition(now_ms, PhaseId.SELECT_GRASP)
 
     def abort(self, now_ms: int) -> None:
         if self._phase == PhaseId.DONE:
@@ -76,8 +80,20 @@ class PickFSM:
         phase = self._phase
         elapsed = now_ms - self._phase_start_ms
 
-        if phase == PhaseId.APPROACH_PREGRASP:
-            if elapsed >= self._config.approach_timeout_ms:
+        if phase == PhaseId.SELECT_GRASP:
+            if elapsed >= self._config.select_grasp_timeout_ms:
+                return self._fail(now_ms, SkillFailureCode.NO_PROGRESS)
+            # v0: immediate pass-through (grasp planning is a future extension)
+            return self._transition(now_ms, PhaseId.PLAN_APPROACH)
+
+        elif phase == PhaseId.PLAN_APPROACH:
+            if elapsed >= self._config.plan_approach_timeout_ms:
+                return self._fail(now_ms, SkillFailureCode.NO_PROGRESS)
+            # v0: immediate pass-through (motion planning is a future extension)
+            return self._transition(now_ms, PhaseId.MOVE_PREGRASP)
+
+        elif phase == PhaseId.MOVE_PREGRASP:
+            if elapsed >= self._config.move_pregrasp_timeout_ms:
                 return self._fail(now_ms, SkillFailureCode.NO_PROGRESS)
             target_ok = target is not None and target.hint_valid
             if not target_ok:
@@ -88,11 +104,11 @@ class PickFSM:
                 return None
             self._no_target_start_ms = None
             if target.distance_m < self._config.approach_align_threshold_m:
-                return self._transition(now_ms, PhaseId.ALIGN)
+                return self._transition(now_ms, PhaseId.VISUAL_ALIGN)
             return None
 
-        elif phase == PhaseId.ALIGN:
-            if elapsed >= self._config.align_timeout_ms:
+        elif phase == PhaseId.VISUAL_ALIGN:
+            if elapsed >= self._config.visual_align_timeout_ms:
                 return self._fail(now_ms, SkillFailureCode.NO_PROGRESS)
             target_ok = target is not None and target.hint_valid
             if not target_ok:
@@ -102,12 +118,12 @@ class PickFSM:
                     return self._transition(now_ms, PhaseId.RECOVER_RETRY_APPROACH)
                 return None
             self._no_target_start_ms = None
-            if target.distance_m < self._config.descend_threshold_m:
-                return self._transition(now_ms, PhaseId.DESCEND_GRASP)
+            if target.distance_m < self._config.execute_approach_threshold_m:
+                return self._transition(now_ms, PhaseId.EXECUTE_APPROACH)
             return None
 
-        elif phase == PhaseId.DESCEND_GRASP:
-            if elapsed >= self._config.descend_timeout_ms:
+        elif phase == PhaseId.EXECUTE_APPROACH:
+            if elapsed >= self._config.execute_approach_timeout_ms:
                 self._grasp_qualify_start_ms = None
                 return self._fail(now_ms, SkillFailureCode.NO_GRASP)
             target_ok = target is not None and target.hint_valid
@@ -115,7 +131,7 @@ class PickFSM:
                 if self._no_target_start_ms is None:
                     self._no_target_start_ms = now_ms
                 if now_ms - self._no_target_start_ms >= self._config.no_target_tolerance_ms:
-                    return self._transition(now_ms, PhaseId.RECOVER_RETRY_DESCEND)
+                    return self._transition(now_ms, PhaseId.RECOVER_RETRY_APPROACH)
                 return None
             self._no_target_start_ms = None
             if target.distance_m < self._config.grasp_distance_threshold_m:
@@ -123,13 +139,13 @@ class PickFSM:
                     self._grasp_qualify_start_ms = now_ms
                 if now_ms - self._grasp_qualify_start_ms >= self._config.grasp_persistence_ms:
                     self._grasp_qualify_start_ms = None
-                    return self._transition(now_ms, PhaseId.CLOSE)
+                    return self._transition(now_ms, PhaseId.CLOSE_GRIPPER)
             else:
                 self._grasp_qualify_start_ms = None
             return None
 
-        elif phase == PhaseId.CLOSE:
-            if elapsed >= self._config.close_duration_ms:
+        elif phase == PhaseId.CLOSE_GRIPPER:
+            if elapsed >= self._config.close_gripper_duration_ms:
                 if self._config.skip_verify_grasp:
                     return self._transition(now_ms, PhaseId.LIFT)
                 else:
@@ -152,16 +168,7 @@ class PickFSM:
                 if self._reacquire_count > self._config.max_reacquire_attempts:
                     return self._fail(now_ms, SkillFailureCode.TIMEOUT)
                 self._no_target_start_ms = None
-                return self._transition(now_ms, PhaseId.APPROACH_PREGRASP)
-            return None
-
-        elif phase == PhaseId.RECOVER_RETRY_DESCEND:
-            if elapsed >= self._config.recover_wait_ms:
-                self._reacquire_count += 1
-                if self._reacquire_count > self._config.max_reacquire_attempts:
-                    return self._fail(now_ms, SkillFailureCode.TIMEOUT)
-                self._no_target_start_ms = None
-                return self._transition(now_ms, PhaseId.DESCEND_GRASP)
+                return self._transition(now_ms, PhaseId.MOVE_PREGRASP)
             return None
 
         return None

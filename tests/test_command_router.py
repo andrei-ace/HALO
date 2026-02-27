@@ -144,7 +144,7 @@ async def test_abort_wrong_skill_run_rejected(rt: HALORuntime):
 
 
 async def test_abort_matching_skill_run_accepted(rt: HALORuntime):
-    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-1", phase=PhaseId.APPROACH_PREGRASP)
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-1", phase=PhaseId.SELECT_GRASP)
     await rt.store.update_skill(ARM, skill)
     await rt.get_latest_runtime_snapshot(ARM)  # cache snapshot with skill set
 
@@ -153,7 +153,7 @@ async def test_abort_matching_skill_run_accepted(rt: HALORuntime):
 
 
 async def test_abort_matching_skill_run_accepted_without_cached_snapshot(rt: HALORuntime):
-    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-3", phase=PhaseId.APPROACH_PREGRASP)
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-3", phase=PhaseId.SELECT_GRASP)
     await rt.store.update_skill(ARM, skill)
 
     ack = await rt.submit_command(_abort("cmd-abort-no-snap", skill_run_id="run-3"))
@@ -166,7 +166,7 @@ async def test_override_wrong_skill_run_rejected(rt: HALORuntime):
 
 
 async def test_override_matching_skill_run_accepted(rt: HALORuntime):
-    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-2", phase=PhaseId.APPROACH_PREGRASP)
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-2", phase=PhaseId.SELECT_GRASP)
     await rt.store.update_skill(ARM, skill)
     await rt.get_latest_runtime_snapshot(ARM)
 
@@ -175,7 +175,7 @@ async def test_override_matching_skill_run_accepted(rt: HALORuntime):
 
 
 async def test_override_matching_skill_run_accepted_without_cached_snapshot(rt: HALORuntime):
-    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-4", phase=PhaseId.APPROACH_PREGRASP)
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-4", phase=PhaseId.SELECT_GRASP)
     await rt.store.update_skill(ARM, skill)
 
     ack = await rt.submit_command(_override("cmd-override-no-snap", skill_run_id="run-4"))

@@ -10,7 +10,7 @@ RATE = 50.0  # Hz
 def _chunk(
     n: int,
     arm_id: str = "arm0",
-    phase: PhaseId = PhaseId.APPROACH_PREGRASP,
+    phase: PhaseId = PhaseId.MOVE_PREGRASP,
 ) -> ActionChunk:
     actions = tuple(Action(float(i), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for i in range(n))
     return ActionChunk(chunk_id=f"c-{n}", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)

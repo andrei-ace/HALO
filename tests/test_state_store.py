@@ -56,7 +56,7 @@ async def test_unregistered_arm_raises(store: RuntimeStateStore):
 
 
 async def test_update_skill(store: RuntimeStateStore):
-    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-1", phase=PhaseId.APPROACH_PREGRASP)
+    skill = SkillInfo(name=SkillName.PICK, skill_run_id="run-1", phase=PhaseId.SELECT_GRASP)
     await store.update_skill(ARM, skill)
     snap = await store.build_and_cache_snapshot(ARM, [])
     assert snap.skill == skill
@@ -175,7 +175,7 @@ async def test_concurrent_updates_do_not_corrupt(store: RuntimeStateStore):
         skill = SkillInfo(
             name=SkillName.PICK,
             skill_run_id=f"run-{i}",
-            phase=PhaseId.APPROACH_PREGRASP,
+            phase=PhaseId.SELECT_GRASP,
         )
         await store.update_skill(ARM, skill)
 

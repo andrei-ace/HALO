@@ -1,6 +1,6 @@
 # SkillRunnerService
 
-10–20 Hz service that owns the Pick skill FSM, schedules ACT action chunks, and publishes phase/skill lifecycle events.
+10-20 Hz service that owns the Pick skill FSM, schedules ACT action chunks, and publishes phase/skill lifecycle events.
 
 ## Files
 
@@ -26,26 +26,36 @@ Zero side effects — all transitions are synchronous. Designed for isolated uni
 ### Phase Flow
 
 ```
-APPROACH_PREGRASP → ALIGN → DESCEND_GRASP → CLOSE → [VERIFY_GRASP] → LIFT → DONE
-                                                                        ↑
-Recovery: RECOVER_RETRY_APPROACH / RECOVER_RETRY_DESCEND ───────────────┘
+SELECT_GRASP → PLAN_APPROACH → MOVE_PREGRASP → VISUAL_ALIGN → EXECUTE_APPROACH → CLOSE_GRIPPER → [VERIFY_GRASP] → LIFT → DONE
+                                                                                                                     ↑
+Recovery: RECOVER_RETRY_APPROACH ────────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+Note: SELECT_GRASP and PLAN_APPROACH are v0 pass-throughs (immediate transition). They exist as placeholders for future grasp planning and motion planning extensions.
+
+### Wrist Camera Gating
+
+```python
+_WRIST_ACTIVE_PHASES = {VISUAL_ALIGN, EXECUTE_APPROACH, CLOSE_GRIPPER, VERIFY_GRASP}
+```
+
+`wrist_camera_active` property returns True when the current phase is in WRIST_ACTIVE_PHASES.
 
 ### advance() Check Order (per tick)
 
 1. **Timeout** → fail (NO_PROGRESS / NO_GRASP)
-2. **Target loss** (no_target_tolerance_ms exceeded) → recovery phase
+2. **Target loss** (no_target_tolerance_ms exceeded) → RECOVER_RETRY_APPROACH
 3. **Forward progress** (distance thresholds) → next phase
 
 Returns old phase on transition, None if stayed. **One transition per tick maximum.**
 
-### GRASP_CLOSE Trigger
+### CLOSE_GRIPPER Trigger
 
 **Deterministic, never planner-driven.** Requires `distance < grasp_distance_threshold_m` held for `grasp_persistence_ms`. Distance bounce resets the timer.
 
 ### Target-Loss Recovery
 
-- Any approach/align/descend phase can enter RECOVER_RETRY_*
+- MOVE_PREGRASP, VISUAL_ALIGN, and EXECUTE_APPROACH can enter RECOVER_RETRY_APPROACH
 - Recovery waits `recover_wait_ms`, increments reacquire counter
 - After `max_reacquire_attempts` → fail with TIMEOUT
 
@@ -63,14 +73,16 @@ Returns old phase on transition, None if stayed. **One transition per tick maxim
 | Parameter | Default | Notes |
 |-----------|---------|-------|
 | `runner_rate_hz` | 10.0 | FSM tick frequency |
-| `approach_align_threshold_m` | 0.15 | APPROACH → ALIGN |
-| `descend_threshold_m` | 0.05 | ALIGN → DESCEND |
+| `approach_align_threshold_m` | 0.15 | MOVE_PREGRASP → VISUAL_ALIGN |
+| `execute_approach_threshold_m` | 0.05 | VISUAL_ALIGN → EXECUTE_APPROACH |
 | `grasp_distance_threshold_m` | 0.01 | Grasp trigger distance |
 | `grasp_persistence_ms` | 300 | Grasp stability requirement |
-| `approach_timeout_ms` | 10000 | 10 s max approach |
-| `align_timeout_ms` | 5000 | |
-| `descend_timeout_ms` | 5000 | |
-| `close_duration_ms` | 1000 | Timer-based |
+| `select_grasp_timeout_ms` | 5000 | |
+| `plan_approach_timeout_ms` | 5000 | |
+| `move_pregrasp_timeout_ms` | 10000 | 10 s max approach |
+| `visual_align_timeout_ms` | 5000 | |
+| `execute_approach_timeout_ms` | 5000 | |
+| `close_gripper_duration_ms` | 1000 | Timer-based |
 | `verify_duration_ms` | 500 | Timer-based |
 | `lift_duration_ms` | 2000 | Timer-based |
 | `no_target_tolerance_ms` | 2000 | Target loss patience |

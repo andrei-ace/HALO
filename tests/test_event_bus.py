@@ -17,7 +17,7 @@ def _evt(arm_id: str = ARM, event_id: str = "evt-1", ts_ms: int = 1000) -> Event
         type=EventType.PHASE_ENTER,
         ts_ms=ts_ms,
         arm_id=arm_id,
-        data={"phase": "APPROACH_PREGRASP"},
+        data={"phase": "SELECT_GRASP"},
     )
 
 

@@ -152,7 +152,7 @@ def _pick_running_snap() -> PlannerSnapshot:
         skill=SkillInfo(
             name=SkillName.PICK,
             skill_run_id="run-42",
-            phase=PhaseId.APPROACH_PREGRASP,
+            phase=PhaseId.SELECT_GRASP,
         ),
         target=TargetInfo(
             handle="cube-1",

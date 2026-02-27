@@ -7,8 +7,9 @@ version: 1.0.0
 ## Goal
 
 Move the arm to the target object and grasp it. The SkillRunner handles all
-motion phases (approach, align, descend, grasp, lift) automatically — you only
-decide when to start, when to give up, and how to recover.
+motion phases (select grasp, plan approach, move to pregrasp, visual align,
+execute approach, close gripper, verify, lift) automatically — you only decide
+when to start, when to give up, and how to recover.
 
 ## When to start
 

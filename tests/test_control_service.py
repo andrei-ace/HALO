@@ -4,10 +4,11 @@ import asyncio
 
 import pytest
 
+from halo.bridge import BridgeTransportError
 from halo.contracts.actions import ZERO_ACTION, Action, ActionChunk
-from halo.contracts.enums import ActStatus, PhaseId, SafetyState
+from halo.contracts.enums import ActStatus, PhaseId, SafetyState, SkillName
 from halo.contracts.events import EventEnvelope, EventType
-from halo.contracts.snapshots import TargetInfo
+from halo.contracts.snapshots import SkillInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.control_service.config import ControlServiceConfig
 from halo.services.control_service.service import ControlService
@@ -24,7 +25,7 @@ def _cfg(**kwargs) -> ControlServiceConfig:
 def _safe_chunk(
     n: int,
     arm_id: str = ARM,
-    phase: PhaseId = PhaseId.APPROACH_PREGRASP,
+    phase: PhaseId = PhaseId.MOVE_PREGRASP,
 ) -> ActionChunk:
     """Chunk with actions well within safety limits (dx=0.001)."""
     actions = tuple(Action(0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(n))
@@ -34,7 +35,7 @@ def _safe_chunk(
 def _bad_chunk(arm_id: str = ARM) -> ActionChunk:
     """Chunk with a single over-limit action (dx=0.1 >> 0.01 limit)."""
     actions = (Action(dx=0.1, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0),)
-    return ActionChunk(chunk_id="bad", arm_id=arm_id, phase_id=PhaseId.APPROACH_PREGRASP, actions=actions, ts_ms=0)
+    return ActionChunk(chunk_id="bad", arm_id=arm_id, phase_id=PhaseId.MOVE_PREGRASP, actions=actions, ts_ms=0)
 
 
 @pytest.fixture
@@ -242,7 +243,7 @@ async def test_phase_enter_event_trims_buffer(rt: HALORuntime):
         type=EventType.PHASE_ENTER,
         ts_ms=0,
         arm_id=ARM,
-        data={"phase_id": int(PhaseId.ALIGN)},
+        data={"phase_id": int(PhaseId.VISUAL_ALIGN)},
     )
     await svc._on_phase_event(event)
 
@@ -347,3 +348,152 @@ async def test_reflex_does_not_clear_while_violations_persist(rt: HALORuntime):
     assert svc._reflex_active is True
     recent = rt.bus.get_recent_events(ARM)
     assert not any(e.type == EventType.SAFETY_RECOVERED for e in recent)
+
+
+# --- wrist_enabled propagation ---
+
+
+async def test_wrist_enabled_false_when_no_skill(svc: ControlService, rt: HALORuntime):
+    """No skill active → wrist_enabled=False in ActInfo."""
+    await svc.tick()
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.wrist_enabled is False
+
+
+async def test_wrist_enabled_false_in_non_wrist_phase(rt: HALORuntime):
+    """MOVE_PREGRASP is not a wrist-active phase → wrist_enabled=False."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        pass
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg())
+    await rt.store.update_skill(ARM, SkillInfo(name=SkillName.PICK, skill_run_id="r1", phase=PhaseId.MOVE_PREGRASP))
+    await svc.push_chunk(_safe_chunk(5))
+    await svc.tick()
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.wrist_enabled is False
+
+
+async def test_wrist_enabled_true_in_visual_align(rt: HALORuntime):
+    """VISUAL_ALIGN is a wrist-active phase → wrist_enabled=True."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        pass
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg())
+    await rt.store.update_skill(ARM, SkillInfo(name=SkillName.PICK, skill_run_id="r1", phase=PhaseId.VISUAL_ALIGN))
+    await svc.push_chunk(_safe_chunk(5))
+    await svc.tick()
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.wrist_enabled is True
+
+
+async def test_wrist_enabled_true_in_execute_approach(rt: HALORuntime):
+    """EXECUTE_APPROACH is a wrist-active phase → wrist_enabled=True."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        pass
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg())
+    await rt.store.update_skill(ARM, SkillInfo(name=SkillName.PICK, skill_run_id="r1", phase=PhaseId.EXECUTE_APPROACH))
+    await svc.push_chunk(_safe_chunk(5))
+    await svc.tick()
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.wrist_enabled is True
+
+
+async def test_wrist_enabled_propagates_on_stale_hint(rt: HALORuntime):
+    """Stale-hint path should still write correct wrist_enabled."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        pass
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg(max_obs_age_ms=200))
+    await rt.store.update_skill(ARM, SkillInfo(name=SkillName.PICK, skill_run_id="r1", phase=PhaseId.CLOSE_GRIPPER))
+    stale_target = TargetInfo(
+        handle="obj-1",
+        hint_valid=False,
+        confidence=0.0,
+        obs_age_ms=500,
+        time_skew_ms=0,
+        delta_xyz_ee=(0.0, 0.0, 0.0),
+        distance_m=0.5,
+    )
+    await rt.store.update_target(ARM, stale_target)
+    await svc.push_chunk(_safe_chunk(5))
+    await svc.tick()
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.status == ActStatus.STALE
+    assert snap.act.wrist_enabled is True  # CLOSE_GRIPPER is wrist-active
+
+
+# --- bridge transport failure ---
+
+
+async def test_transport_failure_writes_stale_status(rt: HALORuntime):
+    """apply_fn raising BridgeTransportError should result in STALE, not RUNNING."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        if action != ZERO_ACTION:
+            raise BridgeTransportError("timeout")
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg())
+    await svc.push_chunk(_safe_chunk(5))
+    result = await svc.tick()
+
+    assert result is None
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.status == ActStatus.STALE
+
+
+async def test_transport_failure_returns_none(rt: HALORuntime):
+    """Failed apply should return None (no action was applied)."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        raise BridgeTransportError("dead bridge")
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg())
+    await svc.push_chunk(_safe_chunk(5))
+    result = await svc.tick()
+
+    assert result is None
+
+
+async def test_transport_failure_on_stale_hint_still_writes_stale(rt: HALORuntime):
+    """Bridge failure during stale-hint ZERO_ACTION should still write STALE (not crash)."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        raise BridgeTransportError("dead bridge")
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg(max_obs_age_ms=200))
+    stale_target = TargetInfo(
+        handle="obj-1",
+        hint_valid=False,
+        confidence=0.0,
+        obs_age_ms=500,
+        time_skew_ms=0,
+        delta_xyz_ee=(0.0, 0.0, 0.0),
+        distance_m=0.5,
+    )
+    await rt.store.update_target(ARM, stale_target)
+    await svc.push_chunk(_safe_chunk(5))
+    result = await svc.tick()
+
+    assert result is None
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.status == ActStatus.STALE
+
+
+async def test_transport_failure_on_reflex_still_writes_status(rt: HALORuntime):
+    """Bridge failure during safety reflex ZERO_ACTION should not crash."""
+
+    async def apply_fn(arm_id: str, action: Action) -> None:
+        raise BridgeTransportError("dead bridge")
+
+    svc = ControlService(arm_id=ARM, runtime=rt, apply_fn=apply_fn, config=_cfg())
+    await svc.push_chunk(_bad_chunk())
+    result = await svc.tick()
+
+    assert result is None
+    # Reflex was still triggered despite bridge failure
+    assert svc._reflex_active is True

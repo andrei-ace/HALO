@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Awaitable, Callable
 
+from halo.bridge import BridgeTransportError
 from halo.contracts.actions import ZERO_ACTION, Action, ActionChunk
-from halo.contracts.enums import ActStatus, PhaseId, SafetyReflexReason, SafetyState
+from halo.contracts.enums import WRIST_ACTIVE_PHASES, ActStatus, PhaseId, SafetyReflexReason, SafetyState
 from halo.contracts.events import EventEnvelope, EventType
-from halo.contracts.snapshots import ActInfo, SafetyInfo
+from halo.contracts.snapshots import ActInfo, PlannerSnapshot, SafetyInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.control_service.config import ControlServiceConfig
 from halo.services.control_service.safety_guard import SafetyGuard
 from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
+
+logger = logging.getLogger(__name__)
 
 ApplyFn = Callable[[str, Action], Awaitable[None]]
 
@@ -88,6 +92,13 @@ class ControlService:
         async with self._lock:
             self._buffer.push_chunk(chunk)
 
+    @staticmethod
+    def _wrist_enabled(snap: PlannerSnapshot) -> bool:
+        """Derive wrist_enabled from the current skill phase."""
+        if snap.skill is None:
+            return False
+        return snap.skill.phase in WRIST_ACTIVE_PHASES
+
     # --- Testable internal ---
 
     async def tick(self) -> Action | None:
@@ -104,16 +115,20 @@ class ControlService:
         # 1. Check hint freshness
         snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
         target = snap.target
+        wrist = self._wrist_enabled(snap)
 
         if not self._guard.check_hint_freshness(target, self._config):
             # Stale hint — hold position, no reflex
-            await self._apply_fn(self._arm_id, ZERO_ACTION)
+            try:
+                await self._apply_fn(self._arm_id, ZERO_ACTION)
+            except BridgeTransportError:
+                logger.warning("ControlService: bridge transport failed during stale-hint hold")
             async with self._lock:
                 fill = self._buffer.fill_ms(self._config.control_rate_hz)
                 low = self._buffer.is_low(self._config.buffer_low_threshold_ms, self._config.control_rate_hz)
             await self._runtime.store.update_act(
                 self._arm_id,
-                ActInfo(status=ActStatus.STALE, buffer_fill_ms=fill, buffer_low=low),
+                ActInfo(status=ActStatus.STALE, buffer_fill_ms=fill, buffer_low=low, wrist_enabled=wrist),
             )
             return None
 
@@ -126,7 +141,7 @@ class ControlService:
         if action is None:
             await self._runtime.store.update_act(
                 self._arm_id,
-                ActInfo(status=ActStatus.IDLE, buffer_fill_ms=0, buffer_low=False),
+                ActInfo(status=ActStatus.IDLE, buffer_fill_ms=0, buffer_low=False, wrist_enabled=wrist),
             )
             return None
 
@@ -135,13 +150,17 @@ class ControlService:
         if violations:
             if not self._reflex_active:
                 await self._trigger_reflex(violations)
-            await self._apply_fn(self._arm_id, ZERO_ACTION)
+            try:
+                await self._apply_fn(self._arm_id, ZERO_ACTION)
+            except BridgeTransportError:
+                logger.warning("ControlService: bridge transport failed during safety reflex hold")
             await self._runtime.store.update_act(
                 self._arm_id,
                 ActInfo(
                     status=ActStatus.BUFFER_LOW if low else ActStatus.RUNNING,
                     buffer_fill_ms=fill,
                     buffer_low=low,
+                    wrist_enabled=wrist,
                 ),
             )
             return None
@@ -154,13 +173,21 @@ class ControlService:
         clamped = self._guard.clamp(action)
 
         # 5. Apply
-        await self._apply_fn(self._arm_id, clamped)
+        try:
+            await self._apply_fn(self._arm_id, clamped)
+        except BridgeTransportError:
+            logger.warning("ControlService: bridge transport failed, action not applied")
+            await self._runtime.store.update_act(
+                self._arm_id,
+                ActInfo(status=ActStatus.STALE, buffer_fill_ms=fill, buffer_low=low, wrist_enabled=wrist),
+            )
+            return None
 
         # 6. Update store
         status = ActStatus.BUFFER_LOW if low else ActStatus.RUNNING
         await self._runtime.store.update_act(
             self._arm_id,
-            ActInfo(status=status, buffer_fill_ms=fill, buffer_low=low),
+            ActInfo(status=status, buffer_fill_ms=fill, buffer_low=low, wrist_enabled=wrist),
         )
 
         return clamped

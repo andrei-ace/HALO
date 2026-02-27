@@ -18,7 +18,7 @@ def _chunk(n: int, dx_start: float = 0.0, arm: str = "arm0") -> ActionChunk:
     return ActionChunk(
         chunk_id=f"c-{n}-{dx_start}",
         arm_id=arm,
-        phase_id=PhaseId.APPROACH_PREGRASP,
+        phase_id=PhaseId.MOVE_PREGRASP,
         actions=actions,
         ts_ms=0,
     )
@@ -30,7 +30,7 @@ def _const_chunk(n: int, dx: float, arm: str = "arm0") -> ActionChunk:
     return ActionChunk(
         chunk_id=f"const-{n}-{dx}",
         arm_id=arm,
-        phase_id=PhaseId.APPROACH_PREGRASP,
+        phase_id=PhaseId.MOVE_PREGRASP,
         actions=actions,
         ts_ms=0,
     )

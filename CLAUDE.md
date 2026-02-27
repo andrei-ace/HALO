@@ -41,6 +41,8 @@ All v0 backbone services are implemented and tested:
 | TUI (`halo/tui/app.py`) | ✅ done |
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
+| Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ sim_apply_fn, sim_observe_fn, sim_chunk_fn, transforms) |
+| Isaac Lab extension (`sim/halo_sim/`) | ✅ scaffolded (stubs — requires Isaac Lab runtime) |
 
 The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
@@ -59,6 +61,9 @@ halo/
   contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
                     # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
+  bridge/            # ZeroMQ adapters for Isaac Lab sim connection
+                      # __init__.py (BridgeTransportError), config.py, sim_apply_fn.py,
+                      # sim_observe_fn.py, sim_chunk_fn.py, transforms.py
   services/                    # each service has its own CLAUDE.md with detailed docs
     control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
     skill_runner_service/      # config.py, fsm.py, service.py
@@ -76,6 +81,8 @@ halo/
     safety/         # (planned)
   tools/            # (planned) ollama_clients/, zed_capture/, uvc_capture/
   eval/             # (planned) sim/, real/
+sim/                # Isaac Lab extension (separate pyproject.toml, runs on remote GPU)
+  halo_sim/         # see sim/CLAUDE.md for full structure
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
   halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
@@ -126,23 +133,25 @@ Top-level entry point. Owns `RuntimeStateStore`, `EventBus`, and `CommandRouter`
 Single source of truth (transport TBD: ROS2 topics, ZeroMQ, Redis, shared memory). Partitioned by `arm_id` from day one.
 
 ### Pick Skill FSM states
-`RESET → APPROACH_PREGRASP → ALIGN → DESCEND_GRASP → CLOSE → [VERIFY_GRASP] → LIFT → DONE`
-Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_RETRY_DESCEND`, `RECOVER_REGRASP`
+`IDLE → SELECT_GRASP → PLAN_APPROACH → MOVE_PREGRASP → VISUAL_ALIGN → EXECUTE_APPROACH → CLOSE_GRIPPER → VERIFY_GRASP → LIFT → DONE`
+Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_REGRASP`, `RECOVER_ABORT`
 
-`CLOSE` is triggered **deterministically** (distance < threshold held for `grasp_persistence_ms`), never by the planner.
+`CLOSE_GRIPPER` is triggered **deterministically** (distance < threshold held for `grasp_persistence_ms`), never by the planner.
+
+Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
 
 ### ACT action space
 `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` in the EE frame, per-timestep servo increments.
 Do **not** integrate and play back whole chunks open-loop. Temporal ensembling blends overlapping deltas per-timestep before IK/OSC mapping.
 
 ### Planner snapshot fields (compact; no raw telemetry)
-`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8).
+`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8).
 
 ### Stable enums (define in `contracts/enums`)
 - Perception failure codes: `OK`, `OCCLUDED`, `OUT_OF_VIEW`, `DEPTH_INVALID`, `MULTIPLE_CANDIDATES`, `CALIB_INVALID`, `TRACK_JUMP_REJECTED`, `REACQUIRE_FAILED`
 - Skill failure codes: `TIMEOUT`, `NO_PROGRESS`, `NO_GRASP`, `DROP_DETECTED`, `PLACE_MISS`, `UNSAFE_ABORT`
 - Safety reflex reasons: `JOINT_LIMIT`, `WORKSPACE_LIMIT`, `COLLISION_RISK`, `OVERCURRENT`, `ESTOP`
-- Phase IDs: `0 RESET`, `1 APPROACH_PREGRASP`, `2 ALIGN`, `3 DESCEND_GRASP`, `4 CLOSE`, `5 LIFT`, `6 VERIFY_GRASP`, `7 TRANSIT_PREPLACE`, `8 DESCEND_PLACE`, `9 OPEN`, `10 RETREAT`, `11 DONE`, `20-22 RECOVER_*`
+- Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 VERIFY_GRASP`, `8 LIFT`, `9 DONE`, `30-33 PLACE_*`, `50-52 RECOVER_*`
 
 ## Hardware (real SO-ARM101 phase — not v1)
 

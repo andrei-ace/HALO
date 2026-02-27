@@ -55,6 +55,7 @@ class ActInfo:
     status: ActStatus
     buffer_fill_ms: int
     buffer_low: bool
+    wrist_enabled: bool = False
 
 
 @dataclass(frozen=True)

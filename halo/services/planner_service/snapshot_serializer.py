@@ -39,6 +39,7 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
         "status": a.status.value,
         "buffer_fill_ms": a.buffer_fill_ms,
         "buffer_low": a.buffer_low,
+        "wrist_enabled": a.wrist_enabled,
     }
 
     pr = snap.progress

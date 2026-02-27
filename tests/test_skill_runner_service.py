@@ -31,17 +31,19 @@ def _happy_cfg() -> SkillRunnerConfig:
     """Zero all timing so each phase fires in one tick."""
     return _cfg(
         approach_align_threshold_m=0.15,
-        descend_threshold_m=0.05,
+        execute_approach_threshold_m=0.05,
         grasp_distance_threshold_m=0.02,
         grasp_persistence_ms=0,
-        close_duration_ms=0,
+        select_grasp_timeout_ms=99999,
+        plan_approach_timeout_ms=99999,
+        close_gripper_duration_ms=0,
         verify_duration_ms=0,
         lift_duration_ms=0,
         skip_verify_grasp=True,
         no_target_tolerance_ms=99999,
-        approach_timeout_ms=99999,
-        align_timeout_ms=99999,
-        descend_timeout_ms=99999,
+        move_pregrasp_timeout_ms=99999,
+        visual_align_timeout_ms=99999,
+        execute_approach_timeout_ms=99999,
     )
 
 
@@ -147,7 +149,7 @@ async def test_start_skill_publishes_skill_started_and_phase_enter(rt: HALORunti
     assert EventType.PHASE_ENTER in types
 
     phase_enter = next(e for e in events if e.type == EventType.PHASE_ENTER)
-    assert phase_enter.data["phase_id"] == int(PhaseId.APPROACH_PREGRASP)
+    assert phase_enter.data["phase_id"] == int(PhaseId.SELECT_GRASP)
 
 
 async def test_start_skill_updates_store_skill_info(rt: HALORuntime):
@@ -156,7 +158,7 @@ async def test_start_skill_updates_store_skill_info(rt: HALORuntime):
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.skill is not None
-    assert snap.skill.phase == PhaseId.APPROACH_PREGRASP
+    assert snap.skill.phase == PhaseId.SELECT_GRASP
     assert snap.skill.skill_run_id == RUN_ID
 
 
@@ -183,7 +185,7 @@ async def test_start_skill_rejects_unsupported_skill_without_clobbering_active(r
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.skill is not None
     assert snap.skill.skill_run_id == RUN_ID
-    assert snap.skill.phase == PhaseId.APPROACH_PREGRASP
+    assert snap.skill.phase == PhaseId.SELECT_GRASP
     assert snap.outcome.state == SkillOutcomeState.IN_PROGRESS
 
     events = rt.bus.get_recent_events(ARM)
@@ -203,21 +205,23 @@ async def test_tick_before_start_skill_returns_none(rt: HALORuntime):
 # --- tick advances phases ---
 
 
-async def test_tick_advances_to_align_with_close_target(rt: HALORuntime):
+async def test_tick_advances_through_initial_phases(rt: HALORuntime):
+    """SELECT_GRASP and PLAN_APPROACH are v0 pass-throughs; first tick goes to MOVE_PREGRASP."""
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    await _seed_store(rt, distance_m=0.10)  # below approach_align_threshold=0.15
+    await _seed_store(rt, distance_m=0.5)
 
+    # First tick: SELECT_GRASP -> PLAN_APPROACH (immediate pass-through)
     result = await svc.tick()
-    assert result == PhaseId.ALIGN
+    assert result == PhaseId.PLAN_APPROACH
 
 
 async def test_tick_publishes_phase_exit_and_phase_enter_on_transition(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    await _seed_store(rt, distance_m=0.10)
+    await _seed_store(rt, distance_m=0.5)
 
-    await svc.tick()  # APPROACH → ALIGN
+    await svc.tick()  # SELECT_GRASP -> PLAN_APPROACH
 
     events = rt.bus.get_recent_events(ARM)
     types = [e.type for e in events]
@@ -225,21 +229,18 @@ async def test_tick_publishes_phase_exit_and_phase_enter_on_transition(rt: HALOR
     assert EventType.PHASE_ENTER in types
 
     exit_evt = next(e for e in events if e.type == EventType.PHASE_EXIT)
-    assert exit_evt.data["phase_id"] == int(PhaseId.APPROACH_PREGRASP)
-
-    enter_evts = [e for e in events if e.type == EventType.PHASE_ENTER]
-    assert any(e.data["phase_id"] == int(PhaseId.ALIGN) for e in enter_evts)
+    assert exit_evt.data["phase_id"] == int(PhaseId.SELECT_GRASP)
 
 
 async def test_tick_updates_store_skill_info_on_transition(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    await _seed_store(rt, distance_m=0.10)
+    await _seed_store(rt, distance_m=0.5)
 
-    await svc.tick()
+    await svc.tick()  # SELECT_GRASP -> PLAN_APPROACH
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
-    assert snap.skill.phase == PhaseId.ALIGN
+    assert snap.skill.phase == PhaseId.PLAN_APPROACH
 
 
 # --- chunk scheduling ---
@@ -248,7 +249,7 @@ async def test_tick_updates_store_skill_info_on_transition(rt: HALORuntime):
 async def test_tick_pushes_chunk_when_buffer_low(rt: HALORuntime):
     svc, chunks = _make_svc(rt, cfg=_cfg(buffer_target_ms=200))
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    # Seed with fill_ms=0 → needs_chunk=True
+    # Seed with fill_ms=0 -> needs_chunk=True
     await rt.store.update_target(ARM, _target(distance_m=0.5))
     await rt.store.update_perception(ARM, _perception())
     await rt.store.update_act(ARM, _act(fill_ms=0))
@@ -261,7 +262,7 @@ async def test_tick_pushes_chunk_when_buffer_low(rt: HALORuntime):
 async def test_tick_does_not_push_chunk_when_buffer_full(rt: HALORuntime):
     svc, chunks = _make_svc(rt, cfg=_cfg(buffer_target_ms=200))
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    # Seed with fill_ms=300 → needs_chunk=False
+    # Seed with fill_ms=300 -> needs_chunk=False
     await rt.store.update_target(ARM, _target(distance_m=0.5))
     await rt.store.update_perception(ARM, _perception())
     await rt.store.update_act(ARM, _act(fill_ms=300))
@@ -278,15 +279,28 @@ async def test_tick_publishes_skill_succeeded_on_happy_path(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
-    # Drive through all phases
-    await _seed_store(rt, distance_m=0.10)  # APPROACH→ALIGN
+    # Drive through SELECT_GRASP -> PLAN_APPROACH -> MOVE_PREGRASP
+    await _seed_store(rt, distance_m=0.5)
+    await svc.tick()  # SELECT_GRASP -> PLAN_APPROACH
+    await svc.tick()  # PLAN_APPROACH -> MOVE_PREGRASP
+
+    # MOVE_PREGRASP -> VISUAL_ALIGN
+    await _seed_store(rt, distance_m=0.10)
     await svc.tick()
-    await _seed_store(rt, distance_m=0.03)  # ALIGN→DESCEND
+
+    # VISUAL_ALIGN -> EXECUTE_APPROACH
+    await _seed_store(rt, distance_m=0.03)
     await svc.tick()
-    await _seed_store(rt, distance_m=0.01)  # DESCEND→CLOSE (persistence=0 → immediate)
+
+    # EXECUTE_APPROACH -> CLOSE_GRIPPER (persistence=0 -> immediate)
+    await _seed_store(rt, distance_m=0.01)
     await svc.tick()
-    await svc.tick()  # CLOSE→LIFT   (duration=0)
-    await svc.tick()  # LIFT→DONE    (duration=0)
+
+    # CLOSE_GRIPPER -> LIFT (duration=0, skip_verify=True)
+    await svc.tick()
+
+    # LIFT -> DONE (duration=0)
+    await svc.tick()
 
     events = rt.bus.get_recent_events(ARM)
     assert any(e.type == EventType.SKILL_SUCCEEDED for e in events)
@@ -296,7 +310,7 @@ async def test_tick_publishes_skill_succeeded_on_happy_path(rt: HALORuntime):
 
 
 async def test_tick_publishes_skill_failed_on_timeout(rt: HALORuntime):
-    cfg = _cfg(approach_timeout_ms=0, no_target_tolerance_ms=99999)
+    cfg = _cfg(select_grasp_timeout_ms=0, no_target_tolerance_ms=99999)
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=cfg)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
     await _seed_store(rt, distance_m=0.5)
@@ -343,14 +357,18 @@ async def test_outcome_info_updated_in_store_on_success(rt: HALORuntime):
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
+    # Drive through all phases
+    await _seed_store(rt, distance_m=0.5)
+    await svc.tick()  # SELECT_GRASP -> PLAN_APPROACH
+    await svc.tick()  # PLAN_APPROACH -> MOVE_PREGRASP
     await _seed_store(rt, distance_m=0.10)
-    await svc.tick()
+    await svc.tick()  # -> VISUAL_ALIGN
     await _seed_store(rt, distance_m=0.03)
-    await svc.tick()
+    await svc.tick()  # -> EXECUTE_APPROACH
     await _seed_store(rt, distance_m=0.01)
-    await svc.tick()
-    await svc.tick()
-    await svc.tick()
+    await svc.tick()  # -> CLOSE_GRIPPER
+    await svc.tick()  # -> LIFT
+    await svc.tick()  # -> DONE
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.outcome.state == SkillOutcomeState.SUCCESS
@@ -358,7 +376,7 @@ async def test_outcome_info_updated_in_store_on_success(rt: HALORuntime):
 
 
 async def test_outcome_info_updated_in_store_on_failure(rt: HALORuntime):
-    cfg = _cfg(approach_timeout_ms=0, no_target_tolerance_ms=99999)
+    cfg = _cfg(select_grasp_timeout_ms=0, no_target_tolerance_ms=99999)
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=cfg)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
     await _seed_store(rt, distance_m=0.5)

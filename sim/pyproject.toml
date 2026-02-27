@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "halo-sim"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["h5py>=3.0", "numpy", "pyzmq>=25", "msgpack>=1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8"]

@@ -44,12 +44,20 @@ from halo.contracts.snapshots import (
 
 
 def test_phase_id_values():
-    assert PhaseId.RESET == 0
-    assert PhaseId.APPROACH_PREGRASP == 1
-    assert PhaseId.DONE == 11
-    assert PhaseId.RECOVER_RETRY_APPROACH == 20
-    assert PhaseId.RECOVER_RETRY_DESCEND == 21
-    assert PhaseId.RECOVER_REGRASP == 22
+    assert PhaseId.IDLE == 0
+    assert PhaseId.SELECT_GRASP == 1
+    assert PhaseId.PLAN_APPROACH == 2
+    assert PhaseId.MOVE_PREGRASP == 3
+    assert PhaseId.VISUAL_ALIGN == 4
+    assert PhaseId.EXECUTE_APPROACH == 5
+    assert PhaseId.CLOSE_GRIPPER == 6
+    assert PhaseId.VERIFY_GRASP == 7
+    assert PhaseId.LIFT == 8
+    assert PhaseId.DONE == 9
+    assert PhaseId.TRANSIT_PREPLACE == 30
+    assert PhaseId.RECOVER_RETRY_APPROACH == 50
+    assert PhaseId.RECOVER_REGRASP == 51
+    assert PhaseId.RECOVER_ABORT == 52
 
 
 def test_perception_failure_codes_complete():
@@ -145,7 +153,7 @@ def _make_event() -> EventEnvelope:
         type=EventType.PHASE_ENTER,
         ts_ms=2000,
         arm_id="arm0",
-        data={"phase": "APPROACH_PREGRASP"},
+        data={"phase": "SELECT_GRASP"},
     )
 
 
@@ -164,7 +172,7 @@ def test_event_asdict():
     evt = _make_event()
     d = dataclasses.asdict(evt)
     assert d["type"] == "PHASE_ENTER"
-    assert d["data"]["phase"] == "APPROACH_PREGRASP"
+    assert d["data"]["phase"] == "SELECT_GRASP"
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +188,7 @@ def _make_snapshot() -> PlannerSnapshot:
         skill=SkillInfo(
             name=SkillName.PICK,
             skill_run_id="run-1",
-            phase=PhaseId.APPROACH_PREGRASP,
+            phase=PhaseId.SELECT_GRASP,
         ),
         target=TargetInfo(
             handle="cube-1",
@@ -227,6 +235,6 @@ def test_snapshot_asdict():
     snap = _make_snapshot()
     d = dataclasses.asdict(snap)
     assert d["snapshot_id"] == "snap-arm0-1"
-    assert d["skill"]["phase"] == PhaseId.APPROACH_PREGRASP
+    assert d["skill"]["phase"] == PhaseId.SELECT_GRASP
     assert d["target"]["delta_xyz_ee"] == (0.01, -0.02, 0.05)
     assert d["safety"]["reason_codes"] == ()

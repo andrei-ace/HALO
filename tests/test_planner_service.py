@@ -365,7 +365,7 @@ def test_snapshot_to_dict_with_active_skill():
     skill = SkillInfo(
         name=SkillName.PICK,
         skill_run_id="run-42",
-        phase=PhaseId.APPROACH_PREGRASP,
+        phase=PhaseId.SELECT_GRASP,
     )
     snap = _make_snapshot(skill=skill)
     d = snapshot_to_dict(snap)
@@ -373,7 +373,7 @@ def test_snapshot_to_dict_with_active_skill():
     assert d["skill"] == {
         "name": "PICK",
         "skill_run_id": "run-42",
-        "phase": "APPROACH_PREGRASP",
+        "phase": "SELECT_GRASP",
     }
 
 
