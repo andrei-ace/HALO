@@ -12,12 +12,19 @@ ZED X depth fusion in the hardware phase.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 
 from halo.contracts.snapshots import TargetInfo
 from halo.services.target_perception_service.frame_buffer import CapturedFrame
 from halo.services.target_perception_service.vlm_parser import VlmDetection
+
+# NanoTrack ONNX model paths (relative to repo root).
+_MODELS_DIR = Path(__file__).resolve().parents[3] / "models"
+_NANOTRACK_BACKBONE = _MODELS_DIR / "nanotrack_backbone_sim.onnx"
+_NANOTRACK_HEAD = _MODELS_DIR / "nanotrack_head_sim.onnx"
 
 
 def _bbox_xyxy_to_xywh(x1: float, y1: float, x2: float, y2: float) -> tuple[int, int, int, int]:
@@ -82,9 +89,36 @@ _TRACKER_FACTORIES: list[tuple[str, str]] = [
 ]
 
 
+def _create_nano_tracker() -> cv2.Tracker | None:
+    """Try to create a TrackerNano with the bundled ONNX models.
+
+    Returns ``None`` if the models are missing or TrackerNano_Params is
+    unavailable (e.g. plain ``opencv-python`` without contrib).
+    """
+    if not (_NANOTRACK_BACKBONE.exists() and _NANOTRACK_HEAD.exists()):
+        return None
+    params_cls = getattr(cv2, "TrackerNano_Params", None)
+    create_fn = getattr(cv2, "TrackerNano_create", None)
+    if params_cls is None or create_fn is None:
+        return None
+    try:
+        params = params_cls()
+        params.backbone = str(_NANOTRACK_BACKBONE)
+        params.neckhead = str(_NANOTRACK_HEAD)
+        return create_fn(params)
+    except cv2.error:
+        return None
+
+
 def _create_tracker() -> cv2.Tracker:
     """Create the best available OpenCV tracker."""
-    for _, attr in _TRACKER_FACTORIES:
+    for name, attr in _TRACKER_FACTORIES:
+        # TrackerNano needs model paths — use dedicated helper.
+        if name == "TrackerNano":
+            tracker = _create_nano_tracker()
+            if tracker is not None:
+                return tracker
+            continue
         fn = getattr(cv2, attr, None)
         if fn is not None:
             try:
@@ -97,6 +131,10 @@ def _create_tracker() -> cv2.Tracker:
 def get_tracker_name() -> str:
     """Return the name of the best available OpenCV tracker without allocating one."""
     for name, attr in _TRACKER_FACTORIES:
+        if name == "TrackerNano":
+            if _create_nano_tracker() is not None:
+                return name
+            continue
         fn = getattr(cv2, attr, None)
         if fn is not None:
             try:
