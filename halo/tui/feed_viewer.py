@@ -3,21 +3,26 @@
 Runs an OpenCV ``imshow`` window in a **subprocess** so that the Cocoa/AppKit
 GUI backend has its own main thread (required on macOS).  A small pusher
 thread in the parent process sends ``TargetInfo`` / ``PerceptionInfo``
-snapshots to the child via a ``multiprocessing.Queue``.
+snapshots to the child via a ``multiprocessing.Connection`` pipe.
 
 Toggle with the **F** key in the TUI (live mode only).
 
 Requires the ``viewer`` optional dependency::
 
     uv sync --extra viewer
+
+Note: Uses only ``Pipe`` (no ``Queue``, ``Event``, or ``Lock``) to avoid
+POSIX semaphore resource-tracker issues on Python 3.14+.
 """
 
 from __future__ import annotations
 
 import multiprocessing as mp
+import multiprocessing.connection
+import os
+import sys
 import threading
 from pathlib import Path
-from queue import Empty
 
 import cv2
 import numpy as np
@@ -28,6 +33,35 @@ from halo.contracts.snapshots import PerceptionInfo, TargetInfo
 _DEFAULT_VIDEO = Path(__file__).parents[2] / "data" / "video.mp4"
 
 _WINDOW_NAME = "HALO Feed"
+
+
+def _ensure_valid_stderr() -> None:
+    """Ensure sys.stderr has a real fd (>= 0).
+
+    Textual replaces stderr with a virtual stream whose ``fileno()``
+    returns -1.  When ``multiprocessing`` later spawns the resource-
+    tracker process it passes ``sys.stderr.fileno()`` into
+    ``fds_to_keep``, and a negative fd triggers
+    ``ValueError: bad value(s) in fds_to_keep``.
+
+    Call this before any ``multiprocessing.Process.start()``.
+    """
+    try:
+        if sys.stderr.fileno() >= 0:
+            return
+    except Exception:
+        pass
+    # Try the original stderr saved by the interpreter.
+    try:
+        if sys.__stderr__ is not None and sys.__stderr__.fileno() >= 0:
+            sys.stderr = sys.__stderr__
+            return
+    except Exception:
+        pass
+    # Last resort: point stderr at /dev/null so the fd is valid.
+    sys.stderr = open(os.devnull, "w")  # noqa: SIM115
+
+
 _TARGET_FPS = 30
 
 # Status → BGR colour
@@ -103,35 +137,44 @@ def _draw_annotations(
 
 def _viewer_main(
     video_path: str,
-    queue: mp.Queue,
-    stop_event: mp.Event,
-    ready_event: mp.Event,
+    data_conn: multiprocessing.connection.Connection,
+    stop_conn: multiprocessing.connection.Connection,
+    ready_conn: multiprocessing.connection.Connection,
 ) -> None:
-    """Entry point for the viewer subprocess — OpenCV runs on the main thread."""
+    """Entry point for the viewer subprocess — OpenCV runs on the main thread.
+
+    All IPC uses ``Pipe`` connections only (no ``Queue``/``Event``/``Lock``)
+    to avoid POSIX semaphore resource-tracker issues on Python 3.14+.
+    """
     import cv2  # noqa: F811 — fresh import in child process
 
     try:
         cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_NORMAL)
     except cv2.error:
-        return  # ready_event never set → parent detects failure
+        return  # ready signal never sent → parent detects failure
 
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         return
 
-    ready_event.set()
+    # Signal the parent that the window is ready
+    ready_conn.send(True)
+    ready_conn.close()
 
     target: TargetInfo | None = None
     perception: PerceptionInfo | None = None
     frame_delay_ms = max(1, int(1000 / _TARGET_FPS))
 
+    def _stop_requested() -> bool:
+        return stop_conn.poll(0)
+
     try:
-        while not stop_event.is_set():
-            # Drain queue — keep only the latest snapshot pair
-            while True:
+        while not _stop_requested():
+            # Drain pipe — keep only the latest snapshot pair
+            while data_conn.poll(0):
                 try:
-                    target, perception = queue.get_nowait()
-                except Empty:
+                    target, perception = data_conn.recv()
+                except EOFError:
                     break
 
             ok, frame = cap.read()
@@ -181,8 +224,8 @@ class FeedViewer:
         self._arm_id = arm_id
         self._video_path = Path(video_path)
         self._process: mp.Process | None = None
-        self._queue: mp.Queue | None = None
-        self._stop_event: mp.Event | None = None
+        self._data_conn: multiprocessing.connection.Connection | None = None
+        self._stop_conn: multiprocessing.connection.Connection | None = None
         self._pusher_stop = threading.Event()
         self._pusher_thread: threading.Thread | None = None
 
@@ -191,24 +234,34 @@ class FeedViewer:
         if self._process is not None and self._process.is_alive():
             return True
 
+        _ensure_valid_stderr()
         ctx = mp.get_context("spawn")
-        self._stop_event = ctx.Event()
-        ready_event = ctx.Event()
-        self._queue = ctx.Queue(maxsize=4)
+        # Use only Pipe — no Queue/Event/Lock — to avoid POSIX semaphore
+        # resource-tracker issues on Python 3.14+.
+        data_parent, data_child = ctx.Pipe()
+        stop_parent, stop_child = ctx.Pipe()
+        ready_parent, ready_child = ctx.Pipe()
+        self._data_conn = data_parent
+        self._stop_conn = stop_parent
 
         self._process = ctx.Process(
             target=_viewer_main,
-            args=(str(self._video_path), self._queue, self._stop_event, ready_event),
-            daemon=True,
+            args=(str(self._video_path), data_child, stop_child, ready_child),
         )
         self._process.start()
+        # Close child ends in the parent — only the child process uses them.
+        data_child.close()
+        stop_child.close()
+        ready_child.close()
 
         # Wait for the child to confirm window creation
-        if not ready_event.wait(timeout=5.0):
+        if not ready_parent.poll(timeout=5.0):
             self._process.terminate()
             self._process.join(timeout=2)
             self._process = None
+            ready_parent.close()
             return False
+        ready_parent.close()
 
         if not self._process.is_alive():
             self._process = None
@@ -223,8 +276,11 @@ class FeedViewer:
     def stop(self) -> None:
         """Signal the child process to stop, join everything, clean up."""
         self._pusher_stop.set()
-        if self._stop_event is not None:
-            self._stop_event.set()
+        if self._stop_conn is not None:
+            try:
+                self._stop_conn.send(True)
+            except (BrokenPipeError, OSError):
+                pass
         if self._pusher_thread is not None:
             self._pusher_thread.join(timeout=2.0)
             self._pusher_thread = None
@@ -248,16 +304,11 @@ class FeedViewer:
             target: TargetInfo | None = self._store._target.get(self._arm_id)  # type: ignore[union-attr]
             perception: PerceptionInfo | None = self._store._perception.get(self._arm_id)  # type: ignore[union-attr]
 
-            # Drain stale items then push the latest
-            if self._queue is not None:
-                while not self._queue.empty():
-                    try:
-                        self._queue.get_nowait()
-                    except Empty:
-                        break
+            # Push latest snapshot; child drains stale items on its end
+            if self._data_conn is not None:
                 try:
-                    self._queue.put_nowait((target, perception))
-                except Exception:
-                    pass
+                    self._data_conn.send((target, perception))
+                except (BrokenPipeError, OSError):
+                    break
 
             self._pusher_stop.wait(timeout=1.0 / _TARGET_FPS)
