@@ -11,3 +11,5 @@ class TargetPerceptionServiceConfig:
     reacquire_fail_limit: int = 3  # consecutive observe=None before REACQUIRE_FAILED
     tracker_init_retries: int = 3  # VLM+replay attempts before declaring LOST
     frame_buffer_max_size: int = 300  # safety cap: max frames buffered during VLM inference
+    capture_source_fps: float = 30.0  # expected FPS of capture source (for time-aware draining)
+    max_frames_per_tick: int = 24  # hard cap on frames drained per tick

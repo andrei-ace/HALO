@@ -803,7 +803,7 @@ async def test_drain_commands_handles_track_object(rt: HALORuntime):
 
 
 async def test_replay_produces_caught_up_seed(rt: HALORuntime):
-    """VLM with capture+tracker replays buffer; seed has real tracker values."""
+    """VLM with capture+tracker inits on first buffered frame; tick drains rest."""
     update_hint = TargetInfo(
         handle="cube-1",
         hint_valid=True,
@@ -827,16 +827,26 @@ async def test_replay_produces_caught_up_seed(rt: HALORuntime):
     for _ in range(3):
         await svc.tick()
 
-    # Let VLM + replay complete
+    # Let VLM + init complete
     await asyncio.sleep(0.1)
 
-    # After replay, _vlm_seed should have real tracker values
+    # Seed should have init values; tracker set as pending (not active yet)
     assert svc._vlm_seed is not None
-    assert svc._vlm_seed.distance_m == pytest.approx(0.12)
-    assert svc._vlm_seed.confidence == pytest.approx(0.85)
+    assert svc._pending_tracker_fn is not None
+    assert svc._replay_buffer.remaining > 0
 
-    # Active tracker should be set (switchover)
+    # Ticks drain the buffer; once empty, pending becomes active
+    for _ in range(20):
+        await svc.tick()
+        if svc._active_tracker_fn is not None:
+            break
+
     assert svc._active_tracker_fn is not None
+    assert svc._pending_tracker_fn is None
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.target is not None
+    assert snap.target.distance_m == pytest.approx(0.12)
+    assert snap.target.confidence == pytest.approx(0.85)
 
 
 async def test_switchover_tick_uses_active_tracker(rt: HALORuntime):
@@ -873,8 +883,8 @@ async def test_switchover_tick_uses_active_tracker(rt: HALORuntime):
 
 
 async def test_frames_captured_during_vlm_are_replayed(rt: HALORuntime):
-    """Frames pushed via tick() during VLM inference are consumed by replay."""
-    replayed_frames: list[CapturedFrame] = []
+    """Buffered frames are drained by tick() after tracker init completes."""
+    tracker_frames: list[CapturedFrame] = []
 
     async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
         # Slow enough for a few ticks to push frames
@@ -886,11 +896,11 @@ async def test_frames_captured_during_vlm_are_replayed(rt: HALORuntime):
     init_hint = _good_hint(handle="cube-1")
 
     async def factory(frame: CapturedFrame, detection: VlmDetection):
-        replayed_frames.append(frame)
+        tracker_frames.append(frame)
         seed = dataclasses.replace(init_hint, handle=detection.handle)
 
         async def update(f: CapturedFrame) -> TargetInfo | None:
-            replayed_frames.append(f)
+            tracker_frames.append(f)
             return seed
 
         return seed, update
@@ -903,11 +913,17 @@ async def test_frames_captured_during_vlm_are_replayed(rt: HALORuntime):
         await svc.tick()
         await asyncio.sleep(0.02)
 
-    # Wait for VLM + replay to complete
+    # Wait for VLM + tracker init to complete
     await asyncio.sleep(0.3)
 
-    # All frames pushed to the buffer should have been replayed
-    assert len(replayed_frames) >= 3  # at least some were replayed
+    # Init consumed 1 frame; buffer still has remaining frames
+    assert len(tracker_frames) == 1
+    remaining_before = svc._replay_buffer.remaining
+    assert remaining_before > 0
+
+    # Ticks drain the buffer through the active tracker
+    await svc.tick()
+    assert len(tracker_frames) > 1  # update_fn was called with buffered frames
 
 
 async def test_observe_fn_keeps_running_during_vlm(rt: HALORuntime):
@@ -995,13 +1011,20 @@ async def test_set_tracking_target_resets_active_tracker(rt: HALORuntime):
     )
     await svc.set_tracking_target("cube-1")
     await svc.tick()
-    await asyncio.sleep(0.1)  # switchover done
+    await asyncio.sleep(0.1)  # VLM + init done
+
+    # Drain pending buffer until swap
+    for _ in range(20):
+        await svc.tick()
+        if svc._active_tracker_fn is not None:
+            break
 
     assert svc._active_tracker_fn is not None
 
-    # Re-set target — should clear active tracker
+    # Re-set target — should clear both trackers
     await svc.set_tracking_target("cube-2")
     assert svc._active_tracker_fn is None
+    assert svc._pending_tracker_fn is None
 
 
 async def test_reacquire_failed_without_capture_fn(rt: HALORuntime):
@@ -1301,5 +1324,7 @@ async def test_tick_pushes_frames_during_vlm(rt: HALORuntime):
     await svc.tick()
     await svc.tick()
 
-    assert len(svc._replay_buffer) == 3
+    # Each tick drains at least 1 frame (time-aware: actual count depends on
+    # elapsed wall-clock time between ticks and capture_source_fps).
+    assert len(svc._replay_buffer) >= 3
     await svc.stop()

@@ -2,8 +2,13 @@
 
 Runs an OpenCV ``imshow`` window in a **subprocess** so that the Cocoa/AppKit
 GUI backend has its own main thread (required on macOS).  A small pusher
-thread in the parent process sends ``TargetInfo`` / ``PerceptionInfo``
-snapshots to the child via a ``multiprocessing.Connection`` pipe.
+thread in the parent process sends frames + annotations to the child via a
+``multiprocessing.Connection`` pipe.
+
+When a ``VideoSource`` is provided, the viewer displays frames from the
+shared source (same frames the tracker processes) — ensuring annotations
+align perfectly.  Without a video source, falls back to playing an
+independent video file (legacy/standalone mode).
 
 Toggle with the **F** key in the TUI (live mode only).
 
@@ -104,6 +109,16 @@ def _draw_annotations(
         if perception.failure_code != PerceptionFailureCode.OK:
             fail_text = perception.failure_code.value
             cv2.putText(frame, fail_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 200), 1)
+
+        # Buffer stats (top-right)
+        x_right = frame.shape[1] - 220
+        if perception.active_buf_total > 0:
+            a_text = f"act: {perception.active_buf_consumed}/{perception.active_buf_total}"
+            a_col = (128, 128, 128) if perception.has_pending_tracker else (0, 200, 0)
+            cv2.putText(frame, a_text, (x_right, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, a_col, 1)
+        if perception.pending_buf_total > 0:
+            p_text = f"pend: {perception.pending_buf_consumed}/{perception.pending_buf_total}"
+            cv2.putText(frame, p_text, (x_right, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 200), 1)
     else:
         color = (128, 128, 128)
 
@@ -136,12 +151,16 @@ def _draw_annotations(
 
 
 def _viewer_main(
-    video_path: str,
+    video_path: str | None,
     data_conn: multiprocessing.connection.Connection,
     stop_conn: multiprocessing.connection.Connection,
     ready_conn: multiprocessing.connection.Connection,
 ) -> None:
     """Entry point for the viewer subprocess — OpenCV runs on the main thread.
+
+    When *video_path* is ``None`` the subprocess displays frames received from
+    the parent (shared ``VideoSource`` mode).  Otherwise it opens its own
+    ``cv2.VideoCapture`` on the file (legacy/standalone mode).
 
     All IPC uses ``Pipe`` connections only (no ``Queue``/``Event``/``Lock``)
     to avoid POSIX semaphore resource-tracker issues on Python 3.14+.
@@ -153,9 +172,11 @@ def _viewer_main(
     except cv2.error:
         return  # ready signal never sent → parent detects failure
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        return
+    cap: cv2.VideoCapture | None = None
+    if video_path is not None:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return
 
     # Signal the parent that the window is ready
     ready_conn.send(True)
@@ -163,6 +184,7 @@ def _viewer_main(
 
     target: TargetInfo | None = None
     perception: PerceptionInfo | None = None
+    frame: np.ndarray | None = None
     frame_delay_ms = max(1, int(1000 / _TARGET_FPS))
 
     def _stop_requested() -> bool:
@@ -170,28 +192,40 @@ def _viewer_main(
 
     try:
         while not _stop_requested():
-            # Drain pipe — keep only the latest snapshot pair
+            # Drain pipe — keep only the latest message
             while data_conn.poll(0):
                 try:
-                    target, perception = data_conn.recv()
+                    msg = data_conn.recv()
                 except EOFError:
                     break
+                if isinstance(msg, tuple) and len(msg) == 3:
+                    frame, target, perception = msg
+                elif isinstance(msg, tuple) and len(msg) == 2:
+                    target, perception = msg
 
-            ok, frame = cap.read()
-            if not ok:
-                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+            if cap is not None:
+                # Legacy mode: read from own VideoCapture
                 ok, frame = cap.read()
                 if not ok:
-                    break
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    ok, frame = cap.read()
+                    if not ok:
+                        break
 
-            _draw_annotations(frame, target, perception)
-            cv2.imshow(_WINDOW_NAME, frame)
+            if frame is None:
+                cv2.waitKey(frame_delay_ms)
+                continue
+
+            display = frame.copy()
+            _draw_annotations(display, target, perception)
+            cv2.imshow(_WINDOW_NAME, display)
 
             key = cv2.waitKey(frame_delay_ms) & 0xFF
             if key in (ord("q"), 27):  # q or Esc
                 break
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
         cv2.destroyAllWindows()
 
 
@@ -211,7 +245,11 @@ class FeedViewer:
     arm_id : str
         Which arm's state to display.
     video_path : str | Path
-        Video file to display (independent capture from perception service).
+        Video file to display (legacy/standalone mode, ignored when
+        *video_source* is provided).
+    video_source : VideoSource | None
+        Shared video source.  When provided, frames are sent through the
+        pipe and the subprocess does not open its own ``VideoCapture``.
     """
 
     def __init__(
@@ -219,10 +257,12 @@ class FeedViewer:
         store: object,
         arm_id: str = "arm0",
         video_path: str | Path = _DEFAULT_VIDEO,
+        video_source: object | None = None,
     ) -> None:
         self._store = store
         self._arm_id = arm_id
         self._video_path = Path(video_path)
+        self._video_source = video_source
         self._process: mp.Process | None = None
         self._data_conn: multiprocessing.connection.Connection | None = None
         self._stop_conn: multiprocessing.connection.Connection | None = None
@@ -244,9 +284,10 @@ class FeedViewer:
         self._data_conn = data_parent
         self._stop_conn = stop_parent
 
+        video_arg = None if self._video_source is not None else str(self._video_path)
         self._process = ctx.Process(
             target=_viewer_main,
-            args=(str(self._video_path), data_child, stop_child, ready_child),
+            args=(video_arg, data_child, stop_child, ready_child),
         )
         self._process.start()
         # Close child ends in the parent — only the child process uses them.
@@ -296,7 +337,7 @@ class FeedViewer:
         return self._process is not None and self._process.is_alive()
 
     def _push_state(self) -> None:
-        """Periodically send the latest target/perception to the child process."""
+        """Periodically send the latest state (and frame) to the child process."""
         while not self._pusher_stop.is_set():
             if self._process is None or not self._process.is_alive():
                 break
@@ -304,10 +345,15 @@ class FeedViewer:
             target: TargetInfo | None = self._store._target.get(self._arm_id)  # type: ignore[union-attr]
             perception: PerceptionInfo | None = self._store._perception.get(self._arm_id)  # type: ignore[union-attr]
 
-            # Push latest snapshot; child drains stale items on its end
             if self._data_conn is not None:
                 try:
-                    self._data_conn.send((target, perception))
+                    if self._video_source is not None:
+                        frame = self._video_source.latest_frame  # type: ignore[union-attr]
+                        if frame is not None:
+                            self._data_conn.send((frame, target, perception))
+                        # Skip send if no frame yet (source still starting)
+                    else:
+                        self._data_conn.send((target, perception))
                 except (BrokenPipeError, OSError):
                     break
 

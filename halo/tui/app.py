@@ -72,6 +72,11 @@ _DATA = dict(
     perc_obs_age_ms=45,
     perc_failure="OK",
     perc_hint_valid=True,
+    perc_active_consumed=0,
+    perc_active_total=0,
+    perc_pending_consumed=0,
+    perc_pending_total=0,
+    perc_has_pending=False,
     # ── Control Service state ──
     ctrl_status="RUNNING",
     ctrl_safety="OK",
@@ -137,6 +142,11 @@ _EMPTY_DATA = dict(
     perc_obs_age_ms=None,
     perc_failure=None,
     perc_hint_valid=None,
+    perc_active_consumed=None,
+    perc_active_total=None,
+    perc_pending_consumed=None,
+    perc_pending_total=None,
+    perc_has_pending=None,
     ctrl_status=None,
     ctrl_safety=None,
     ctrl_reflex=None,
@@ -273,6 +283,11 @@ def _snap_to_panel_data(snap: object, base: dict) -> dict:
     if perc is not None:
         data["perc_tracking"] = str(getattr(getattr(perc, "tracking_status", None), "value", ""))
         data["perc_failure"] = str(getattr(getattr(perc, "failure_code", None), "value", ""))
+        data["perc_active_consumed"] = getattr(perc, "active_buf_consumed", 0)
+        data["perc_active_total"] = getattr(perc, "active_buf_total", 0)
+        data["perc_pending_consumed"] = getattr(perc, "pending_buf_consumed", 0)
+        data["perc_pending_total"] = getattr(perc, "pending_buf_total", 0)
+        data["perc_has_pending"] = getattr(perc, "has_pending_tracker", False)
     if target is not None:
         data["perc_target"] = getattr(target, "handle", None)
         data["perc_center_px"] = getattr(target, "center_px", None)
@@ -412,7 +427,7 @@ class PlannerPanel(Container):
 
 
 class TargetPerceptionPanel(Container):
-    _ROW_IDS = ("status", "target", "center", "distance", "confidence", "obs-age", "code")
+    _ROW_IDS = ("status", "target", "center", "distance", "confidence", "obs-age", "code", "active-buf", "pending-buf")
 
     def __init__(self, data: dict = _DATA, tracker_name: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
@@ -494,6 +509,28 @@ class TargetPerceptionPanel(Container):
         failure = data["perc_failure"]
         fail_color = "bright_green" if failure == "OK" else ("yellow" if failure else "#9e9e9e")
         texts.append(row("Code:", failure or "—", fail_color))
+
+        # Active tracker buffer (consumed/total this tick)
+        has_pending = data.get("perc_has_pending", False)
+        a_con = data.get("perc_active_consumed")
+        a_tot = data.get("perc_active_total")
+        if a_tot is not None and a_tot > 0:
+            a_color = "#9e9e9e" if has_pending else "bright_green"
+            texts.append(row("Active:", f"{a_con}/{a_tot}", a_color))
+        elif a_tot is not None:
+            texts.append(row("Active:", "0", "#9e9e9e"))
+        else:
+            texts.append(row("Active:", "—", "#9e9e9e"))
+
+        # Pending tracker buffer (consumed/remaining this tick)
+        p_con = data.get("perc_pending_consumed")
+        p_tot = data.get("perc_pending_total")
+        if p_tot is not None and p_tot > 0:
+            texts.append(row("Pending:", f"{p_con}/{p_tot}", "yellow"))
+        elif has_pending:
+            texts.append(row("Pending:", "0", "yellow"))
+        else:
+            texts.append(row("Pending:", "—", "#9e9e9e"))
 
         return texts
 
@@ -850,7 +887,7 @@ class HALOApp(App):
     /* info containers shrink first; Talk + Panic hold their space */
     #left-info            { height: 1fr; min-height: 0; overflow: hidden hidden; }
     #right-info           { height: 1fr; min-height: 0; overflow: hidden hidden; }
-    TalkPanel             { height: 2fr; min-height: 14; }
+    TalkPanel             { height: 1fr; min-height: 10; }
     PanicPanel            { height: auto; min-height: 8;  }
 
     PlannerPanel          { height: 1fr; min-height: 9;  }
@@ -1009,6 +1046,7 @@ class HALOApp(App):
         perception_svc: object | None = None,
         run_logger: RunLogger | None = None,
         tracker_name: str = "",
+        video_source: object | None = None,
     ) -> None:
         super().__init__()
         self._runtime = runtime
@@ -1016,6 +1054,7 @@ class HALOApp(App):
         self._arm_id = arm_id
         self._perception_svc = perception_svc
         self._tracker_name = tracker_name
+        self._video_source = video_source
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
@@ -1175,6 +1214,7 @@ class HALOApp(App):
         viewer = FeedViewer(
             store=self._runtime.store,  # type: ignore[union-attr]
             arm_id=self._arm_id,
+            video_source=self._video_source,
         )
         if viewer.start():
             self._feed_viewer = viewer
@@ -1401,7 +1441,7 @@ def _run_live(args: list[str]) -> None:
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.service import TargetPerceptionService
     from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
-    from halo.services.target_perception_service.video_capture_fn import make_video_capture_fn
+    from halo.services.target_perception_service.video_source import VideoSource
 
     # Parse --arm, --model, --vlm-model, --base-url from args
     arm_id = "arm0"
@@ -1433,7 +1473,9 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
     )
 
-    capture_fn = make_video_capture_fn()
+    video_source = VideoSource()
+    video_source.start()
+    capture_fn = video_source.make_capture_fn(arm_id)
     tracker_factory_fn = make_tracker_factory_fn()
 
     perception_svc = TargetPerceptionService(
@@ -1452,7 +1494,10 @@ def _run_live(args: list[str]) -> None:
         perception_svc=perception_svc,
         run_logger=run_logger,
         tracker_name=get_tracker_name(),
+        video_source=video_source,
     ).run()
+
+    video_source.stop()
 
 
 def main() -> None:

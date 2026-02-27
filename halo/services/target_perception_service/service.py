@@ -199,6 +199,11 @@ class TargetPerceptionService:
         # Frame buffer + tracker switchover
         self._replay_buffer = FrameRingBuffer(max_size=config.frame_buffer_max_size)
         self._active_tracker_fn: TrackerUpdateFn | None = None
+        self._pending_tracker_fn: TrackerUpdateFn | None = None  # new tracker catching up
+        self._tick_active_consumed: int = 0
+        self._tick_active_total: int = 0
+        self._tick_pending_consumed: int = 0
+        self._tick_pending_total: int = 0
 
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -224,6 +229,7 @@ class TargetPerceptionService:
         self._replay_buffer.stop()
         self._replay_buffer.clear()
         self._active_tracker_fn = None
+        self._pending_tracker_fn = None
         if self._loop_task is not None:
             await self._loop_task
             self._loop_task = None
@@ -252,6 +258,7 @@ class TargetPerceptionService:
         self._last_obs = None
         self._awaiting_acquisition = True
         self._active_tracker_fn = None  # force back to observe_fn path
+        self._pending_tracker_fn = None
         self._last_tracked_center_px = None
         await self._cancel_vlm()
         self._spawn_vlm(emit_scene_described=False, for_new_target=True)
@@ -265,6 +272,7 @@ class TargetPerceptionService:
         self._tracking_status = TrackingStatus.LOST
         self._reacquire_fail_count = 0
         self._active_tracker_fn = None
+        self._pending_tracker_fn = None
         self._last_tracked_center_px = None
 
     async def request_refresh(self, mode: str = "reacquire", reason: str = "") -> None:
@@ -288,6 +296,36 @@ class TargetPerceptionService:
 
     # --- Testable internal ---
 
+    async def _capture_batch(self) -> list[CapturedFrame]:
+        """Drain the right number of frames from ``capture_fn`` per tick.
+
+        Computes frames-per-tick from ``capture_source_fps / fast_loop_hz``
+        (e.g. 30 / 10 = 3), capped at ``max_frames_per_tick``.
+
+        This is intentionally **not** wall-clock based: tick processing time
+        varies (pending tracker draining can take hundreds of ms), and
+        compensating for that delay by reading extra frames causes the
+        tracker to overshoot real-time.
+        """
+        if self._capture_fn is None:
+            return []
+
+        n_frames = max(
+            1,
+            min(
+                round(self._config.capture_source_fps / self._config.fast_loop_hz),
+                self._config.max_frames_per_tick,
+            ),
+        )
+
+        frames: list[CapturedFrame] = []
+        for _ in range(n_frames):
+            try:
+                frames.append(await self._capture_fn(self._arm_id))
+            except Exception:
+                break
+        return frames
+
     async def tick(self) -> None:
         """
         One perception tick. Callable directly in tests.
@@ -301,33 +339,71 @@ class TargetPerceptionService:
             )
             return
 
-        # --- Frame capture: push into replay buffer if VLM inference is active ---
-        captured_frame: CapturedFrame | None = None
-        if self._capture_fn is not None and self._replay_buffer.is_active:
-            try:
-                captured_frame = await self._capture_fn(self._arm_id)
-                self._replay_buffer.push(captured_frame)
-            except Exception:
-                pass  # capture failure is non-critical
+        # --- Capture fresh frames ---
+        fresh_frames: list[CapturedFrame] = []
+        has_tracker = self._active_tracker_fn is not None or self._pending_tracker_fn is not None
+        need_capture = self._capture_fn is not None and (self._replay_buffer.is_active or has_tracker)
+        if need_capture:
+            fresh_frames = await self._capture_batch()
 
-        # --- Obtain observation from the active tracking source ---
+        # --- Push fresh frames into replay buffer (during VLM or pending catchup) ---
+        if self._replay_buffer.is_active:
+            for frame in fresh_frames:
+                self._replay_buffer.push(frame)
 
-        if self._active_tracker_fn is not None:
-            # Post-switchover: buffer-fed tracker.
-            if captured_frame is None and self._capture_fn is not None:
-                try:
-                    captured_frame = await self._capture_fn(self._arm_id)
-                except Exception:
-                    captured_frame = None
-            if captured_frame is not None:
-                try:
-                    obs = await self._active_tracker_fn(captured_frame)
-                except Exception:
-                    obs = None
-            else:
-                obs = None
-            # Active tracker path: skip vlm_seed consumption (already used at init)
-            return await self._apply_gates_and_publish(obs)
+        # --- Dual-tracker path ---
+        if self._active_tracker_fn is not None or self._pending_tracker_fn is not None:
+            obs = None
+            self._tick_active_consumed = 0
+            self._tick_active_total = len(fresh_frames)
+            self._tick_pending_consumed = 0
+            self._tick_pending_total = 0
+
+            # 1. Feed fresh frames to active (old) tracker for live observations
+            if self._active_tracker_fn is not None:
+                for frame in fresh_frames:
+                    try:
+                        result = await self._active_tracker_fn(frame)
+                        if result is not None:
+                            obs = result
+                        self._tick_active_consumed += 1
+                    except Exception:
+                        pass
+
+            # 2. Drain pending (new) tracker's buffer
+            if self._pending_tracker_fn is not None:
+                buf_remaining = self._replay_buffer.remaining
+                self._tick_pending_total = buf_remaining
+
+                if buf_remaining > 0:
+                    n = min(buf_remaining, self._config.max_frames_per_tick)
+                    batch, _ = self._replay_buffer.read_from(self._replay_buffer.cursor)
+                    pending_frames = batch[:n]
+                    self._replay_buffer.advance_cursor(self._replay_buffer.cursor + len(pending_frames))
+                    self._tick_pending_consumed = len(pending_frames)
+
+                    pending_obs = None
+                    for frame in pending_frames:
+                        try:
+                            result = await self._pending_tracker_fn(frame)
+                            if result is not None:
+                                pending_obs = result
+                        except Exception:
+                            pass
+
+                    # If no active tracker, pending provides obs
+                    if self._active_tracker_fn is None and pending_obs is not None:
+                        obs = pending_obs
+
+                # Check if pending tracker has caught up
+                if self._replay_buffer.remaining == 0:
+                    self._active_tracker_fn = self._pending_tracker_fn
+                    self._pending_tracker_fn = None
+                    self._replay_buffer.stop()
+                    self._replay_buffer.clear()
+
+            status_override = TrackingStatus.REACQUIRING if self._pending_tracker_fn is not None else None
+            return await self._apply_gates_and_publish(obs, status_override=status_override)
 
         if self._observe_fn is None:
             # VLM-only mode: no fast tracker.
@@ -365,7 +441,9 @@ class TargetPerceptionService:
 
     # --- Private: plausibility gates + publish ---
 
-    async def _apply_gates_and_publish(self, obs: TargetInfo | None) -> None:
+    async def _apply_gates_and_publish(
+        self, obs: TargetInfo | None, *, status_override: TrackingStatus | None = None
+    ) -> None:
         """Apply plausibility gates to *obs* and publish the result."""
         if obs is None:
             # If tracker init retries are exhausted (LOST), don't overwrite.
@@ -403,6 +481,8 @@ class TargetPerceptionService:
             obs = dataclasses.replace(obs, hint_valid=False)
 
         tracking_status = TrackingStatus.TRACKING if hint_valid else TrackingStatus.RELOCALIZING
+        if status_override is not None:
+            tracking_status = status_override
 
         if tracking_status == TrackingStatus.TRACKING:
             self._vlm_job_pending = False
@@ -463,6 +543,11 @@ class TargetPerceptionService:
                 failure_code=failure_code,
                 reacquire_fail_count=self._reacquire_fail_count,
                 vlm_job_pending=self._vlm_job_pending,
+                active_buf_consumed=self._tick_active_consumed,
+                active_buf_total=self._tick_active_total,
+                pending_buf_consumed=self._tick_pending_consumed,
+                pending_buf_total=self._tick_pending_total,
+                has_pending_tracker=self._pending_tracker_fn is not None,
             ),
         )
 
@@ -557,6 +642,7 @@ class TargetPerceptionService:
         self._vlm_task = None
         self._vlm_active_run_id = 0
         self._vlm_job_pending = False
+        self._pending_tracker_fn = None
         self._replay_buffer.stop()
         self._replay_buffer.clear()
         if task is not None and not task.done():
@@ -665,7 +751,7 @@ class TargetPerceptionService:
                 replay_result = await self._replay_and_init_tracker(match)
                 if replay_result is not None:
                     latest, update_fn = replay_result
-                    self._active_tracker_fn = update_fn
+                    self._pending_tracker_fn = update_fn
                     self._vlm_seed = latest
                     self._reacquire_fail_count = 0
                     attempt_num = self._tracker_init_attempts
@@ -829,7 +915,7 @@ class TargetPerceptionService:
             self._run_logger.log_tracker(
                 event="replay_start",
                 target_handle=detection.handle,
-                detail=f"frames={len(frames)} bbox={detection.bbox}",
+                detail=f"buffered={len(frames)} bbox={detection.bbox}",
             )
 
         # Initialise tracker on the first frame.
@@ -846,32 +932,9 @@ class TargetPerceptionService:
             self._replay_buffer.clear()
             return None
 
-        # Replay remaining frames from the initial batch.
-        for frame in frames[1:]:
-            try:
-                result = await update_fn(frame)
-                if result is not None:
-                    latest = result
-            except Exception:
-                break
+        # Keep buffer active — tick() will push fresh frames (for the new
+        # tracker to catch up) and drain up to max_frames_per_tick per tick.
+        # Frame 0 was consumed by init.
+        self._replay_buffer.advance_cursor(1)
 
-        # Consume frames that arrived during replay (and keep going until caught up).
-        while True:
-            frames, read_idx = self._replay_buffer.read_from(read_idx)
-            if not frames:
-                # Yield once to let tick() push any pending frame.
-                await asyncio.sleep(0)
-                frames, read_idx = self._replay_buffer.read_from(read_idx)
-                if not frames:
-                    break  # truly caught up
-            for frame in frames:
-                try:
-                    result = await update_fn(frame)
-                    if result is not None:
-                        latest = result
-                except Exception:
-                    break
-
-        self._replay_buffer.stop()
-        self._replay_buffer.clear()
         return latest, update_fn

@@ -43,6 +43,11 @@ class PerceptionInfo:
     failure_code: PerceptionFailureCode
     reacquire_fail_count: int
     vlm_job_pending: bool
+    active_buf_consumed: int = 0  # frames fed to active tracker this tick
+    active_buf_total: int = 0  # frames available for active tracker this tick
+    pending_buf_consumed: int = 0  # frames drained from pending buffer this tick
+    pending_buf_total: int = 0  # pending buffer remaining at start of tick
+    has_pending_tracker: bool = False
 
 
 @dataclass(frozen=True)
