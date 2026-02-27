@@ -115,6 +115,12 @@ def test_target_info_from_bbox_zeroed_3d():
     assert info.distance_m == 0.0
 
 
+def test_target_info_from_bbox_propagates_bbox_xywh():
+    bbox = (100, 200, 50, 80)
+    info = _target_info_from_bbox("cube-1", bbox)
+    assert info.bbox_xywh == bbox
+
+
 # ---------------------------------------------------------------------------
 # _create_tracker — fallback chain
 # ---------------------------------------------------------------------------

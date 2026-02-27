@@ -42,6 +42,30 @@
           "description": "Euclidean distance from EE to target in metres.",
           "type": "number",
           "minimum": 0.0
+        },
+        "center_px": {
+          "description": "Bounding-box centroid in pixel coordinates [cx, cy]. Null when unavailable.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            { "type": "null" }
+          ]
+        },
+        "bbox_xywh": {
+          "description": "Bounding box in pixels [x, y, width, height]. Null when unavailable.",
+          "oneOf": [
+            {
+              "type": "array",
+              "items": { "type": "integer" },
+              "minItems": 4,
+              "maxItems": 4
+            },
+            { "type": "null" }
+          ]
         }
       }
     },

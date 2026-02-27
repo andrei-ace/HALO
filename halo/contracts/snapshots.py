@@ -34,6 +34,7 @@ class TargetInfo:
     delta_xyz_ee: tuple[float, float, float]
     distance_m: float
     center_px: tuple[float, float] | None = None  # bbox centroid in pixel coords (cx, cy)
+    bbox_xywh: tuple[int, int, int, int] | None = None  # bounding box (x, y, w, h) in pixels
 
 
 @dataclass(frozen=True)

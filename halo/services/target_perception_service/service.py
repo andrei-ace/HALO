@@ -706,10 +706,7 @@ class TargetPerceptionService:
         try:
             sig = inspect.signature(self._vlm_fn)
             params = sig.parameters.values()
-            supports = (
-                "target_handle" in sig.parameters
-                or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
-            )
+            supports = "target_handle" in sig.parameters or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
         except (TypeError, ValueError):
             supports = False
         self._vlm_accepts_target_handle = supports

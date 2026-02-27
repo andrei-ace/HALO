@@ -68,6 +68,7 @@ def _target_info_from_bbox(
         delta_xyz_ee=(0.0, 0.0, 0.0),
         distance_m=0.0,
         center_px=(cx, cy),
+        bbox_xywh=bbox_xywh,
     )
 
 

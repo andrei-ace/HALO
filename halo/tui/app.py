@@ -169,6 +169,7 @@ _LEGEND = [
     ("Esc", "Clear input and return to monitoring mode"),
     ("R", "Show full planner reasoning (Ctrl+Y to copy inside)"),
     ("Y", "Yank — copy last reasoning to clipboard instantly"),
+    ("F", "Toggle OpenCV camera feed viewer (live mode only)"),
     ("A", "Emergency abort — always fires (even while typing)"),
     ("Ctrl+Q", "Quit"),
     ("?", "Show / hide this legend"),
@@ -992,6 +993,7 @@ class HALOApp(App):
         Binding("escape", "cancel_input", "cancel", show=False),
         Binding("r", "show_reasoning", "reasoning", show=False),
         Binding("y", "yank_reasoning", "yank", show=False),
+        Binding("f", "toggle_feed", "feed", show=False),
         Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
@@ -1023,6 +1025,7 @@ class HALOApp(App):
             self._run_logger = RunLogger(_RUNS_DIR, arm_id) if runtime is not None else None
         self._last_operator_msg: str | None = None
         self._agent_queue: asyncio.Queue[str] | None = None
+        self._feed_viewer: object | None = None  # FeedViewer instance (lazy import)
 
     async def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
@@ -1041,6 +1044,9 @@ class HALOApp(App):
             await self._perception_svc.request_refresh(reason="startup")  # type: ignore[union-attr]
 
     async def on_unmount(self) -> None:
+        if self._feed_viewer is not None:
+            self._feed_viewer.stop()  # type: ignore[union-attr]
+            self._feed_viewer = None
         if self._perception_svc is not None:
             await self._perception_svc.stop()  # type: ignore[union-attr]
         if self._run_logger:
@@ -1146,6 +1152,35 @@ class HALOApp(App):
             self.notify("Reasoning copied to clipboard", timeout=3)
         else:
             self.notify("Copy failed — check clipboard tool", severity="warning", timeout=3)
+
+    def action_toggle_feed(self) -> None:
+        if not self._runtime:
+            self.notify("Feed viewer requires live mode", severity="warning", timeout=3)
+            return
+
+        # Already running — stop it
+        if self._feed_viewer is not None and self._feed_viewer.is_running:  # type: ignore[union-attr]
+            self._feed_viewer.stop()  # type: ignore[union-attr]
+            self._feed_viewer = None
+            self.notify("Feed viewer closed", timeout=3)
+            return
+
+        # Lazy import so the viewer extra is truly optional
+        try:
+            from halo.tui.feed_viewer import FeedViewer
+        except ImportError:
+            self.notify("opencv-python not installed — run: uv sync --extra viewer", severity="error", timeout=5)
+            return
+
+        viewer = FeedViewer(
+            store=self._runtime.store,  # type: ignore[union-attr]
+            arm_id=self._arm_id,
+        )
+        if viewer.start():
+            self._feed_viewer = viewer
+            self.notify("Feed viewer opened (Q/Esc in window to close)", timeout=3)
+        else:
+            self.notify("Cannot open feed viewer — headless OpenCV build?", severity="error", timeout=5)
 
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
