@@ -13,14 +13,20 @@ dependencies = [
     "langchain>=0.3",
     "langchain-ollama>=0.2",
     "langchain-core>=0.3",
-    "opencv-python-headless>=4.8",
+    "opencv-python>=4.8",
+    "pyzmq>=25",
+    "msgpack>=1.0",
+    "halo-mujoco-sim",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8"]
-viewer = ["opencv-python>=4.8"]
-sim = ["pyzmq>=25", "msgpack>=1.0"]
-mujoco = ["robosuite>=1.5", "mujoco>=3.0"]
+
+[tool.uv.workspace]
+members = ["mujoco_sim"]
+
+[tool.uv.sources]
+halo-mujoco-sim = { workspace = true }
 
 [tool.ruff]
 line-length = 120
@@ -31,7 +37,7 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "mujoco_sim/mujoco_sim/tests"]
 markers = [
     "integration: LLM integration tests — require a running Ollama instance",
     "component: component tests — one real service with mocked deps and latency",
