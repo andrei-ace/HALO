@@ -84,13 +84,12 @@ _DATA = dict(
     ctrl_action_xyz=(0.12, -0.05, 0.08),
     ctrl_gripper=0.0,
     servos=[
-        ("J1", "shoulder", "OK", 0.00, 0.01),
-        ("J2", "shoulder", "OK", -0.79, 0.02),
+        ("J1", "shldr_pan", "OK", 0.00, 0.01),
+        ("J2", "shldr_lift", "OK", -0.79, 0.02),
         ("J3", "elbow", "OK", 0.00, -0.01),
-        ("J4", "elbow", "OK", -2.36, 0.03),
-        ("J5", "wrist", "OK", 0.00, 0.00),
-        ("J6", "wrist", "OK", 1.57, -0.02),
-        ("J7", "wrist", "OK", 0.79, 0.01),
+        ("J4", "wrist_flex", "OK", -2.36, 0.03),
+        ("J5", "wrist_roll", "OK", 0.00, 0.00),
+        ("J6", "gripper", "OK", -0.17, -0.02),
     ],
     # Prompt history — shown newest-at-bottom inside the Talk panel
     prompt_history=[
@@ -154,13 +153,12 @@ _EMPTY_DATA = dict(
     ctrl_action_xyz=None,
     ctrl_gripper=None,
     servos=[
-        ("J1", "shoulder", "NC", None, None),
-        ("J2", "shoulder", "NC", None, None),
+        ("J1", "shldr_pan", "NC", None, None),
+        ("J2", "shldr_lift", "NC", None, None),
         ("J3", "elbow", "NC", None, None),
-        ("J4", "elbow", "NC", None, None),
-        ("J5", "wrist", "NC", None, None),
-        ("J6", "wrist", "NC", None, None),
-        ("J7", "wrist", "NC", None, None),
+        ("J4", "wrist_flex", "NC", None, None),
+        ("J5", "wrist_roll", "NC", None, None),
+        ("J6", "gripper", "NC", None, None),
     ],
     prompt_history=[],
     suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
@@ -591,7 +589,7 @@ class ServosPanel(Container):
         self._data = data
 
     def on_mount(self) -> None:
-        self.border_title = "Joints (7DOF)"
+        self.border_title = "Joints (6DOF)"
 
     @staticmethod
     def _vel_bar(vel: float, width: int = 6, max_vel: float = 2.0) -> Text:
@@ -1265,9 +1263,8 @@ class HALOApp(App):
         except Exception:
             pass
 
-    # Panda 7-DOF joint names (mirrored from mujoco_sim.constants.PANDA_JOINT_NAMES
-    # to avoid a hard dependency on the sim extra).
-    _PANDA_JOINT_NAMES = ("shoulder", "shoulder", "elbow", "elbow", "wrist", "wrist", "wrist")
+    # SO-101 6-DOF joint names (5 arm + 1 gripper).
+    _SO101_JOINT_NAMES = ("shldr_pan", "shldr_lift", "elbow", "wrist_flex", "wrist_roll", "gripper")
 
     def _update_joints_panel(self) -> None:
         """Build servos list from MuJocoVideoSource qpos/qvel and refresh the panel."""
@@ -1277,12 +1274,12 @@ class HALOApp(App):
         qvel = getattr(self._video_source, "latest_qvel", None)
         if qpos is None:
             return
-        n = min(len(self._PANDA_JOINT_NAMES), len(qpos))
+        n = min(len(self._SO101_JOINT_NAMES), len(qpos))
         servos = []
         for i in range(n):
             jid = f"J{i + 1}"
             vel = float(qvel[i]) if qvel is not None and i < len(qvel) else 0.0
-            servos.append((jid, self._PANDA_JOINT_NAMES[i], "OK", float(qpos[i]), vel))
+            servos.append((jid, self._SO101_JOINT_NAMES[i], "OK", float(qpos[i]), vel))
         self.query_one("#servos-panel", ServosPanel).refresh_live(servos)
 
     def _with_task_context(self, system_msg: str) -> str:
