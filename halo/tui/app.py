@@ -1445,8 +1445,8 @@ def _run_live(args: list[str]) -> None:
 
     # Parse --arm, --model, --vlm-model, --base-url from args
     arm_id = "arm0"
-    model = "gpt-oss"
-    vlm_model = "qwen2.5vl"
+    model = "gpt-oss:20b"
+    vlm_model = "qwen2.5vl:3b"
     base_url = "http://localhost:11434"
 
     for i, arg in enumerate(args):

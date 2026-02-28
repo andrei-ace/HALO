@@ -693,7 +693,6 @@ class TargetPerceptionService:
             scene = _stabilize_scene_for_tracked_target(scene, stabilize_handle, stabilize_center_px)
 
             self._known_handles = [d.handle for d in scene.detections]
-            det_summary = [{"handle": d.handle, "label": d.label} for d in scene.detections]
             det_log = [{"handle": d.handle, "label": d.label, "bbox": d.bbox} for d in scene.detections]
 
             if emit_scene_described:
@@ -702,7 +701,7 @@ class TargetPerceptionService:
                     {
                         "target_handle": target_handle or "",
                         "scene": scene.scene,
-                        "detections": det_summary,
+                        "detections": det_log,
                         "count": len(scene.detections),
                         "inference_ms": inference_ms,
                     },

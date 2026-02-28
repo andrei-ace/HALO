@@ -1,10 +1,13 @@
-.PHONY: install test test-v test-file test-k test-integration tui-mock tui-live ruff help
+.PHONY: install test test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration tui-mock tui-live run-headless-mock run-headless-live ruff help
 
 install:
 	uv sync --extra dev
 
 test:
 	uv run pytest
+
+test-unit:
+	uv run pytest tests/ --ignore=tests/component --ignore=tests/system --ignore=tests/e2e
 
 test-v:
 	uv run pytest -v
@@ -30,6 +33,28 @@ tui-live:
 		--vlm-model $(VLM_MODEL) \
 		--base-url $(OLLAMA_URL)
 
+test-component:
+	uv run pytest tests/component/ -v
+
+test-system:
+	uv run pytest tests/system/ -v
+
+test-e2e:
+	uv run pytest tests/e2e/ -v -s $(ARGS)
+
+test-e2e-all:
+	uv run pytest tests/e2e/ -v -s --run-all-vlm-models
+
+run-headless-mock:
+	uv run python -m halo.runner --mock --duration 30
+
+run-headless-live:
+	uv run python -m halo.runner \
+		--model $(PLANNER_MODEL) \
+		--vlm-model $(VLM_MODEL) \
+		--base-url $(OLLAMA_URL) \
+		--arm $(ARM_ID)
+
 ruff:
 	uv run ruff check --fix .
 	uv run ruff format .
@@ -43,12 +68,19 @@ test-integration:
 		2>&1 | tee $(RUN_DIR)/output.log
 
 help:
-	@echo "install    install deps (uv sync --extra dev)"
-	@echo "test       run all tests"
-	@echo "test-v     run all tests (verbose)"
-	@echo "test-file  run one file:  make test-file FILE=tests/test_foo.py"
-	@echo "test-k     run by name:   make test-k K=test_snapshot_ids_increment"
-	@echo "ruff              run ruff check --fix + format"
-	@echo "test-integration  run LLM integration tests (requires Ollama)"
-	@echo "tui-mock          launch the HALO terminal dashboard (mock mode, no Ollama needed)"
-	@echo "tui-live          launch the TUI wired to HALORuntime + PlannerAgent (requires Ollama)"
+	@echo "install            install deps (uv sync --extra dev)"
+	@echo "test               run all unit tests"
+	@echo "test-unit          run unit tests (excluding component/system/e2e)"
+	@echo "test-v             run all tests (verbose)"
+	@echo "test-file          run one file:  make test-file FILE=tests/test_foo.py"
+	@echo "test-k             run by name:   make test-k K=test_snapshot_ids_increment"
+	@echo "test-component     run component tests (mocked latency, no Ollama)"
+	@echo "test-system        run system tests (all services, mocked deps)"
+	@echo "test-e2e           run E2E tests (real Ollama + VLM, 3b only)"
+	@echo "test-e2e-all       run E2E tests with all VLM models (3b + 7b)"
+	@echo "test-integration   run LLM integration tests (requires Ollama)"
+	@echo "ruff               run ruff check --fix + format"
+	@echo "run-headless-mock  run headless HALO (mock mode)"
+	@echo "run-headless-live  run headless HALO (live, requires Ollama)"
+	@echo "tui-mock           launch the HALO terminal dashboard (mock mode)"
+	@echo "tui-live           launch the TUI wired to HALORuntime + PlannerAgent"

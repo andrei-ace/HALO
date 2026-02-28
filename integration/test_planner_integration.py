@@ -12,7 +12,7 @@ Run explicitly:
 
 Environment:
     HALO_OLLAMA_URL    Ollama base URL  (default: http://localhost:11434)
-    HALO_MODEL_NAME    Model to use     (default: gpt-oss)
+    HALO_MODEL_NAME    Model to use     (default: gpt-oss:20b)
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ pytestmark = [pytest.mark.integration]
 # ---------------------------------------------------------------------------
 
 OLLAMA_URL = os.getenv("HALO_OLLAMA_URL", "http://localhost:11434")
-MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss")
+MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss:20b")
 
 # Fixed timestamp — avoids nondeterminism if the agent ever reasons about
 # time deltas and makes failure reproduction easier.

@@ -192,7 +192,7 @@ class PlannerAgent:
 
 
 def make_decide_fn(
-    model_name: str = "gpt-oss",
+    model_name: str = "gpt-oss:20b",
     base_url: str = "http://localhost:11434",
     prompts_dir: Path | str | None = None,
 ) -> DecideFn:

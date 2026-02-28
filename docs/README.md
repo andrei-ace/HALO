@@ -26,8 +26,8 @@ graph TB
         CR["CommandRouter"]
     end
 
-    PS["PlannerService\n(LLM: gpt-oss)"]
-    TPS["TargetPerceptionService\n(VLM: qwen2.5vl)"]
+    PS["PlannerService\n(LLM: gpt-oss:20b)"]
+    TPS["TargetPerceptionService\n(VLM: qwen2.5vl:3b)"]
     SRS["SkillRunnerService\n(Pick FSM + ACT)"]
     CS["ControlService\n(50-100 Hz)"]
     SG["SafetyGuard\n(Reflex Layer)"]

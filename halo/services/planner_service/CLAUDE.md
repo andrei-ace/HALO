@@ -18,7 +18,7 @@ Event-driven LLM orchestrator (30 s watchdog). Fetches the latest runtime snapsh
 DecideFn = Callable[[PlannerSnapshot], Awaitable[list[CommandEnvelope]]]
 
 PlannerService(arm_id, runtime, decide_fn, config=PlannerServiceConfig())
-PlannerAgent(model_name="gpt-oss", base_url="http://localhost:11434", prompts_dir=...)
+PlannerAgent(model_name="gpt-oss:20b", base_url="http://localhost:11434", prompts_dir=...)
 make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 ```
 
@@ -36,7 +36,7 @@ make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 
 ## PlannerAgent Design
 
-- **LLM**: ChatOllama (local Ollama, `gpt-oss` default)
+- **LLM**: ChatOllama (local Ollama, `gpt-oss:20b` default)
 - **Checkpointer**: InMemorySaver (conversation persists across ticks in memory)
 - **Middleware** (`_deprecate_old_snapshots`): replaces all but the latest "Current robot state:" message with a deprecation notice — enforces exactly-one-snapshot invariant
 - **Loop detection** (MAX_LOOP_RETRIES=4): tracks consecutive identical commands across ticks; rejects batch on streak >= 4

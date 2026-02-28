@@ -29,6 +29,7 @@ runs/
 
 # data
 data/
+!data/video.mp4
 datasets/
 
 # model weights (binary, use Git LFS or download separately)

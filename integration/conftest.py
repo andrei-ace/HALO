@@ -21,7 +21,7 @@ from langchain_core.globals import set_debug
 set_debug(True)
 
 OLLAMA_URL = os.getenv("HALO_OLLAMA_URL", "http://localhost:11434")
-MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss")
+MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss:20b")
 
 
 def _ollama_skip_reason() -> str | None:

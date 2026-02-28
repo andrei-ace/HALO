@@ -15,7 +15,7 @@ Scope: HALO — v1: Isaac Sim/Lab, single-arm pick/place, local models via Ollam
 
 ### Core modules
 1) **Planner (agentic, stateful)**
-   - Model: `gpt-oss` (Ollama)
+   - Model: `gpt-oss:20b` (Ollama)
    - Responsibilities:
      - Task-level orchestration (choose next skill / handle failures / retries / target selection).
      - Tool use via commands + cached-state queries.
