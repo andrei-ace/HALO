@@ -43,7 +43,7 @@ All v0 backbone services are implemented and tested:
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
 | Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ sim_apply_fn, sim_observe_fn, sim_chunk_fn, transforms) |
-| MuJoCo sim (`mujoco_sim/`) | 🚧 in progress (robosuite pick-cube env, teacher, bridge) |
+| MuJoCo sim (`mujoco_sim/`) | 🚧 in progress — PR1-3 done (env, dataset, teacher); PR4-6 pending (phase FSM, VCR, annotation) |
 | Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
 The TUI supports two modes:
@@ -83,7 +83,7 @@ halo/
     safety/         # (planned)
   tools/            # (planned) ollama_clients/, zed_capture/, uvc_capture/
   eval/             # (planned) sim/, real/
-mujoco_sim/         # MuJoCo + robosuite sim (current — teacher demos, ACT training, eval)
+mujoco_sim/         # MuJoCo + robosuite sim (PR1-3 done: env, dataset, teacher; see mujoco_sim/ROADMAP.md)
 sim/                # Isaac Lab extension (planned — see sim/README.md)
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
@@ -171,7 +171,7 @@ Current sim work uses MuJoCo + robosuite (phase 1), then Isaac Lab (phase 2). Th
 
 ## Sim strategy (three phases)
 
-**Phase 1 — MuJoCo + robosuite (current):** Single-env teacher demos, ACT training pipeline, closed-loop eval. See `mujoco_sim/`.
+**Phase 1 — MuJoCo + robosuite (current):** Single-env teacher demos, ACT training pipeline, closed-loop eval. PR1-3 done (env wrapper, HDF5 episode format, scripted teacher with 5 s stabilization + phase tracking). See `mujoco_sim/ROADMAP.md`.
 
 **Phase 2 — Isaac Lab (future):** GPU-accelerated parallel envs (64 envs on A6000), domain randomization at scale, sim-to-real transfer. See `sim/README.md`.
 

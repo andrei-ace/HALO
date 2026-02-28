@@ -20,7 +20,13 @@ SCENE_H, SCENE_W = 48, 64  # small for tests
 WRIST_H, WRIST_W = 24, 32
 
 
-def _make_timestep(i: int, *, with_object: bool = True, with_contacts: bool = False) -> Timestep:
+def _make_timestep(
+    i: int,
+    *,
+    with_object: bool = True,
+    with_contacts: bool = False,
+    with_phase: bool = False,
+) -> Timestep:
     """Create a synthetic timestep with deterministic values."""
     rng = np.random.RandomState(i)
     ts = Timestep(
@@ -31,6 +37,7 @@ def _make_timestep(i: int, *, with_object: bool = True, with_contacts: bool = Fa
         gripper=float(rng.rand()),
         ee_pose=rng.randn(7).astype(np.float64),
         action=rng.randn(7).astype(np.float64),
+        phase_id=i % 10 if with_phase else None,
         object_pose=rng.randn(7).astype(np.float64) if with_object else None,
         contacts=rng.randn(rng.randint(1, 5)).astype(np.float64) if with_contacts else None,
     )
@@ -64,8 +71,13 @@ class TestTimestep:
 
     def test_optional_fields_none(self):
         ts = _make_timestep(0, with_object=False, with_contacts=False)
+        assert ts.phase_id is None
         assert ts.object_pose is None
         assert ts.contacts is None
+
+    def test_phase_id_set(self):
+        ts = _make_timestep(3, with_phase=True)
+        assert ts.phase_id == 3
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +142,16 @@ class TestRawEpisode:
     def test_bulk_object_poses_absent(self):
         ep = _make_episode(5, with_object=False)
         assert ep.object_poses is None
+
+    def test_bulk_phase_ids_present(self):
+        ep = _make_episode(5, with_phase=True)
+        assert ep.phase_ids is not None
+        assert ep.phase_ids.shape == (5,)
+        assert ep.phase_ids.dtype == np.int32
+
+    def test_bulk_phase_ids_absent(self):
+        ep = _make_episode(5)
+        assert ep.phase_ids is None
 
     def test_metadata_defaults(self):
         ep = RawEpisode()
@@ -222,6 +244,25 @@ class TestHDF5Roundtrip:
             assert f["obs/rgb_wrist"].compression == "gzip"
             # Non-image datasets should not be compressed
             assert f["obs/qpos"].compression is None
+
+    def test_roundtrip_with_phase_ids(self, tmp_path):
+        """Phase IDs survive roundtrip."""
+        ep = _make_episode(5, with_phase=True)
+        out = write_episode(ep, tmp_path / "phases.hdf5")
+        loaded = read_episode(out)
+
+        assert loaded.phase_ids is not None
+        np.testing.assert_array_equal(loaded.phase_ids, ep.phase_ids)
+        for i in range(len(ep)):
+            assert loaded[i].phase_id == ep[i].phase_id
+
+    def test_roundtrip_without_phase_ids(self, tmp_path):
+        """Episodes without phase_ids roundtrip as None."""
+        ep = _make_episode(5)
+        out = write_episode(ep, tmp_path / "no_phases.hdf5")
+        loaded = read_episode(out)
+        assert loaded.phase_ids is None
+        assert loaded[0].phase_id is None
 
     def test_bulk_arrays_match_after_roundtrip(self, tmp_path):
         """Bulk accessors on loaded episode match original."""

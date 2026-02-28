@@ -21,6 +21,7 @@ def write_episode(episode: RawEpisode, path: str | Path) -> Path:
         /obs/qvel        (T, nv)
         /obs/gripper     (T,)
         /obs/ee_pose     (T, 7)
+        /obs/phase_id    (T,) int32         — only if present
         /obs/object_pose (T, 7)            — only if present
         /obs/contacts/step_NNNNNN (N,)     — only if present
         /action          (T, 7)
@@ -62,6 +63,11 @@ def write_episode(episode: RawEpisode, path: str | Path) -> Path:
             for i, c in enumerate(contacts):
                 if c is not None:
                     cg.create_dataset(f"step_{i:06d}", data=c)
+
+        # Optional phase IDs (teacher/detector labels)
+        phase_ids = episode.phase_ids
+        if phase_ids is not None:
+            obs.create_dataset("phase_id", data=phase_ids)
 
         # Actions
         f.create_dataset("action", data=episode.actions)

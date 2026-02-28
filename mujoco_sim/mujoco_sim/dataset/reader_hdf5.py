@@ -49,6 +49,9 @@ def read_episode(path: str | Path) -> RawEpisode:
         ee_poses = obs["ee_pose"][:]
         actions = f["action"][:]
 
+        has_phase_id = "phase_id" in obs
+        phase_ids = obs["phase_id"][:] if has_phase_id else None
+
         has_object = "object_pose" in obs
         object_poses = obs["object_pose"][:] if has_object else None
 
@@ -65,6 +68,8 @@ def read_episode(path: str | Path) -> RawEpisode:
                 if key in contacts_group:
                     contacts = np.array(contacts_group[key])
 
+            phase_id = int(phase_ids[i]) if phase_ids is not None else None
+
             ts = Timestep(
                 rgb_scene=rgb_scenes[i],
                 rgb_wrist=rgb_wrists[i],
@@ -73,6 +78,7 @@ def read_episode(path: str | Path) -> RawEpisode:
                 gripper=float(gripper_arr[i]),
                 ee_pose=ee_poses[i],
                 action=actions[i],
+                phase_id=phase_id,
                 object_pose=obj_pose,
                 contacts=contacts,
             )

@@ -91,7 +91,7 @@ Foundation: `RobosuiteEnv` wrapper with dual cameras, seeded resets, 7-DOF EE-de
 
 ### PR2 — Episode Recording Format ✅
 
-**Timestep** dataclass: `rgb_scene(H,W,3)`, `rgb_wrist(H,W,3)`, `qpos(nq)`, `qvel(nv)`, `gripper(float)`, `ee_pose(7)`, `action(7)`, optional `object_pose(7)`, `contacts(N)`
+**Timestep** dataclass: `rgb_scene(H,W,3)`, `rgb_wrist(H,W,3)`, `qpos(nq)`, `qvel(nv)`, `gripper(float)`, `ee_pose(7)`, `action(7)`, optional `phase_id(int)`, `object_pose(7)`, `contacts(N)`
 
 **RawEpisode** — in-memory buffer with `append(Timestep)`, indexing, bulk numpy accessors
 
@@ -107,13 +107,21 @@ Foundation: `RobosuiteEnv` wrapper with dual cameras, seeded resets, 7-DOF EE-de
 - `tests/test_raw_episode.py` — 24 tests (Timestep, RawEpisode, HDF5 roundtrip, gzip, metadata)
 - Fixed `pyproject.toml` — added `[tool.hatch.build.targets.wheel]` packages + correct testpaths
 
-### PR3 — Teacher Runner (current)
+### PR3 — Teacher Runner ✅
 
-**PickTeacher** — scripted PICK using privileged sim state (ground-truth cube_pos, ee_pos). Phase sequence mirrors `sim/halo_sim/teacher/teacher_fsm.py`. `step(ee_pos, cube_pos) → (action[7], phase_id, done)`
+**PickTeacher** — scripted PICK using privileged sim state (ground-truth cube_pos, ee_pos). Phase sequence mirrors `sim/halo_sim/teacher/teacher_fsm.py`. `step(obs) → (action[7], phase_id, done)`
 
-**run_teacher** — loop: reset env → reset teacher → step until done → write HDF5
+**run_teacher** — loop: reset env → stabilize (5 s) → run teacher → write HDF5
 
-### PR4 — Offline Phase Detection
+**Delivered:**
+- `teacher/pick_teacher.py` — `PickTeacher` + `TeacherConfig` (proportional control, same thresholds as SkillRunnerConfig)
+- `runner/run_teacher.py` — `run_teacher()` with stabilization phase + `_run_single_episode()` helper
+- `scripts/generate_episodes.py` — CLI: `python -m mujoco_sim.scripts.generate_episodes --num-episodes 10`
+- `tests/test_pick_teacher.py` — 19 tests (init, phase transitions, action output, full episode)
+- `Timestep.phase_id` field added — persisted in HDF5, roundtripped in reader
+- Stabilization: 5 s of zero-action steps before recording to let physics settle
+
+### PR4 — Offline Phase Detection (current)
 
 **PickPhaseDetector** — forward pass over episode timeline. Uses distance thresholds from SkillRunnerConfig. Produces `phase_ids[T]` + `segments`. Saves as sidecar `ep_NNNNNN.phase.json`.
 

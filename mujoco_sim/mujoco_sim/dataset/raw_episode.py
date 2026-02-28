@@ -23,6 +23,7 @@ class Timestep:
     gripper: float
     ee_pose: np.ndarray  # (7,)
     action: np.ndarray  # (7,)
+    phase_id: int | None = None  # teacher/detector phase label
     object_pose: np.ndarray | None = None  # (7,) optional
     contacts: np.ndarray | None = None  # (N,) optional
 
@@ -96,6 +97,13 @@ class RawEpisode:
     def actions(self) -> np.ndarray:
         """(T, 7)."""
         return np.stack([ts.action for ts in self._steps])
+
+    @property
+    def phase_ids(self) -> np.ndarray | None:
+        """(T,) int or None if no timestep has phase_id."""
+        if not self._steps or self._steps[0].phase_id is None:
+            return None
+        return np.array([ts.phase_id for ts in self._steps], dtype=np.int32)
 
     @property
     def object_poses(self) -> np.ndarray | None:
