@@ -1,7 +1,7 @@
 # HALO Project Plan (Planner + Target Perception + ACT Skill Runner)
 
 Date: 2026-02-23
-Scope: HALO — v1: Isaac Sim/Lab, single-arm pick/place, local models via Ollama, smooth continuous control with low-frequency reasoning. Real SO-ARM101 arm (two arms eventually) is a later phase.
+Scope: HALO — three-phase sim strategy: (1) MuJoCo + robosuite (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, smooth continuous control with low-frequency reasoning.
 
 ---
 
@@ -408,14 +408,18 @@ Planner-grade fields only:
 
 ### Next steps
 
-1. Isaac Sim/Lab environment setup (pick-cube-place-bin task).
+1. MuJoCo + robosuite environment setup (pick-cube task) — `mujoco_sim/`.
 2. Analytic teacher controller (IK + motion generation) for demo episode generation.
 3. Real observe_fn wired to tracker + depth fusion (replace mock).
 4. ACT model training pipeline (dataset schema, chunked imitation learning).
 5. Closed-loop evaluation with FSM orchestrator + ACT-predicted actions.
 6. Iterate thresholds/profiles for moving targets (short horizons, strict freshness).
+7. Isaac Lab integration (GPU-accelerated parallel envs, domain randomization at scale) — `sim/`.
+8. Real SO-ARM101 hardware integration.
 
-## Isaac Sim/Lab-first bootstrapping for HALO: Teacher demos → ACT (teleop-aligned)
+## Sim bootstrapping for HALO: Teacher demos → ACT (teleop-aligned)
+
+> **Note:** This section describes the general sim bootstrapping strategy. Phase 1 uses MuJoCo + robosuite (`mujoco_sim/`). Phase 2 will use Isaac Lab (`sim/`) for GPU-accelerated parallel envs and domain randomization at scale.
 
 ### Target task (v0)
 **Pick cube from table → place into bin** (single cube, single bin, no clutter at first).

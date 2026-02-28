@@ -1,7 +1,7 @@
 # HALO Architecture Specification (Planner + Perception + ACT Skill Runner)
 
 Date: 2026-02-23
-Scope: HALO — v1: Isaac Sim/Lab (single-arm pick/place), local models via Ollama, ACT for continuous control. Real SO-ARM101 hardware is a later phase.
+Scope: HALO — three-phase sim strategy: (1) MuJoCo + robosuite (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, ACT for continuous control.
 
 This document is the **architecture reference** that complements the plan summary. It focuses on **module boundaries, runtime contracts, dataflows, timing**, and **code-facing interfaces**.
 
@@ -508,7 +508,9 @@ docs/
   halo_architecture.md        # this file
   halo_plan_summary.md        # project plan + Isaac Lab strategy
   data/                       # gitignored; video.mp4 for video capture simulation
-tests/                        # 219 unit tests
+mujoco_sim/                     # MuJoCo + robosuite sim (current)
+sim/                            # Isaac Lab extension (planned — see sim/README.md)
+tests/                          # unit tests
 integration/                  # LLM integration tests (require Ollama)
   conftest.py                 # Ollama health-check; auto-skip if model unavailable
   runs/                       # timestamped result folders

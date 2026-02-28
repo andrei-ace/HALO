@@ -17,7 +17,8 @@ uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by n
 
 make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
-make tui-live          # launch TUI wired to HALORuntime + PlannerAgent (requires Ollama)
+make tui-live-videoloop # launch TUI with video loop source (requires Ollama)
+make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + robosuite)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
 
@@ -42,17 +43,18 @@ All v0 backbone services are implemented and tested:
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
 | Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ sim_apply_fn, sim_observe_fn, sim_chunk_fn, transforms) |
-| Isaac Lab extension (`sim/halo_sim/`) | ✅ scaffolded (stubs — requires Isaac Lab runtime) |
+| MuJoCo sim (`mujoco_sim/`) | 🚧 in progress (robosuite pick-cube env, teacher, bridge) |
+| Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
 The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
-- **Live mode** (`make tui-live`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` (via `halo/tui/run_logger.py`).
+- **Live mode** (`make tui-live-videoloop` or `make tui-live-mujoco`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` (via `halo/tui/run_logger.py`).
 
 To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot runs/halo_tui.svg`
 
 ## Project Overview
 
-HALO is a robotic manipulation system. **v1 runs entirely in Isaac Sim/Lab** (no hardware required). Real SO-ARM101 arm support is a later phase. The core design principle is **continuous control decoupled from LLM reasoning**: the robot never pauses motion waiting for the planner. Perception and control are machine-to-machine; numeric control hints never flow through LLM context.
+HALO is a robotic manipulation system with a **three-phase sim strategy**: (1) **MuJoCo + robosuite** (current) for initial teacher demos, ACT training, and closed-loop eval; (2) **Isaac Lab** (future) for GPU-accelerated parallel envs and domain randomization at scale; (3) **Real SO-ARM101 hardware** (later). The core design principle is **continuous control decoupled from LLM reasoning**: the robot never pauses motion waiting for the planner. Perception and control are machine-to-machine; numeric control hints never flow through LLM context.
 
 ## Repository Structure
 
@@ -81,8 +83,8 @@ halo/
     safety/         # (planned)
   tools/            # (planned) ollama_clients/, zed_capture/, uvc_capture/
   eval/             # (planned) sim/, real/
-sim/                # Isaac Lab extension (separate pyproject.toml, runs on remote GPU)
-  halo_sim/         # see sim/CLAUDE.md for full structure
+mujoco_sim/         # MuJoCo + robosuite sim (current — teacher demos, ACT training, eval)
+sim/                # Isaac Lab extension (planned — see sim/README.md)
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
   halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
@@ -153,9 +155,9 @@ Do **not** integrate and play back whole chunks open-loop. Temporal ensembling b
 - Safety reflex reasons: `JOINT_LIMIT`, `WORKSPACE_LIMIT`, `COLLISION_RISK`, `OVERCURRENT`, `ESTOP`
 - Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 VERIFY_GRASP`, `8 LIFT`, `9 DONE`, `30-33 PLACE_*`, `50-52 RECOVER_*`
 
-## Hardware (real SO-ARM101 phase — not v1)
+## Hardware (real SO-ARM101 phase — phase 3)
 
-v1 uses Isaac Sim/Lab only. The real hardware target is SO-ARM101 with:
+Current sim work uses MuJoCo + robosuite (phase 1), then Isaac Lab (phase 2). The real hardware target is SO-ARM101 with:
 - **Scene camera**: ZED X (VLM grounding, global target discovery, depth-based 3D, `T_base<-scene_cam`)
 - **Wrist camera**: 1080p USB2 UVC (ACT observation, local visual servoing, `T_ee<-wrist_cam`)
 - **LLM/VLM**: local via Ollama — planner uses `gpt-oss:20b`, perception uses `qwen2.5vl:3b`
@@ -165,11 +167,17 @@ v1 uses Isaac Sim/Lab only. The real hardware target is SO-ARM101 with:
 - Fast perception loop (camera frame → `target_hint_vec` published): **≤80–120 ms**
 - VLM reacquire: async, **hundreds of ms to several seconds** — never on critical path
 - ACT chunk horizon: **200–500 ms** for moving targets; buffer fill target **150–300 ms**
-- v0 Isaac Lab: 10 Hz control, 10-step chunks (1 s horizon) for debugging simplicity
+- v0 MuJoCo: 10 Hz control, 10-step chunks (1 s horizon) for debugging simplicity
 
-## v1: Isaac Sim/Lab bootstrapping
+## Sim strategy (three phases)
 
-- Teacher: analytic controller (IK + motion generation) generating 10k–50k demo episodes
+**Phase 1 — MuJoCo + robosuite (current):** Single-env teacher demos, ACT training pipeline, closed-loop eval. See `mujoco_sim/`.
+
+**Phase 2 — Isaac Lab (future):** GPU-accelerated parallel envs (64 envs on A6000), domain randomization at scale, sim-to-real transfer. See `sim/README.md`.
+
+**Phase 3 — Real SO-ARM101 hardware (later):** Same dataset schema and action space, swap sensor sources and controller.
+
+Key invariants across all phases:
 - Dataset schema must stay **identical** between sim and real (same action space, chunking, observation keys)
 - Train/val/test splits by **episode seed / object placement**, not by timestep
 - Verify replay parity before training: recorded actions re-executed in sim should reproduce the episode
