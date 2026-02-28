@@ -135,33 +135,35 @@ The SkillRunnerService drives a deterministic FSM. Phase transitions are fast an
 
 ```mermaid
 stateDiagram-v2
-    [*] --> RESET
-    RESET --> APPROACH_PREGRASP
+    [*] --> IDLE
+    IDLE --> SELECT_GRASP
 
-    APPROACH_PREGRASP --> ALIGN : position reached
-    APPROACH_PREGRASP --> RECOVER_RETRY_APPROACH : timeout / collision
+    SELECT_GRASP --> PLAN_APPROACH : grasp selected (v0: pass-through)
+    PLAN_APPROACH --> MOVE_PREGRASP : plan ready (v0: pass-through)
 
-    ALIGN --> DESCEND_GRASP : aligned
+    MOVE_PREGRASP --> VISUAL_ALIGN : position reached
+    MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : timeout / no progress
 
-    DESCEND_GRASP --> CLOSE : distance < threshold\nheld for grasp_persistence_ms
-    DESCEND_GRASP --> RECOVER_RETRY_DESCEND : timeout / no progress
+    VISUAL_ALIGN --> EXECUTE_APPROACH : aligned
+    VISUAL_ALIGN --> RECOVER_RETRY_APPROACH : timeout / no progress
 
-    CLOSE --> VERIFY_GRASP : dwell complete\n(if verify enabled)
-    CLOSE --> LIFT : dwell complete\n(if verify skipped)
+    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance < threshold\nheld for grasp_persistence_ms
+    EXECUTE_APPROACH --> RECOVER_RETRY_APPROACH : timeout / no progress
+
+    CLOSE_GRIPPER --> VERIFY_GRASP : dwell complete
 
     VERIFY_GRASP --> LIFT : grasp confirmed
     VERIFY_GRASP --> RECOVER_REGRASP : grasp failed
 
     LIFT --> DONE : lift complete
 
-    RECOVER_RETRY_APPROACH --> APPROACH_PREGRASP : retry
-    RECOVER_RETRY_DESCEND --> APPROACH_PREGRASP : retry
-    RECOVER_REGRASP --> APPROACH_PREGRASP : retry
+    RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry (if retries remain)
+    RECOVER_REGRASP --> MOVE_PREGRASP : retry (if retries remain)
 
     DONE --> [*]
 ```
 
-**Key invariant:** `CLOSE` is triggered deterministically when `distance < grasp_distance_threshold_m` held for `grasp_persistence_ms`. The planner never commands "close gripper now".
+**Key invariant:** `CLOSE_GRIPPER` is triggered deterministically when `distance < grasp_distance_threshold_m` held for `grasp_persistence_ms`. The planner never commands "close gripper now". Wrist camera is active in `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, and `VERIFY_GRASP`.
 
 ---
 

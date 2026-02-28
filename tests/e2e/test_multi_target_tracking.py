@@ -16,53 +16,11 @@ import asyncio
 import time
 
 from tests.e2e.conftest import skip_no_vlm
-
-
-def _iou(bbox_xyxy: tuple, bbox_xywh: tuple) -> float:
-    """Compute IoU between a VLM bbox (x1,y1,x2,y2) and a tracker bbox (x,y,w,h)."""
-    ax1, ay1, ax2, ay2 = bbox_xyxy
-    bx, by, bw, bh = bbox_xywh
-    bx1, by1, bx2, by2 = bx, by, bx + bw, by + bh
-
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-
-    area_a = (ax2 - ax1) * (ay2 - ay1)
-    area_b = bw * bh
-    union = area_a + area_b - inter
-    return inter / union if union > 0 else 0.0
+from tests.e2e.utils import assert_bbox_overlap
 
 
 def _log(msg: str) -> None:
     print(f"  [{time.strftime('%H:%M:%S')}] {msg}")
-
-
-def _assert_bbox_overlap(
-    label: str,
-    vlm_bbox_xyxy: tuple,
-    tracker_bbox_xywh: tuple,
-    tracker_center: tuple[float, float],
-    *,
-    min_iou: float = 0.5,
-) -> float:
-    """Assert IoU and centroid proximity, return IoU."""
-    iou = _iou(vlm_bbox_xyxy, tracker_bbox_xywh)
-    vx1, vy1, vx2, vy2 = vlm_bbox_xyxy
-    cx, cy = tracker_center
-    margin_x = (vx2 - vx1) * 0.5
-    margin_y = (vy2 - vy1) * 0.5
-
-    assert iou > min_iou, f"{label}: tracker bbox has low overlap with VLM detection (IoU={iou:.3f}, min={min_iou})"
-    assert vx1 - margin_x <= cx <= vx2 + margin_x, (
-        f"{label}: tracker centroid x={cx:.1f} outside VLM bbox [{vx1:.1f}, {vx2:.1f}] ± margin"
-    )
-    assert vy1 - margin_y <= cy <= vy2 + margin_y, (
-        f"{label}: tracker centroid y={cy:.1f} outside VLM bbox [{vy1:.1f}, {vy2:.1f}] ± margin"
-    )
-    return iou
 
 
 async def _track_and_verify(
@@ -72,7 +30,6 @@ async def _track_and_verify(
     runner,
     capture_fn,
     vlm_fn,
-    vlm_model: str,
     known_handles: list[str],
     *,
     min_iou: float = 0.5,
@@ -138,7 +95,7 @@ async def _track_and_verify(
     )
 
     # ── Compare ────────────────────────────────────────────────────
-    iou = _assert_bbox_overlap(label, vlm_det.bbox, tracker_bbox, tracker_center, min_iou=min_iou)
+    iou = assert_bbox_overlap(label, vlm_det.bbox, tracker_bbox, tracker_center, min_iou=min_iou)
 
     _log(f"  [{label}] VLM bbox (xyxy): {vlm_det.bbox}")
     _log(f"  [{label}] Tracker bbox (xywh): {tracker_bbox}")
@@ -234,7 +191,6 @@ async def test_multi_target_tracking(vlm_model: str, ollama_url: str):
             runner=runner,
             capture_fn=capture_fn,
             vlm_fn=vlm_fn,
-            vlm_model=vlm_model,
             known_handles=handles,
             min_iou=0.75,
         )
@@ -248,7 +204,6 @@ async def test_multi_target_tracking(vlm_model: str, ollama_url: str):
             runner=runner,
             capture_fn=capture_fn,
             vlm_fn=vlm_fn,
-            vlm_model=vlm_model,
             known_handles=handles,
             min_iou=0.5,
         )
