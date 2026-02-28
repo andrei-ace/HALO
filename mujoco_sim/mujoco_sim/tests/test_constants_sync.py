@@ -60,8 +60,8 @@ def test_action_dim():
 
 
 def test_gripper_semantics():
-    """GRIPPER_OPEN=0.0, GRIPPER_CLOSE=1.0."""
-    assert GRIPPER_OPEN == 0.0
+    """GRIPPER_OPEN=-1.0, GRIPPER_CLOSE=1.0 (robosuite convention)."""
+    assert GRIPPER_OPEN == -1.0
     assert GRIPPER_CLOSE == 1.0
 
 

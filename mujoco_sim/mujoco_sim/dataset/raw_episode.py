@@ -26,6 +26,8 @@ class Timestep:
     phase_id: int | None = None  # teacher/detector phase label
     object_pose: np.ndarray | None = None  # (7,) optional
     contacts: np.ndarray | None = None  # (N,) optional
+    bbox_xywh: tuple[int, int, int, int] | None = None  # tracker bbox (x, y, w, h)
+    tracker_ok: bool | None = None  # tracker status (True=tracking, False=lost)
 
 
 @dataclass
@@ -116,3 +118,18 @@ class RawEpisode:
     def contacts_list(self) -> list[np.ndarray | None]:
         """List of per-timestep contact arrays (variable length)."""
         return [ts.contacts for ts in self._steps]
+
+    @property
+    def bbox_xywh_array(self) -> np.ndarray | None:
+        """(T, 4) int32 or None if no timestep has bbox_xywh."""
+        if not self._steps or self._steps[0].bbox_xywh is None:
+            return None
+        rows = [ts.bbox_xywh if ts.bbox_xywh is not None else (0, 0, 0, 0) for ts in self._steps]
+        return np.array(rows, dtype=np.int32)
+
+    @property
+    def tracker_ok_array(self) -> np.ndarray | None:
+        """(T,) bool or None if no timestep has tracker_ok."""
+        if not self._steps or self._steps[0].tracker_ok is None:
+            return None
+        return np.array([ts.tracker_ok if ts.tracker_ok is not None else False for ts in self._steps], dtype=bool)

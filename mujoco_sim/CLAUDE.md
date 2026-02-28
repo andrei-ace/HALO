@@ -61,6 +61,9 @@ python -m mujoco_sim.scripts.generate_episodes \
     --output-dir episodes \
     --seed-base 0
 
+# Via Makefile (same as above)
+make generate-episodes EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0
+
 # Custom stabilization time and control frequency
 python -m mujoco_sim.scripts.generate_episodes \
     --num-episodes 50 \
@@ -68,9 +71,22 @@ python -m mujoco_sim.scripts.generate_episodes \
     --stabilize 3.0 \
     --control-freq 20 \
     -v  # verbose logging
+
+# Save mp4 preview videos alongside HDF5 files (requires opencv-python)
+python -m mujoco_sim.scripts.generate_episodes \
+    --num-episodes 10 \
+    --output-dir episodes \
+    --save-video
+
+# Disable progress bar (e.g. for CI)
+python -m mujoco_sim.scripts.generate_episodes \
+    --num-episodes 10 \
+    --output-dir episodes \
+    --no-progress
 ```
 
 Output: `episodes/ep_000000.hdf5`, `episodes/ep_000001.hdf5`, ...
+With `--save-video`: also `episodes/ep_000000.mp4`, ...
 
 ### Python API — environment only
 
@@ -165,16 +181,22 @@ env.close()
 ### Python API — batch generation (high-level)
 
 ```python
-from mujoco_sim.runner import run_teacher
+from mujoco_sim.runner import EpisodeResult, run_teacher
 
-# Generate 50 episodes, returns list of HDF5 paths
-paths = run_teacher(
+# Generate 50 episodes, returns list of EpisodeResult
+results: list[EpisodeResult] = run_teacher(
     num_episodes=50,
     output_dir="episodes",
     seed_base=0,
     stabilize_seconds=5.0,  # 5 s settling before each episode
     max_steps=500,
+    save_video=False,       # set True for mp4 previews (requires opencv)
+    progress=True,          # tqdm progress bar
 )
+
+# EpisodeResult fields: episode_idx, seed, path, success, num_steps, final_phase, error
+succeeded = [r for r in results if r.success]
+print(f"{len(succeeded)}/{len(results)} episodes reached DONE phase")
 ```
 
 ### Inspecting saved episodes

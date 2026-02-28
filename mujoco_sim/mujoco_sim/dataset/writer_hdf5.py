@@ -69,6 +69,16 @@ def write_episode(episode: RawEpisode, path: str | Path) -> Path:
         if phase_ids is not None:
             obs.create_dataset("phase_id", data=phase_ids)
 
+        # Optional tracker bbox (x, y, w, h) per timestep
+        bbox_arr = episode.bbox_xywh_array
+        if bbox_arr is not None:
+            obs.create_dataset("bbox_xywh", data=bbox_arr)
+
+        # Optional tracker status (True=tracking, False=lost) per timestep
+        tracker_ok_arr = episode.tracker_ok_array
+        if tracker_ok_arr is not None:
+            obs.create_dataset("tracker_ok", data=tracker_ok_arr)
+
         # Actions
         f.create_dataset("action", data=episode.actions)
 

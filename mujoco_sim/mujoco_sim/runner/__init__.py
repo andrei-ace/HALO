@@ -1,5 +1,5 @@
 """Episode generation runner."""
 
-from mujoco_sim.runner.run_teacher import run_teacher
+from mujoco_sim.runner.run_teacher import EpisodeResult, run_teacher
 
-__all__ = ["run_teacher"]
+__all__ = ["EpisodeResult", "run_teacher"]

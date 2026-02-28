@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live ruff help
 
 install:
 	uv sync --extra dev
@@ -74,6 +74,25 @@ ruff:
 	uv run ruff check --fix .
 	uv run ruff format .
 
+EPISODES     ?= 1
+EPISODE_DIR  ?= data/episodes
+SEED_BASE    ?= 0
+
+generate-episodes:
+	uv run python -m mujoco_sim.scripts.generate_episodes \
+		--num-episodes $(EPISODES) \
+		--output-dir $(EPISODE_DIR) \
+		--seed-base $(SEED_BASE) \
+		$(GENERATE_ARGS)
+
+generate-episodes-video:
+	uv run python -m mujoco_sim.scripts.generate_episodes \
+		--num-episodes $(EPISODES) \
+		--output-dir $(EPISODE_DIR) \
+		--seed-base $(SEED_BASE) \
+		--save-video \
+		$(GENERATE_ARGS)
+
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
 	mkdir -p $(RUN_DIR)
@@ -85,6 +104,8 @@ test-integration:
 help:
 	@echo "install            install deps (uv sync --extra dev)"
 	@echo "install-sim        install deps + MuJoCo/robosuite (uv sync --extra dev --extra sim)"
+	@echo "generate-episodes        generate teacher episodes w/ VLM tracking (requires Ollama)"
+	@echo "generate-episodes-video  same + save mp4 preview per episode (requires opencv)"
 	@echo "test-sim           run mujoco_sim tests (requires --extra sim)"
 	@echo "test               run all unit tests"
 	@echo "test-unit          run unit tests (excluding component/system/e2e)"

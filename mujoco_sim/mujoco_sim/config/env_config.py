@@ -15,6 +15,6 @@ class EnvConfig:
     scene_resolution: tuple[int, int] = (480, 640)  # (H, W)
     wrist_resolution: tuple[int, int] = (240, 320)  # (H, W)
     control_freq: int = 20
-    horizon: int = 500
+    horizon: int = 1000
     has_renderer: bool = False
     has_offscreen_renderer: bool = True

@@ -106,12 +106,13 @@ class TestPhaseTransitions:
         assert phase == PHASE_EXECUTE_APPROACH
 
     def test_execute_approach_to_close_gripper(self):
-        """Within grasp distance triggers CLOSE_GRIPPER."""
-        cfg = TeacherConfig(grasp_distance_threshold_m=0.01)
+        """Within grasp distance of target (cube + grasp_height_offset) triggers CLOSE_GRIPPER."""
+        cfg = TeacherConfig(grasp_distance_threshold_m=0.01, grasp_height_offset=-0.01)
         teacher = PickTeacher(config=cfg)
         teacher._phase = PHASE_EXECUTE_APPROACH
 
-        obs = _make_obs(ee_pos=(0.5, 0.0, 0.105), cube_pos=(0.5, 0.0, 0.1))
+        # Target = cube_z + offset = 0.1 - 0.01 = 0.09; EE at 0.095 → dist=0.005 < 0.01
+        obs = _make_obs(ee_pos=(0.5, 0.0, 0.095), cube_pos=(0.5, 0.0, 0.1))
         _action, phase, _done = teacher.step(obs)
         assert phase == PHASE_CLOSE_GRIPPER
 
@@ -175,10 +176,19 @@ class TestActionOutput:
         # z component should be negative (moving down)
         assert action[2] < 0
 
-    def test_gripper_open_during_approach(self):
-        """Gripper should be open during approach phases."""
+    def test_gripper_neutral_during_early_approach(self):
+        """Gripper should be neutral (0.0) during MOVE_PREGRASP and VISUAL_ALIGN."""
         teacher = PickTeacher()
         obs = _make_obs(ee_pos=(0.5, 0.0, 0.5), cube_pos=(0.5, 0.0, 0.1))
+        action, phase, _done = teacher.step(obs)
+        assert phase == PHASE_MOVE_PREGRASP
+        assert action[6] == 0.0
+
+    def test_gripper_open_during_execute_approach(self):
+        """Gripper should open during EXECUTE_APPROACH to straddle the cube."""
+        teacher = PickTeacher()
+        teacher._phase = PHASE_EXECUTE_APPROACH
+        obs = _make_obs(ee_pos=(0.5, 0.0, 0.13), cube_pos=(0.5, 0.0, 0.1))
         action, _phase, _done = teacher.step(obs)
         assert action[6] == GRIPPER_OPEN
 

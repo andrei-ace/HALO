@@ -28,8 +28,8 @@ WRIST_ACTIVE_PHASES = frozenset(
 # Action space layout (halo.contracts.actions.Action field order)
 ACTION_FIELDS = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "gripper_cmd"]
 ACTION_DIM = 7
-GRIPPER_OPEN = 0.0
-GRIPPER_CLOSE = 1.0
+GRIPPER_OPEN = -1.0  # robosuite convention: -1 = open
+GRIPPER_CLOSE = 1.0  # robosuite convention: +1 = close
 
 # Control timing
 CONTROL_RATE_HZ = 10

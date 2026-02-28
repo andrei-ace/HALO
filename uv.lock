@@ -310,6 +310,7 @@ source = { editable = "mujoco_sim" }
 dependencies = [
     { name = "h5py" },
     { name = "numpy" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -328,6 +329,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opencv-python", marker = "extra == 'viewer'", specifier = ">=4.8" },
     { name = "robosuite", marker = "extra == 'sim'", specifier = ">=1.5" },
+    { name = "tqdm", specifier = ">=4.60" },
 ]
 provides-extras = ["sim", "viewer"]
 

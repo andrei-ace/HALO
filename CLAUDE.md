@@ -23,6 +23,7 @@ make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
 make tui-live-videoloop # launch TUI with video loop source (requires Ollama)
 make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + robosuite; run make install-sim first)
+make generate-episodes # generate teacher episodes (EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0; requires make install-sim)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
 

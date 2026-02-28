@@ -58,6 +58,12 @@ def read_episode(path: str | Path) -> RawEpisode:
         has_contacts = "contacts" in obs
         contacts_group = obs["contacts"] if has_contacts else None
 
+        has_bbox = "bbox_xywh" in obs
+        bbox_arr = obs["bbox_xywh"][:] if has_bbox else None
+
+        has_tracker_ok = "tracker_ok" in obs
+        tracker_ok_arr = obs["tracker_ok"][:] if has_tracker_ok else None
+
         num_steps = rgb_scenes.shape[0]
         for i in range(num_steps):
             obj_pose = object_poses[i] if object_poses is not None else None
@@ -70,6 +76,9 @@ def read_episode(path: str | Path) -> RawEpisode:
 
             phase_id = int(phase_ids[i]) if phase_ids is not None else None
 
+            bbox_xywh = tuple(int(v) for v in bbox_arr[i]) if bbox_arr is not None else None
+            tracker_ok = bool(tracker_ok_arr[i]) if tracker_ok_arr is not None else None
+
             ts = Timestep(
                 rgb_scene=rgb_scenes[i],
                 rgb_wrist=rgb_wrists[i],
@@ -81,6 +90,8 @@ def read_episode(path: str | Path) -> RawEpisode:
                 phase_id=phase_id,
                 object_pose=obj_pose,
                 contacts=contacts,
+                bbox_xywh=bbox_xywh,
+                tracker_ok=tracker_ok,
             )
             episode.append(ts)
 

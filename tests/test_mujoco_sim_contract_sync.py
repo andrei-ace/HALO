@@ -72,8 +72,8 @@ def test_action_dim_matches():
 
 
 def test_gripper_semantics_match():
-    """GRIPPER_OPEN/CLOSE match Action contract (0.0=open, 1.0=close)."""
-    assert GRIPPER_OPEN == 0.0
+    """GRIPPER_OPEN/CLOSE match robosuite convention (-1.0=open, 1.0=close)."""
+    assert GRIPPER_OPEN == -1.0
     assert GRIPPER_CLOSE == 1.0
 
 

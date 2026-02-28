@@ -14,6 +14,7 @@ Usage::
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -33,6 +34,8 @@ from mujoco_sim.constants import (
     PHASE_VISUAL_ALIGN,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class TeacherConfig:
@@ -44,24 +47,26 @@ class TeacherConfig:
     # Phase transition distance thresholds (m) — same as SkillRunnerConfig
     approach_align_threshold_m: float = 0.15
     execute_approach_threshold_m: float = 0.05
-    grasp_distance_threshold_m: float = 0.01
+    grasp_distance_threshold_m: float = 0.025
 
     # Timed phase durations (steps at control_freq)
     close_gripper_steps: int = 20  # 1 s at 20 Hz
     verify_steps: int = 10  # 0.5 s at 20 Hz
-    lift_steps: int = 40  # 2 s at 20 Hz
+    lift_steps: int = 120  # 6 s at 20 Hz
 
     # Proportional control gains
     approach_gain: float = 0.8  # gain for MOVE_PREGRASP (coarse approach)
     align_gain: float = 0.5  # gain for VISUAL_ALIGN (slower, more precise)
-    execute_gain: float = 0.3  # gain for EXECUTE_APPROACH (fine approach)
-    lift_speed: float = 0.02  # m/step vertical lift increment
+    execute_gain: float = 0.5  # gain for EXECUTE_APPROACH (fine approach)
+    lift_speed: float = 0.05  # m/step vertical lift increment (OSC attenuates heavily)
 
     # Pre-grasp offset: approach from above the cube
     pregrasp_height_offset: float = 0.05  # m above cube center
+    grasp_height_offset: float = -0.01  # m relative to cube center for final grasp position
 
     # Action clamp (per-axis, m/step)
     max_delta: float = 0.05
+    min_action: float = 0.002  # minimum action magnitude to prevent proportional stall
 
 
 class PickTeacher:
@@ -127,7 +132,7 @@ class PickTeacher:
             target[2] += cfg.pregrasp_height_offset
             delta = target - ee_pos
             action[:3] = np.clip(delta * cfg.approach_gain, -cfg.max_delta, cfg.max_delta)
-            action[6] = GRIPPER_OPEN
+            # gripper neutral (0.0) — no need to open yet
 
             pregrasp_dist = float(np.linalg.norm(target - ee_pos))
             if pregrasp_dist < cfg.approach_align_threshold_m:
@@ -137,18 +142,36 @@ class PickTeacher:
             # Descend toward cube, slower
             delta = cube_pos - ee_pos
             action[:3] = np.clip(delta * cfg.align_gain, -cfg.max_delta, cfg.max_delta)
-            action[6] = GRIPPER_OPEN
+            # gripper neutral (0.0) — no need to open yet
 
             if distance < cfg.execute_approach_threshold_m:
                 self._transition(PHASE_EXECUTE_APPROACH)
 
         elif self._phase == PHASE_EXECUTE_APPROACH:
-            # Fine approach to grasp distance
-            delta = cube_pos - ee_pos
-            action[:3] = np.clip(delta * cfg.execute_gain, -cfg.max_delta, cfg.max_delta)
+            # Fine approach — target at/below cube center so fingers straddle it
+            target = cube_pos.copy()
+            target[2] += cfg.grasp_height_offset
+            delta = target - ee_pos
+            target_dist = float(np.linalg.norm(delta))
+            scaled = delta * cfg.execute_gain
+            # Enforce minimum action magnitude to prevent proportional stall
+            norm = np.linalg.norm(scaled)
+            if 0 < norm < cfg.min_action:
+                scaled = scaled / norm * cfg.min_action
+            action[:3] = np.clip(scaled, -cfg.max_delta, cfg.max_delta)
             action[6] = GRIPPER_OPEN
 
-            if distance < cfg.grasp_distance_threshold_m:
+            if self._phase_step % 50 == 0:
+                logger.debug(
+                    "EXECUTE_APPROACH step=%d dist_cube=%.4f dist_target=%.4f ee=%s cube=%s",
+                    self._phase_step,
+                    distance,
+                    target_dist,
+                    ee_pos.round(4),
+                    cube_pos.round(4),
+                )
+
+            if target_dist < cfg.grasp_distance_threshold_m:
                 self._transition(PHASE_CLOSE_GRIPPER)
 
         elif self._phase == PHASE_CLOSE_GRIPPER:
