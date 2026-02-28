@@ -14,6 +14,7 @@ from halo.contracts.snapshots import PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 from halo.services.target_perception_service.frame_buffer import CapturedFrame, FrameRingBuffer
+from halo.services.target_perception_service.handle_match import find_detection_by_handle
 from halo.services.target_perception_service.vlm_parser import VlmDetection, VlmScene
 
 if TYPE_CHECKING:
@@ -58,12 +59,7 @@ def _find_detection(target_handle: str, detections: list[VlmDetection]) -> VlmDe
        (e.g. ``black_cube_01`` matches ``black_cube_02``).
        If multiple candidates share the prefix, pick the first.
     """
-    exact = next((d for d in detections if d.handle == target_handle), None)
-    if exact is not None:
-        return exact
-    prefix = re.sub(r"_\d+$", "", target_handle)
-    candidates = [d for d in detections if re.sub(r"_\d+$", "", d.handle) == prefix]
-    return candidates[0] if candidates else None
+    return find_detection_by_handle(target_handle, detections)
 
 
 def _stabilize_scene_for_tracked_target(

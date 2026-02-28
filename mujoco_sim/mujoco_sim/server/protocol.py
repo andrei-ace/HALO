@@ -14,22 +14,20 @@ import numpy as np
 # Message type constants
 # ---------------------------------------------------------------------------
 
-# Ch1: Telemetry (Sim PUB → HALO SUB)
+# TelemetryStream (Sim PUB → HALO SUB)
 MSG_TELEMETRY = "telemetry"
 
-# Ch2: Hints (HALO PUB → Sim SUB)
-MSG_TRACKING_HINT = "tracking_hint"
-
-# Ch3: Commands (HALO REQ → Sim REP)
+# CommandRPC commands (HALO REQ → Sim REP)
 CMD_STEP = "step"
 CMD_RESET = "reset"
 CMD_GET_STATE = "get_state"
 CMD_SET_STATE = "set_state"
 CMD_TEACHER_STEP = "teacher_step"
 CMD_CONFIGURE = "configure"
+CMD_SET_HINT = "set_hint"
 CMD_SHUTDOWN = "shutdown"
 
-# Ch3: Responses
+# CommandRPC responses
 RESP_STEP_OK = "step_ok"
 RESP_RESET_OK = "reset_ok"
 RESP_STATE = "state"
@@ -37,7 +35,7 @@ RESP_TEACHER_STEP_OK = "teacher_step_ok"
 RESP_OK = "ok"
 RESP_ERROR = "error"
 
-# Ch4: Queries (Sim REQ → HALO REP)
+# Deprecated Ch4 query constants (kept for compatibility with old helper modules)
 QUERY_VLM_DETECT = "vlm_detect"
 QUERY_TRACKER_INIT = "tracker_init"
 QUERY_TRACKER_UPDATE = "tracker_update"

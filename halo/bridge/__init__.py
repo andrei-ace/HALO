@@ -1,10 +1,8 @@
 """HALO-side bridge adapters for connecting to MuJoCo sim via ZeroMQ.
 
-4-channel ZMQ architecture:
-    Ch1 (SUB): telemetry — frames + state from sim
-    Ch2 (PUB): tracking hints to sim
-    Ch3 (REQ): commands — step, reset, teacher_step
-    Ch4 (REP): queries — VLM/tracker from sim
+2-channel ZMQ architecture:
+    TelemetryStream (SUB): frames + state from sim
+    CommandRPC (REQ): step, reset, teacher_step, configure, set_hint
 """
 
 

@@ -2,7 +2,7 @@
 
 Drop-in replacement for ``MuJocoVideoSource`` — same public interface
 (``start()``, ``stop()``, ``make_capture_fn()``, ``latest_frame``,
-``latest_qpos``, ``latest_qvel``) but backed by Ch1 SUB telemetry
+``latest_qpos``, ``latest_qvel``) but backed by TelemetryStream SUB telemetry
 from ``SimClient`` instead of a subprocess + pipe.
 
 Usage::

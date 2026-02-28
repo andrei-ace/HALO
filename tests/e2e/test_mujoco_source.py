@@ -1,7 +1,7 @@
 """E2E test: SimSource (ZMQ bridge) → real VLM + real OpenCV tracker → bbox verification.
 
 Full pipeline: MuJoCo sim server → ZMQ telemetry → SimSource → VLM describe →
-track green cube → settle → VLM re-query → compare tracker bbox vs VLM bbox (IoU).
+track green cube → VLM re-query → compare tracker bbox vs VLM bbox (IoU).
 
 The SO-101 pick scene has a single static green cube.
 
@@ -37,11 +37,11 @@ def _log(msg: str) -> None:
 @skip_no_mujoco
 @skip_no_vlm
 async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
-    """MuJoCo scene → VLM describe → track cube → settle → VLM re-query → IoU check."""
+    """MuJoCo scene → VLM describe → track cube → VLM re-query → IoU check."""
     from halo.bridge.sim_source import SimSource
     from halo.contracts.events import EventType
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
-    from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
+    from halo.services.target_perception_service.tracker_fn import find_detection_by_handle, make_tracker_factory_fn
     from halo.testing.runner import HeadlessRunner, RunnerConfig
 
     _log(f"VLM model: {vlm_model}")
@@ -133,15 +133,15 @@ async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
         )
         _log(f"STEP 2 done ({tracker_acquire_s:.1f}s) — TARGET_ACQUIRED")
 
-        # ── Step 3: let tracker settle (5s — static scene) ────────────
-        _log("STEP 3 — letting tracker settle (5s)")
-        for _ in range(50):
+        # ── Step 3: tracking observation window (3s) ───────────────────
+        _log("STEP 3 — tracking observation window (3s)")
+        for _ in range(30):
             await svc.tick()
             await asyncio.sleep(0.1)
 
         snap = await runner.runtime.get_latest_runtime_snapshot("arm0")
         assert snap.target is not None, "No target in snapshot after tracking"
-        assert snap.target.hint_valid, "Target hint should be valid after settling"
+        assert snap.target.hint_valid, "Target hint should be valid after tracking"
         assert snap.target.bbox_xywh is not None, "Tracker bbox_xywh is None — real tracker required"
         assert snap.target.center_px is not None, "Tracker center_px is None"
 
@@ -163,9 +163,11 @@ async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
         for d in vlm_scene.detections:
             _log(f"  {d.handle}: bbox={d.bbox}  centroid={d.centroid}")
 
-        vlm_det_now = next((d for d in vlm_scene.detections if d.handle == cube_handle), None)
-        if vlm_det_now is None:
-            vlm_det_now = next((d for d in vlm_scene.detections if "cube" in d.handle.lower()), None)
+        vlm_det_now = find_detection_by_handle(
+            cube_handle,
+            vlm_scene.detections,
+            reference_center_px=tracker_center,
+        )
         assert vlm_det_now is not None, (
             f"VLM re-query didn't find {cube_handle!r}. Got: {[d.handle for d in vlm_scene.detections]}"
         )

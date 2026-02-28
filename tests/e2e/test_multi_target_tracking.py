@@ -2,8 +2,8 @@
 
 Uses the same 5-step pattern from test_tracker_vs_vlm_bbox for each target:
   1. VLM describes scene (once, shared)
-  2. Track cube → settle → re-query VLM → compare bboxes
-  3. Switch to robot → track → settle → re-query VLM → compare bboxes
+  2. Track cube → re-query VLM → compare bboxes
+  3. Switch to robot → track → re-query VLM → compare bboxes
 
 No second SCENE_DESCRIBED — the robot handle comes from the initial scene.
 
@@ -34,8 +34,9 @@ async def _track_and_verify(
     *,
     min_iou: float = 0.5,
 ) -> dict:
-    """Track a target, settle, re-query VLM, compare bboxes. Returns metrics dict."""
+    """Track a target, re-query VLM, compare bboxes. Returns metrics dict."""
     from halo.contracts.events import EventType
+    from halo.services.target_perception_service.tracker_fn import find_detection_by_handle
 
     # ── Track target ───────────────────────────────────────────────
     _log(f"  [{label}] setting tracking target: {handle}")
@@ -56,9 +57,9 @@ async def _track_and_verify(
     )
     _log(f"  [{label}] TARGET_ACQUIRED ({acquire_s:.1f}s)")
 
-    # ── Settle for 5s ──────────────────────────────────────────────
-    _log(f"  [{label}] letting tracker settle (5s)")
-    for _ in range(50):
+    # ── Tracking observation window (3s) ─────────────────────────────
+    _log(f"  [{label}] tracking observation window (3s)")
+    for _ in range(30):
         await svc.tick()
         await asyncio.sleep(0.1)
 
@@ -70,7 +71,7 @@ async def _track_and_verify(
     tracker_bbox = snap.target.bbox_xywh
     tracker_center = snap.target.center_px
     _log(
-        f"  [{label}] settled — bbox(xywh): {tracker_bbox}  "
+        f"  [{label}] tracker bbox(xywh): {tracker_bbox}  "
         f"center: ({tracker_center[0]:.1f}, {tracker_center[1]:.1f})  "
         f"conf: {snap.target.confidence:.2f}"
     )
@@ -85,11 +86,11 @@ async def _track_and_verify(
     for d in vlm_scene.detections:
         _log(f"    {d.handle}: bbox={d.bbox}  centroid={d.centroid}")
 
-    vlm_det = next((d for d in vlm_scene.detections if d.handle == handle), None)
-    if vlm_det is None:
-        # fuzzy: match on keyword from handle (e.g. "cube" or "robot")
-        keyword = handle.split("_")[0] if "_" in handle else handle
-        vlm_det = next((d for d in vlm_scene.detections if keyword in d.handle.lower()), None)
+    vlm_det = find_detection_by_handle(
+        handle,
+        vlm_scene.detections,
+        reference_center_px=tracker_center,
+    )
     assert vlm_det is not None, (
         f"[{label}] VLM re-query didn't find {handle!r}. Got: {[d.handle for d in vlm_scene.detections]}"
     )

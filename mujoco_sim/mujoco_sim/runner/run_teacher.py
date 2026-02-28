@@ -1,11 +1,10 @@
 """Episode generation loop: reset env → stabilize → run teacher → write HDF5.
 
 Architecture: MuJoCo env + teacher run in a **SimServer** process (macOS
-requires OpenGL on the main thread).  VLM + OpenCV tracker run in the
-**client** process via ``SimTrackerService``.  ZMQ bridges the two:
+requires OpenGL on the main thread). ZMQ bridges the client/server:
 
-    Ch3 (REQ/REP): client sends step/reset/teacher_step commands
-    Ch4 (REQ/REP): server sends VLM/tracker queries to client
+    TelemetryStream (PUB/SUB): server publishes telemetry
+    CommandRPC (REQ/REP): client sends step/reset/teacher_step/configure commands
 
 Standalone mode (``make sim-server`` already running) or managed mode
 (server spawned automatically) are both supported.
@@ -59,17 +58,13 @@ def run_teacher(
     managed: bool = True,
     command_url: str | None = None,
     telemetry_url: str | None = None,
-    hints_url: str | None = None,
-    query_url: str | None = None,
 ) -> list[EpisodeResult]:
     """Generate episodes by running the scripted teacher via ZMQ SimServer.
 
     Each episode begins with a stabilization phase (home-pose steps for
     ``stabilize_seconds``) to let physics settle before recording starts.
 
-    The teacher runs server-side (needs MuJoCo model/data for IK).  VLM
-    and OpenCV tracker run client-side (need Ollama).  The ZMQ bridge
-    connects them.
+    The teacher runs server-side (needs MuJoCo model/data for IK).
 
     Args:
         num_episodes: Number of episodes to generate.
@@ -84,19 +79,14 @@ def run_teacher(
         vlm_model: VLM model name.
         progress: If True, show a tqdm progress bar.
         managed: If True, spawn the sim server automatically.
-        command_url: Override Ch3 command URL (standalone mode).
-        telemetry_url: Override Ch1 telemetry URL (standalone mode).
-        hints_url: Override Ch2 hints URL (standalone mode).
-        query_url: Override Ch4 query URL (standalone mode).
+        command_url: Override CommandRPC URL (standalone mode).
+        telemetry_url: Override TelemetryStream URL (standalone mode).
 
     Returns:
         List of EpisodeResult for each episode (including failures).
     """
     from halo.bridge.config import SimBridgeConfig
     from halo.bridge.sim_client import SimClient
-    from halo.bridge.sim_tracker_service import SimTrackerService
-    from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
-    from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
 
     env_config = env_config or EnvConfig()
     output_dir = Path(output_dir)
@@ -104,7 +94,7 @@ def run_teacher(
 
     stabilize_steps = int(stabilize_seconds * env_config.control_freq)
 
-    print(f"[track] VLM tracking — model={vlm_model} url={vlm_base_url}")
+    print(f"[teacher] dataset generation — model args ignored in 2-channel mode ({vlm_model} @ {vlm_base_url})")
 
     # Build bridge config
     bridge_config = SimBridgeConfig(managed=managed)
@@ -112,27 +102,13 @@ def run_teacher(
         bridge_config.command_url = command_url
     if telemetry_url:
         bridge_config.telemetry_url = telemetry_url
-    if hints_url:
-        bridge_config.hints_url = hints_url
-    if query_url:
-        bridge_config.query_url = query_url
-
-    # Start VLM + tracker service on Ch4
-    vlm_fn = make_ollama_vlm_fn(base_url=vlm_base_url, model=vlm_model)
-    tracker_factory_fn = make_tracker_factory_fn()
-    tracker_svc = SimTrackerService(
-        query_url=bridge_config.query_url,
-        vlm_fn=vlm_fn,
-        tracker_factory_fn=tracker_factory_fn,
-    )
-    tracker_svc.start()
 
     # Connect to sim server
     client = SimClient(bridge_config)
     client.start(timeout=60.0)
 
-    # Enable teacher mode and tell server where Ch4 is
-    client.configure(teacher_mode=True, query_url=bridge_config.query_url)
+    # Enable teacher mode.
+    client.configure(teacher_mode=True)
 
     pbar = None
     if progress:
@@ -177,7 +153,6 @@ def run_teacher(
             client.shutdown()
         except Exception:
             client.stop()
-        tracker_svc.stop()
 
     return results
 
@@ -198,7 +173,7 @@ def _run_episode_via_zmq(
     stabilize_steps: int,
     save_video: bool,
 ) -> EpisodeResult:
-    """Run one episode via SimClient Ch3 commands."""
+    """Run one episode via SimClient CommandRPC commands."""
     from mujoco_sim.server.protocol import bytes_to_ndarray
 
     # Reset

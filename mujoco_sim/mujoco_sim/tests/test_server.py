@@ -125,12 +125,12 @@ class TestProtocol:
             CMD_CONFIGURE,
             CMD_GET_STATE,
             CMD_RESET,
+            CMD_SET_HINT,
             CMD_SET_STATE,
             CMD_SHUTDOWN,
             CMD_STEP,
             CMD_TEACHER_STEP,
             MSG_TELEMETRY,
-            MSG_TRACKING_HINT,
             QUERY_TRACKER_INIT,
             QUERY_TRACKER_UPDATE,
             QUERY_VLM_DETECT,
@@ -145,13 +145,13 @@ class TestProtocol:
         # Just verify they're strings and distinct
         all_types = [
             MSG_TELEMETRY,
-            MSG_TRACKING_HINT,
             CMD_STEP,
             CMD_RESET,
             CMD_GET_STATE,
             CMD_SET_STATE,
             CMD_TEACHER_STEP,
             CMD_CONFIGURE,
+            CMD_SET_HINT,
             CMD_SHUTDOWN,
             RESP_STEP_OK,
             RESP_RESET_OK,
@@ -179,9 +179,7 @@ class TestSimServerConfig:
         cfg = SimServerConfig()
         assert cfg.host == "127.0.0.1"
         assert cfg.telemetry_port == 5560
-        assert cfg.hints_port == 5561
-        assert cfg.command_port == 5562
-        assert cfg.query_port == 5563
+        assert cfg.command_port == 5561
         assert cfg.render_fps == 10
         assert cfg.jpeg_quality == 85
 
@@ -190,7 +188,7 @@ class TestSimServerConfig:
 
         cfg = SimServerConfig(host="192.168.1.1", telemetry_port=6000)
         assert cfg.telemetry_url == "tcp://192.168.1.1:6000"
-        assert cfg.command_url == "tcp://192.168.1.1:5562"
+        assert cfg.command_url == "tcp://192.168.1.1:5561"
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +301,21 @@ class TestHandlers:
 
         env, teacher = env_teacher
         msg = {"type": "configure", "teacher_mode": True}
+        reply, shutdown = dispatch_command(msg, env, teacher)
+        assert reply["type"] == "ok"
+        assert shutdown is False
+
+    def test_set_hint(self, env_teacher):
+        from mujoco_sim.server.handlers import dispatch_command
+
+        env, teacher = env_teacher
+        msg = {
+            "type": "set_hint",
+            "target_handle": "cube",
+            "bbox_xywh": [100, 120, 50, 50],
+            "confidence": 0.95,
+            "tracker_ok": True,
+        }
         reply, shutdown = dispatch_command(msg, env, teacher)
         assert reply["type"] == "ok"
         assert shutdown is False

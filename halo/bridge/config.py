@@ -1,14 +1,13 @@
 """Bridge configuration for HALO <-> MuJoCo sim ZMQ connection.
 
-4-channel architecture:
-    Ch1 (SUB): telemetry — frames + state from sim
-    Ch2 (PUB): tracking hints to sim
-    Ch3 (REQ): commands to sim (step, reset, teacher_step)
-    Ch4 (REP): query service for sim (VLM detect, tracker init/update)
+2-channel architecture:
+    TelemetryStream (SUB): frames + state from sim
+    CommandRPC (REQ): commands to sim (step, reset, teacher_step, configure, set_hint)
 """
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 
@@ -16,11 +15,15 @@ from dataclasses import dataclass
 class SimBridgeConfig:
     """Configuration for the HALO-side sim bridge client."""
 
+    # Protocol version (v2 = telemetry + command RPC only)
+    protocol_version: int = 2
+
     # ZMQ endpoints (HALO connects to these; sim server binds)
-    telemetry_url: str = "tcp://127.0.0.1:5560"  # Ch1: SUB (Sim → HALO)
-    hints_url: str = "tcp://127.0.0.1:5561"  # Ch2: PUB (HALO → Sim)
-    command_url: str = "tcp://127.0.0.1:5562"  # Ch3: REQ (HALO → Sim)
-    query_url: str = "tcp://127.0.0.1:5563"  # Ch4: REP (Sim → HALO)
+    telemetry_url: str = "tcp://127.0.0.1:5560"  # TelemetryStream: SUB (Sim → HALO)
+    command_url: str = "tcp://127.0.0.1:5561"  # CommandRPC: REQ (HALO → Sim)
+    hints_url: str | None = None  # Deprecated in protocol v2
+    query_url: str | None = None  # Deprecated in protocol v2
+    strict_mode: bool = False
 
     # Managed mode: HALO spawns the sim server subprocess
     managed: bool = False
@@ -34,3 +37,26 @@ class SimBridgeConfig:
     # Frame settings
     wrist_rgb_height: int = 240
     wrist_rgb_width: int = 320
+
+    def __post_init__(self) -> None:
+        if self.protocol_version != 2:
+            raise ValueError(f"Unsupported SimBridgeConfig.protocol_version={self.protocol_version}; expected 2")
+
+        deprecated_fields = []
+        if self.hints_url is not None:
+            deprecated_fields.append("hints_url")
+        if self.query_url is not None:
+            deprecated_fields.append("query_url")
+
+        if not deprecated_fields:
+            return
+
+        if self.strict_mode:
+            fields = ", ".join(deprecated_fields)
+            raise ValueError(f"{fields} are deprecated in protocol v2 (2-channel bridge)")
+
+        warnings.warn(
+            f"{', '.join(deprecated_fields)} are deprecated in protocol v2 and ignored",
+            DeprecationWarning,
+            stacklevel=2,
+        )

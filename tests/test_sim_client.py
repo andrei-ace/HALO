@@ -15,6 +15,7 @@ import pytest
 import zmq
 from mujoco_sim.server.protocol import (
     CMD_RESET,
+    CMD_SET_HINT,
     CMD_STEP,
     RESP_OK,
     RESP_RESET_OK,
@@ -34,10 +35,11 @@ from halo.bridge.sim_client import SimClient
 class TestSimBridgeConfig:
     def test_defaults(self):
         cfg = SimBridgeConfig()
+        assert cfg.protocol_version == 2
         assert cfg.telemetry_url == "tcp://127.0.0.1:5560"
-        assert cfg.hints_url == "tcp://127.0.0.1:5561"
-        assert cfg.command_url == "tcp://127.0.0.1:5562"
-        assert cfg.query_url == "tcp://127.0.0.1:5563"
+        assert cfg.command_url == "tcp://127.0.0.1:5561"
+        assert cfg.hints_url is None
+        assert cfg.query_url is None
         assert cfg.managed is False
         assert cfg.recv_timeout_ms == 5000
         assert cfg.command_timeout_ms == 10_000
@@ -56,7 +58,7 @@ class TestSimBridgeConfig:
 # ---------------------------------------------------------------------------
 
 
-def _random_ports(n: int = 4) -> list[int]:
+def _random_ports(n: int = 2) -> list[int]:
     """Get N random available ports."""
     import socket
 
@@ -80,19 +82,15 @@ class MockSimServer:
         self._ctx = zmq.Context()
         self._running = False
         self._thread: threading.Thread | None = None
+        self._delay_once_ms: dict[str, int] = {}
 
-        # Ch1: PUB telemetry
+        # TelemetryStream: PUB telemetry
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.bind(f"tcp://127.0.0.1:{ports[0]}")
 
-        # Ch2: SUB hints (bind)
-        self._sub = self._ctx.socket(zmq.SUB)
-        self._sub.bind(f"tcp://127.0.0.1:{ports[1]}")
-        self._sub.setsockopt(zmq.SUBSCRIBE, b"")
-
-        # Ch3: REP commands
+        # CommandRPC: REP commands
         self._rep = self._ctx.socket(zmq.REP)
-        self._rep.bind(f"tcp://127.0.0.1:{ports[2]}")
+        self._rep.bind(f"tcp://127.0.0.1:{ports[1]}")
 
     def start(self):
         self._running = True
@@ -103,9 +101,12 @@ class MockSimServer:
         self._running = False
         if self._thread:
             self._thread.join(timeout=2.0)
-        for sock in (self._pub, self._sub, self._rep):
+        for sock in (self._pub, self._rep):
             sock.close(linger=0)
         self._ctx.term()
+
+    def delay_next(self, cmd: str, delay_ms: int) -> None:
+        self._delay_once_ms[cmd] = delay_ms
 
     def _loop(self):
         poller = zmq.Poller()
@@ -145,10 +146,15 @@ class MockSimServer:
 
     def _handle_command(self, msg: dict) -> dict:
         cmd = msg.get("type")
+        delay_ms = self._delay_once_ms.pop(cmd, 0)
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000.0)
         if cmd == CMD_STEP:
             return {"type": RESP_STEP_OK, "reward": 0.0, "done": False}
         if cmd == CMD_RESET:
             return {"type": RESP_RESET_OK, "seed": msg.get("seed")}
+        if cmd == CMD_SET_HINT:
+            return {"type": RESP_OK}
         if cmd == "shutdown":
             self._running = False
             return {"type": RESP_OK}
@@ -159,7 +165,7 @@ class MockSimServer:
 
 @pytest.fixture
 def mock_server():
-    ports = _random_ports(4)
+    ports = _random_ports(2)
     server = MockSimServer(ports)
     server.start()
     time.sleep(0.1)  # let sockets bind
@@ -172,9 +178,7 @@ def client_config(mock_server):
     _, ports = mock_server
     return SimBridgeConfig(
         telemetry_url=f"tcp://127.0.0.1:{ports[0]}",
-        hints_url=f"tcp://127.0.0.1:{ports[1]}",
-        command_url=f"tcp://127.0.0.1:{ports[2]}",
-        query_url=f"tcp://127.0.0.1:{ports[3]}",
+        command_url=f"tcp://127.0.0.1:{ports[1]}",
         recv_timeout_ms=2000,
         command_timeout_ms=2000,
     )
@@ -248,13 +252,31 @@ class TestSimClient:
         client = SimClient(client_config)
         client.start(timeout=5.0)
         try:
-            # Should not raise
-            client.publish_hint(
-                target_handle="cube",
-                bbox_xywh=(100, 100, 50, 50),
-                confidence=0.95,
-                tracker_ok=True,
-            )
+            with pytest.warns(DeprecationWarning, match="publish_hint"):
+                client.publish_hint(
+                    target_handle="cube",
+                    bbox_xywh=(100, 100, 50, 50),
+                    confidence=0.95,
+                    tracker_ok=True,
+                )
+        finally:
+            client.stop()
+
+    def test_command_socket_recovers_after_step_timeout(self, mock_server, client_config):
+        server, _ = mock_server
+        server.delay_next(CMD_STEP, delay_ms=350)
+        client_config.command_timeout_ms = 100
+        client = SimClient(client_config)
+        client.start(timeout=5.0)
+        try:
+            with pytest.raises(BridgeTransportError, match="step"):
+                client.step(np.zeros(6))
+
+            # Let the server finish the delayed REP cycle.
+            time.sleep(0.35)
+            resp = client.reset(seed=7)
+            assert resp["type"] == RESP_RESET_OK
+            assert resp["seed"] == 7
         finally:
             client.stop()
 

@@ -1,10 +1,8 @@
 """MuJoCo sim server — standalone process owning SO101Env + PickTeacher.
 
-Exposes 4 ZMQ channels:
-    Ch1 (PUB): telemetry — frames + state at render_fps
-    Ch2 (SUB): tracking hints from HALO
-    Ch3 (REP): commands — step, reset, teacher_step, etc.
-    Ch4 (REQ): queries — VLM detect, tracker init/update (to HALO)
+Exposes 2 ZMQ channels:
+    TelemetryStream (PUB): frames + state at render_fps
+    CommandRPC (REP): step, reset, teacher_step, configure, set_hint, shutdown
 
 Single-threaded main loop (required for macOS OpenGL rendering).
 """
@@ -29,8 +27,9 @@ class SimServer:
     """MuJoCo sim server process.
 
     Owns SO101Env and PickTeacher. Runs a single-threaded polling loop
-    that handles commands on Ch3, receives hints on Ch2, and publishes
-    telemetry on Ch1 at the configured render rate.
+    that handles commands on CommandRPC and publishes telemetry on
+    TelemetryStream at the
+    configured render rate.
     """
 
     def __init__(self, config: SimServerConfig | None = None) -> None:
@@ -41,9 +40,7 @@ class SimServer:
         # ZMQ context + sockets (created in run())
         self._ctx: zmq.Context | None = None
         self._pub_telemetry: zmq.Socket | None = None
-        self._sub_hints: zmq.Socket | None = None
         self._rep_commands: zmq.Socket | None = None
-        self._req_queries: zmq.Socket | None = None
         self._poller: zmq.Poller | None = None
 
         # Latest hint from HALO
@@ -68,33 +65,19 @@ class SimServer:
         # Create ZMQ sockets
         self._ctx = zmq.Context()
 
-        # Ch1: PUB telemetry
+        # TelemetryStream: PUB telemetry
         self._pub_telemetry = self._ctx.socket(zmq.PUB)
         self._pub_telemetry.bind(cfg.telemetry_url)
-        logger.info("Ch1 PUB (telemetry) bound to %s", cfg.telemetry_url)
+        logger.info("TelemetryStream PUB bound to %s", cfg.telemetry_url)
 
-        # Ch2: SUB hints
-        self._sub_hints = self._ctx.socket(zmq.SUB)
-        self._sub_hints.bind(cfg.hints_url)
-        self._sub_hints.setsockopt(zmq.SUBSCRIBE, b"")
-        logger.info("Ch2 SUB (hints) bound to %s", cfg.hints_url)
-
-        # Ch3: REP commands
+        # CommandRPC: REP commands
         self._rep_commands = self._ctx.socket(zmq.REP)
         self._rep_commands.bind(cfg.command_url)
-        logger.info("Ch3 REP (commands) bound to %s", cfg.command_url)
-
-        # Ch4: REQ queries (connect — HALO binds the REP side)
-        self._req_queries = self._ctx.socket(zmq.REQ)
-        self._req_queries.setsockopt(zmq.RCVTIMEO, cfg.query_timeout_ms)
-        self._req_queries.setsockopt(zmq.SNDTIMEO, cfg.query_timeout_ms)
-        # Don't connect yet — only connect when HALO's query service is available
-        self._query_connected = False
+        logger.info("CommandRPC REP bound to %s", cfg.command_url)
 
         # Poller for non-blocking recv
         self._poller = zmq.Poller()
         self._poller.register(self._rep_commands, zmq.POLLIN)
-        self._poller.register(self._sub_hints, zmq.POLLIN)
 
         # Reset env
         self._env.reset(seed=0)
@@ -108,7 +91,7 @@ class SimServer:
 
         try:
             while self._running:
-                # 1. Poll Ch3 (commands) + Ch2 (hints) — 10ms timeout
+                # 1. Poll CommandRPC — 10ms timeout
                 socks = dict(self._poller.poll(timeout=10))
 
                 if self._rep_commands in socks:
@@ -119,13 +102,14 @@ class SimServer:
                         if "teacher_mode" in msg:
                             self._teacher_mode = msg["teacher_mode"]
                             logger.info("teacher_mode = %s", self._teacher_mode)
-                        if "query_url" in msg:
-                            # Connect Ch4 to HALO's query service
-                            if not self._query_connected:
-                                query_url = msg["query_url"]
-                                self._req_queries.connect(query_url)
-                                self._query_connected = True
-                                logger.info("Ch4 REQ (queries) connected to %s", query_url)
+                    if msg.get("type") == "set_hint":
+                        self._latest_hint = {
+                            "ts_ms": msg.get("ts_ms"),
+                            "target_handle": msg.get("target_handle"),
+                            "bbox_xywh": msg.get("bbox_xywh"),
+                            "confidence": msg.get("confidence"),
+                            "tracker_ok": msg.get("tracker_ok"),
+                        }
 
                     reply, shutdown = dispatch_command(msg, self._env, self._teacher, teacher_mode=self._teacher_mode)
                     self._rep_commands.send(msgpack.packb(reply, use_bin_type=True))
@@ -138,10 +122,6 @@ class SimServer:
                     if shutdown:
                         break
 
-                if self._sub_hints in socks:
-                    raw = self._sub_hints.recv(zmq.NOBLOCK)
-                    self._latest_hint = msgpack.unpackb(raw, raw=False)
-
                 # 2. Publish telemetry at render_fps
                 now = time.monotonic()
                 if now - last_render >= render_interval:
@@ -152,7 +132,7 @@ class SimServer:
             self._cleanup()
 
     def _publish_telemetry(self, step_count: int) -> None:
-        """Render current state and publish on Ch1."""
+        """Render current state and publish on TelemetryStream."""
         obs = self._env._extract_obs()  # noqa: SLF001
         phase_id = self._teacher.phase if self._teacher_mode else 0
         done = self._teacher.done if self._teacher_mode else False
@@ -177,27 +157,15 @@ class SimServer:
             jpeg_quality=self._config.jpeg_quality,
         )
         packed = msgpack.packb(msg, use_bin_type=True)
-        self._pub_telemetry.send(packed, zmq.NOBLOCK)
-
-    def query_halo(self, request: dict) -> dict | None:
-        """Send a query on Ch4 (REQ) and wait for response.
-
-        Returns None if not connected or on timeout.
-        """
-        if not self._query_connected or self._req_queries is None:
-            return None
         try:
-            self._req_queries.send(msgpack.packb(request, use_bin_type=True))
-            raw = self._req_queries.recv()
-            return msgpack.unpackb(raw, raw=False)
+            self._pub_telemetry.send(packed, zmq.NOBLOCK)
         except zmq.ZMQError as exc:
-            logger.warning("Ch4 query failed: %s", exc)
-            return None
+            logger.debug("TelemetryStream send skipped: %s", exc)
 
     def _cleanup(self) -> None:
         """Close sockets and ZMQ context."""
         self._running = False
-        for sock in (self._pub_telemetry, self._sub_hints, self._rep_commands, self._req_queries):
+        for sock in (self._pub_telemetry, self._rep_commands):
             if sock is not None:
                 sock.close(linger=100)
         if self._ctx is not None:

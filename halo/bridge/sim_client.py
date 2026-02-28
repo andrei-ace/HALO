@@ -1,10 +1,8 @@
 """HALO-side ZMQ client for communicating with the MuJoCo sim server.
 
-Connects to 4 channels:
-    Ch1 (SUB): telemetry receiver — frames + state (background thread)
-    Ch2 (PUB): tracking hints publisher
-    Ch3 (REQ): command sender — step, reset, teacher_step, etc.
-    Ch4 (REP): query responder — VLM/tracker queries from sim (background thread)
+Connects to 2 channels:
+    TelemetryStream (SUB): frames + state receiver (background thread)
+    CommandRPC (REQ): step, reset, teacher_step, configure, set_hint
 
 Usage::
 
@@ -27,6 +25,7 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 from typing import Any
 
 import msgpack
@@ -42,8 +41,8 @@ logger = logging.getLogger(__name__)
 class SimClient:
     """HALO-side ZMQ client for the MuJoCo sim server.
 
-    Manages connections to all 4 ZMQ channels, with a background thread
-    for receiving telemetry (Ch1).
+    Manages connections to telemetry + command channels, with a background thread
+    for receiving telemetry.
 
     Supports two start modes:
         - Standalone: server already running, just connect.
@@ -57,7 +56,6 @@ class SimClient:
         # ZMQ
         self._ctx: zmq.Context | None = None
         self._sub_telemetry: zmq.Socket | None = None
-        self._pub_hints: zmq.Socket | None = None
         self._req_commands: zmq.Socket | None = None
 
         # Telemetry receiver thread
@@ -70,8 +68,9 @@ class SimClient:
         # Managed subprocess
         self._server_proc: subprocess.Popen | None = None
 
-        # Command lock (Ch3 REQ/REP is strictly sequential)
+        # Command lock (REQ/REP is strictly sequential)
         self._cmd_lock = threading.Lock()
+        self._retryable_commands = {"reset", "get_state", "set_state", "configure", "set_hint"}
 
     @property
     def started(self) -> bool:
@@ -108,24 +107,15 @@ class SimClient:
         # Create ZMQ context + sockets
         self._ctx = zmq.Context()
 
-        # Ch1: SUB telemetry (connect to server PUB)
+        # TelemetryStream: SUB telemetry (connect to server PUB)
         self._sub_telemetry = self._ctx.socket(zmq.SUB)
         self._sub_telemetry.setsockopt(zmq.SUBSCRIBE, b"")
         self._sub_telemetry.setsockopt(zmq.RCVTIMEO, cfg.recv_timeout_ms)
         self._sub_telemetry.connect(cfg.telemetry_url)
-        logger.info("Ch1 SUB (telemetry) connected to %s", cfg.telemetry_url)
+        logger.info("TelemetryStream SUB connected to %s", cfg.telemetry_url)
 
-        # Ch2: PUB hints (connect to server SUB)
-        self._pub_hints = self._ctx.socket(zmq.PUB)
-        self._pub_hints.connect(cfg.hints_url)
-        logger.info("Ch2 PUB (hints) connected to %s", cfg.hints_url)
-
-        # Ch3: REQ commands (connect to server REP)
-        self._req_commands = self._ctx.socket(zmq.REQ)
-        self._req_commands.setsockopt(zmq.RCVTIMEO, cfg.command_timeout_ms)
-        self._req_commands.setsockopt(zmq.SNDTIMEO, cfg.command_timeout_ms)
-        self._req_commands.connect(cfg.command_url)
-        logger.info("Ch3 REQ (commands) connected to %s", cfg.command_url)
+        # CommandRPC: REQ commands (connect to server REP)
+        self._connect_command_socket()
 
         # Start telemetry receiver thread
         self._recv_stop.clear()
@@ -148,11 +138,10 @@ class SimClient:
             self._recv_thread.join(timeout=2.0)
             self._recv_thread = None
 
-        for sock in (self._sub_telemetry, self._pub_hints, self._req_commands):
+        for sock in (self._sub_telemetry, self._req_commands):
             if sock is not None:
                 sock.close(linger=100)
         self._sub_telemetry = None
-        self._pub_hints = None
         self._req_commands = None
 
         if self._ctx is not None:
@@ -166,7 +155,7 @@ class SimClient:
         logger.info("SimClient stopped")
 
     # ------------------------------------------------------------------
-    # Ch3: Command methods
+    # CommandRPC methods
     # ------------------------------------------------------------------
 
     def step(self, action: np.ndarray) -> dict:
@@ -229,7 +218,7 @@ class SimClient:
 
         Args:
             teacher_mode: Enable/disable teacher stepping.
-            query_url: URL for HALO's Ch4 REP socket.
+            telemetry_profile: Optional telemetry profile selector.
         """
         from mujoco_sim.server.protocol import CMD_CONFIGURE
 
@@ -244,7 +233,7 @@ class SimClient:
         return resp
 
     # ------------------------------------------------------------------
-    # Ch2: Hints
+    # Hint updates (sent as CommandRPC command in protocol v2)
     # ------------------------------------------------------------------
 
     def publish_hint(
@@ -255,41 +244,96 @@ class SimClient:
         confidence: float = 0.0,
         tracker_ok: bool = False,
     ) -> None:
-        """Publish a tracking hint on Ch2."""
-        from mujoco_sim.server.protocol import MSG_TRACKING_HINT
+        """Deprecated alias for set_hint()."""
+        warnings.warn(
+            "publish_hint() is deprecated in protocol v2; use set_hint()",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        self.set_hint(
+            target_handle=target_handle,
+            bbox_xywh=bbox_xywh,
+            confidence=confidence,
+            tracker_ok=tracker_ok,
+        )
 
-        msg = {
-            "type": MSG_TRACKING_HINT,
-            "ts_ms": int(time.monotonic() * 1000),
-            "target_handle": target_handle,
-            "bbox_xywh": list(bbox_xywh) if bbox_xywh is not None else None,
-            "confidence": confidence,
-            "tracker_ok": tracker_ok,
-        }
-        if self._pub_hints is not None:
-            self._pub_hints.send(msgpack.packb(msg, use_bin_type=True), zmq.NOBLOCK)
+    def set_hint(
+        self,
+        *,
+        target_handle: str | None = None,
+        bbox_xywh: tuple[int, int, int, int] | None = None,
+        confidence: float = 0.0,
+        tracker_ok: bool = False,
+    ) -> dict:
+        """Send a tracking hint update to the sim over CommandRPC."""
+        from mujoco_sim.server.protocol import CMD_SET_HINT
+
+        return self._send_command(
+            {
+                "type": CMD_SET_HINT,
+                "ts_ms": int(time.monotonic() * 1000),
+                "target_handle": target_handle,
+                "bbox_xywh": list(bbox_xywh) if bbox_xywh is not None else None,
+                "confidence": confidence,
+                "tracker_ok": tracker_ok,
+            }
+        )
 
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
     def _send_command(self, msg: dict) -> dict:
-        """Send a command on Ch3 and wait for response (thread-safe)."""
+        """Send a command on CommandRPC and wait for response (thread-safe)."""
         if self._req_commands is None:
             raise BridgeTransportError("SimClient not started")
         with self._cmd_lock:
             try:
-                self._req_commands.send(msgpack.packb(msg, use_bin_type=True))
-                raw = self._req_commands.recv()
-                resp = msgpack.unpackb(raw, raw=False)
-                if resp.get("type") == "error":
-                    raise BridgeTransportError(f"Server error: {resp.get('message', 'unknown')}")
-                return resp
+                return self._send_command_once(msg)
             except zmq.ZMQError as exc:
-                raise BridgeTransportError(f"Ch3 command failed: {exc}") from exc
+                cmd_type = str(msg.get("type", "unknown"))
+                self._reset_command_socket()
+                if cmd_type not in self._retryable_commands:
+                    raise BridgeTransportError(f"CommandRPC failed ({cmd_type}): {exc}") from exc
+
+                try:
+                    return self._send_command_once(msg)
+                except zmq.ZMQError as retry_exc:
+                    self._reset_command_socket()
+                    raise BridgeTransportError(f"CommandRPC retry failed ({cmd_type}): {retry_exc}") from retry_exc
+
+    def _send_command_once(self, msg: dict) -> dict:
+        if self._req_commands is None:
+            raise BridgeTransportError("SimClient command socket unavailable")
+
+        self._req_commands.send(msgpack.packb(msg, use_bin_type=True))
+        raw = self._req_commands.recv()
+        resp = msgpack.unpackb(raw, raw=False)
+        if resp.get("type") == "error":
+            raise BridgeTransportError(f"Server error: {resp.get('message', 'unknown')}")
+        return resp
+
+    def _connect_command_socket(self) -> None:
+        if self._ctx is None:
+            raise BridgeTransportError("SimClient context not initialized")
+
+        cfg = self._config
+        req = self._ctx.socket(zmq.REQ)
+        req.setsockopt(zmq.RCVTIMEO, cfg.command_timeout_ms)
+        req.setsockopt(zmq.SNDTIMEO, cfg.command_timeout_ms)
+        req.connect(cfg.command_url)
+        self._req_commands = req
+        logger.info("CommandRPC REQ connected to %s", cfg.command_url)
+
+    def _reset_command_socket(self) -> None:
+        old_sock = self._req_commands
+        self._req_commands = None
+        if old_sock is not None:
+            old_sock.close(linger=0)
+        self._connect_command_socket()
 
     def _telemetry_loop(self) -> None:
-        """Background thread: receive telemetry on Ch1."""
+        """Background thread: receive telemetry on TelemetryStream."""
         from mujoco_sim.server.protocol import unpack_telemetry
 
         while not self._recv_stop.is_set():
@@ -314,20 +358,16 @@ class SimClient:
         cfg = self._config
         # Parse ports from URLs
         cmd.extend(["--telemetry-port", str(self._parse_port(cfg.telemetry_url))])
-        cmd.extend(["--hints-port", str(self._parse_port(cfg.hints_url))])
         cmd.extend(["--command-port", str(self._parse_port(cfg.command_url))])
-        cmd.extend(["--query-port", str(self._parse_port(cfg.query_url))])
 
         logger.info("Starting managed sim server: %s", " ".join(cmd))
-        self._server_proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self._server_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
         # Give the server a moment to bind sockets
         time.sleep(1.0)
 
         if self._server_proc.poll() is not None:
-            stdout = self._server_proc.stdout.read().decode() if self._server_proc.stdout else ""
-            stderr = self._server_proc.stderr.read().decode() if self._server_proc.stderr else ""
-            raise BridgeTransportError(f"Managed server exited immediately: stdout={stdout}, stderr={stderr}")
+            raise BridgeTransportError("Managed server exited immediately")
 
     def _stop_managed(self) -> None:
         """Stop the managed server subprocess."""

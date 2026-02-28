@@ -22,10 +22,10 @@ def _log(msg: str) -> None:
 
 @skip_no_vlm
 async def test_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
-    """VLM describes scene → track cube → settle → re-query VLM → compare bboxes."""
+    """VLM describes scene → track cube → re-query VLM → compare bboxes."""
     from halo.contracts.events import EventType
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
-    from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
+    from halo.services.target_perception_service.tracker_fn import find_detection_by_handle, make_tracker_factory_fn
     from halo.testing.mock_fns import make_video_capture_fn
     from halo.testing.runner import HeadlessRunner, RunnerConfig
 
@@ -102,9 +102,9 @@ async def test_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
         )
         _log(f"STEP 2 done ({tracker_acquire_s:.1f}s) — TARGET_ACQUIRED")
 
-        # ── Step 3: let tracker settle for 5s ────────────────────────────
-        _log("STEP 3 — letting tracker settle (5s)")
-        for _ in range(50):
+        # ── Step 3: tracking observation window (3s) ─────────────────────
+        _log("STEP 3 — tracking observation window (3s)")
+        for _ in range(30):
             await svc.tick()
             await asyncio.sleep(0.1)
 
@@ -131,9 +131,11 @@ async def test_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
         for d in vlm_scene.detections:
             _log(f"  {d.handle}: bbox={d.bbox}  centroid={d.centroid}")
 
-        vlm_det_now = next((d for d in vlm_scene.detections if d.handle == cube_handle), None)
-        if vlm_det_now is None:
-            vlm_det_now = next((d for d in vlm_scene.detections if "cube" in d.handle.lower()), None)
+        vlm_det_now = find_detection_by_handle(
+            cube_handle,
+            vlm_scene.detections,
+            reference_center_px=tracker_center,
+        )
         assert vlm_det_now is not None, (
             f"VLM re-query didn't find {cube_handle!r}. Got: {[d.handle for d in vlm_scene.detections]}"
         )

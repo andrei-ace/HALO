@@ -1,6 +1,6 @@
-"""Command dispatch for Ch3 (REQ/REP) messages.
+"""Command dispatch for CommandRPC (REQ/REP) messages.
 
-Handles: step, reset, get_state, set_state, teacher_step, configure, shutdown.
+Handles: step, reset, get_state, set_state, teacher_step, configure, set_hint, shutdown.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from mujoco_sim.server.protocol import (
     CMD_CONFIGURE,
     CMD_GET_STATE,
     CMD_RESET,
+    CMD_SET_HINT,
     CMD_SET_STATE,
     CMD_SHUTDOWN,
     CMD_STEP,
@@ -41,7 +42,7 @@ def dispatch_command(
     *,
     teacher_mode: bool = False,
 ) -> tuple[dict, bool]:
-    """Dispatch a Ch3 command and return (response_dict, should_shutdown).
+    """Dispatch a CommandRPC command and return (response_dict, should_shutdown).
 
     Args:
         msg: Decoded msgpack command message.
@@ -71,6 +72,9 @@ def dispatch_command(
 
     if cmd == CMD_CONFIGURE:
         return _handle_configure(msg), False
+
+    if cmd == CMD_SET_HINT:
+        return _handle_set_hint(msg), False
 
     if cmd == CMD_SHUTDOWN:
         logger.info("Shutdown command received")
@@ -162,4 +166,10 @@ def _handle_configure(msg: dict) -> dict:
     # teacher_mode is tracked by the server main loop, not here.
     # This handler just acknowledges the configure command.
     logger.info("Configure: %s", {k: v for k, v in msg.items() if k != "type"})
+    return {"type": RESP_OK}
+
+
+def _handle_set_hint(msg: dict) -> dict:
+    """Acknowledge a hint update delivered over CommandRPC."""
+    logger.debug("Set hint: %s", {k: v for k, v in msg.items() if k != "type"})
     return {"type": RESP_OK}
