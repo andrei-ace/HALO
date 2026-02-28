@@ -2,7 +2,7 @@
 
 ## Context
 
-HALO needs a MuJoCo/robosuite simulation module for data generation and episode replay/annotation. This is a sibling to `sim/` (Isaac Lab) but focused on: teacher generates PICK demos → episodes recorded to HDF5 → offline phase detection → VCR replay with manual annotation. No ACT training, no tracking migration, no bridge to HALO runtime. Module lives at `mujoco_sim/` at the repo root with its own `pyproject.toml`.
+HALO needs a MuJoCo simulation module for data generation and episode replay/annotation. This is a sibling to `sim/` (Isaac Lab) but focused on: teacher generates PICK demos → episodes recorded to HDF5 → offline phase detection → VCR replay with manual annotation. No ACT training, no tracking migration, no bridge to HALO runtime. Module lives at `mujoco_sim/` at the repo root with its own `pyproject.toml`.
 
 ## Directory Structure (all PRs)
 
@@ -18,7 +18,8 @@ mujoco_sim/
     │   └── env_config.py
     ├── env/
     │   ├── __init__.py
-    │   └── robosuite_env.py
+    │   ├── so101_env.py
+    │   └── robosuite_env.py          # legacy, not exported
     ├── dataset/                       # PR2
     │   ├── __init__.py
     │   ├── raw_episode.py
@@ -26,6 +27,7 @@ mujoco_sim/
     │   └── reader_hdf5.py
     ├── teacher/                       # PR3
     │   ├── __init__.py
+    │   ├── ik_helper.py
     │   └── pick_teacher.py
     ├── runner/                        # PR3
     │   ├── __init__.py
@@ -44,10 +46,17 @@ mujoco_sim/
     │   ├── phase_track.py
     │   ├── annotation_ui.py
     │   └── annotation_io.py
+    ├── server/                        # ZMQ sim server
+    │   ├── __init__.py
+    │   ├── __main__.py
+    │   ├── config.py
+    │   ├── handlers.py
+    │   └── protocol.py
     ├── scripts/
     │   ├── __init__.py
     │   ├── test_env.py                # PR1
     │   ├── generate_episodes.py       # PR3
+    │   ├── inspect_episode.py         # PR3
     │   ├── detect_phases.py           # PR4
     │   ├── replay_episode.py          # PR5
     │   └── annotate_episode.py        # PR6
@@ -56,6 +65,7 @@ mujoco_sim/
         ├── test_constants_sync.py     # PR1
         ├── test_raw_episode.py        # PR2
         ├── test_pick_teacher.py       # PR3
+        ├── test_server.py             # server tests
         ├── test_guards.py            # PR4
         ├── test_phase_detector.py     # PR4
         ├── test_phase_track.py        # PR6
@@ -79,15 +89,15 @@ PR3 and PR4 can be developed in parallel after PR2.
 
 ### PR1 — Environment + Constants ✅
 
-Foundation: `RobosuiteEnv` wrapper with dual cameras, seeded resets, 7-DOF EE-delta action space matching HALO's contracts.
+Foundation: `SO101Env` wrapper with dual cameras, seeded resets, 6-DOF joint-position action space for SO-101.
 
 **Delivered:**
 - `constants.py` — phase IDs, action fields, gripper semantics, timing (synced from `halo.contracts`)
-- `config/env_config.py` — `EnvConfig` dataclass (Panda, BASIC controller, dual cameras, 20 Hz)
-- `env/robosuite_env.py` — `RobosuiteEnv` wrapper: reset, step, render, state get/set
+- `config/env_config.py` — `EnvConfig` dataclass (SO-101, position actuators, dual cameras, 20 Hz)
+- `env/so101_env.py` — `SO101Env` wrapper: reset, step, render, state get/set (raw MuJoCo)
 - `scripts/test_env.py` — acceptance script (dump images, verify seeded reproducibility)
 - `tests/test_constants_sync.py` — 5 tests validating all constants
-- Root-level `tests/test_mujoco_sim_contract_sync.py` — cross-module contract sync (no robosuite needed)
+- Root-level `tests/test_mujoco_sim_contract_sync.py` — cross-module contract sync
 
 ### PR2 — Episode Recording Format ✅
 
@@ -109,7 +119,7 @@ Foundation: `RobosuiteEnv` wrapper with dual cameras, seeded resets, 7-DOF EE-de
 
 ### PR3 — Teacher Runner ✅
 
-**PickTeacher** — scripted PICK using privileged sim state (ground-truth cube_pos, ee_pos). Phase sequence mirrors `sim/halo_sim/teacher/teacher_fsm.py`. `step(obs) → (action[7], phase_id, done)`
+**PickTeacher** — scripted PICK using privileged sim state (ground-truth cube_pos, ee_pos) with damped least-squares IK. `step(obs, model, data) → (action[6], phase_id, done)`
 
 **run_teacher** — loop: reset env → stabilize (5 s) → run teacher → write HDF5
 

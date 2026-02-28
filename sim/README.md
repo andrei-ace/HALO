@@ -1,10 +1,10 @@
 # sim/ — Isaac Lab Integration (Planned)
 
-Isaac Lab sim support is a future phase. The current sim integration uses **MuJoCo via robosuite** (see `mujoco_sim/`).
+Isaac Lab sim support is a future phase. The current sim integration uses **raw MuJoCo + SO-101** (see `mujoco_sim/`).
 
 ## Phased Sim Strategy
 
-1. **MuJoCo + robosuite** (current) — `mujoco_sim/` package. Teacher demos, ACT training, closed-loop eval.
+1. **MuJoCo + SO-101** (current) — `mujoco_sim/` package. Teacher demos, ACT training, closed-loop eval.
 2. **Isaac Lab** (future) — this directory. GPU-accelerated parallel envs, domain randomization at scale, sim-to-real transfer.
 3. **Real SO-ARM101 hardware** (later) — same dataset schema and action space, swap sensor sources and controller.
 
@@ -17,7 +17,7 @@ This directory previously contained scaffolded stubs for an Isaac Lab extension 
 - `teacher/ik_teacher.py` — target EE pose to EE-frame delta action converter
 - `data/schema.py` + `recorder.py` — dataset field definitions + sharded HDF5 recorder
 - `bridge/protocol.py` + `sim_server.py` — ZeroMQ message schema + sim-side server
-- `cfg/` — env, robot (Franka Panda placeholder), scene, teacher, domain randomization configs
+- `cfg/` — env, robot (SO-101 placeholder), scene, teacher, domain randomization configs
 - `scripts/` — generate_demos, replay_demos, test_robot_spawn, run_bridge (all stubs)
 - `constants.py` — phase IDs, action fields synced from `halo.contracts` (verified by `test_sim_contract_sync.py`)
 
@@ -38,5 +38,5 @@ After the MuJoCo pipeline is validated end-to-end (teacher demos → ACT trainin
 
 The contracts that the Isaac Lab extension must satisfy are defined in:
 - `halo/contracts/enums.py` — PhaseId, WRIST_ACTIVE_PHASES
-- `halo/contracts/actions.py` — Action (7-DOF), ActionChunk, ZERO_ACTION
+- `halo/contracts/actions.py` — Action, ActionChunk, ZERO_ACTION
 - `halo/bridge/` — ZeroMQ transport protocol (config, apply, observe, chunk, transforms)
