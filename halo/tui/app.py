@@ -517,8 +517,6 @@ class TargetPerceptionPanel(Container):
         if a_tot is not None and a_tot > 0:
             a_color = "#9e9e9e" if has_pending else "bright_green"
             texts.append(row("Active:", f"{a_con}/{a_tot}", a_color))
-        elif a_tot is not None:
-            texts.append(row("Active:", "0", "#9e9e9e"))
         else:
             texts.append(row("Active:", "—", "#9e9e9e"))
 
@@ -1443,11 +1441,12 @@ def _run_live(args: list[str]) -> None:
     from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
     from halo.services.target_perception_service.video_source import VideoSource
 
-    # Parse --arm, --model, --vlm-model, --base-url from args
+    # Parse --arm, --model, --vlm-model, --base-url, --source from args
     arm_id = "arm0"
     model = "gpt-oss:20b"
     vlm_model = "qwen2.5vl:3b"
     base_url = "http://localhost:11434"
+    source_type = "videoloop"
 
     for i, arg in enumerate(args):
         if arg == "--arm" and i + 1 < len(args):
@@ -1458,6 +1457,8 @@ def _run_live(args: list[str]) -> None:
             vlm_model = args[i + 1]
         elif arg == "--base-url" and i + 1 < len(args):
             base_url = args[i + 1]
+        elif arg == "--source" and i + 1 < len(args):
+            source_type = args[i + 1]
 
     runtime = HALORuntime()
     runtime.register_arm(arm_id)
@@ -1473,7 +1474,12 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
     )
 
-    video_source = VideoSource()
+    if source_type == "mujoco":
+        from halo.services.target_perception_service.mujoco_source import MuJocoVideoSource
+
+        video_source = MuJocoVideoSource()
+    else:
+        video_source = VideoSource()
     video_source.start()
     capture_fn = video_source.make_capture_fn(arm_id)
     tracker_factory_fn = make_tracker_factory_fn()

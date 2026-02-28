@@ -203,22 +203,23 @@ def _annotate_image(image: object, detections: list[dict]) -> Image.Image:
     """Draw red bounding boxes and handle labels on a copy of *image*.
 
     *detections* is a list of dicts with ``bbox`` (x1, y1, x2, y2) and
-    ``handle`` keys.  Bbox coordinates are in the VLM input space (1024px
-    wide); the image is resized to match before drawing.
+    ``handle`` keys.  Bbox coordinates are in the same space as the image
+    sent to the VLM (native resolution when width <= 1024, otherwise
+    resized to 1024px width).
     """
     pil = _to_pil(image)
     if not detections:
         return pil
 
-    # The VLM receives images resized to 1024px width; bbox coords are in
-    # that space.  Resize the saved image to the same dimensions so the
-    # boxes align.
+    # Match the resize logic in ollama_vlm_fn: only resize when the
+    # image is wider than the VLM input width.
     from halo.services.target_perception_service.ollama_vlm_fn import _VLM_INPUT_WIDTH
 
-    aspect = pil.height / pil.width
-    new_w = _VLM_INPUT_WIDTH
-    new_h = int(new_w * aspect)
-    pil = pil.resize((new_w, new_h), Image.LANCZOS)
+    if pil.width > _VLM_INPUT_WIDTH:
+        aspect = pil.height / pil.width
+        new_w = _VLM_INPUT_WIDTH
+        new_h = int(new_w * aspect)
+        pil = pil.resize((new_w, new_h), Image.LANCZOS)
 
     draw = ImageDraw.Draw(pil)
     try:

@@ -69,11 +69,14 @@ def _image_to_b64(image: object) -> str:
     else:
         raise TypeError(f"Unsupported image type: {type(image)}")
 
-    # Resize to known width for consistent bbox coordinate space.
-    aspect = pil.height / pil.width
-    new_w = _VLM_INPUT_WIDTH
-    new_h = int(new_w * aspect)
-    pil = pil.resize((new_w, new_h), Image.LANCZOS)
+    # Only resize if the image is wider than the VLM input width.
+    # Smaller images (e.g. 640px MuJoCo frames) are sent at native resolution
+    # so that bbox coordinates match the capture frame directly.
+    if pil.width > _VLM_INPUT_WIDTH:
+        aspect = pil.height / pil.width
+        new_w = _VLM_INPUT_WIDTH
+        new_h = int(new_w * aspect)
+        pil = pil.resize((new_w, new_h), Image.LANCZOS)
 
     buf = io.BytesIO()
     pil.save(buf, format="PNG")

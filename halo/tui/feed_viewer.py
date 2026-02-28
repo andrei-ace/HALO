@@ -110,15 +110,6 @@ def _draw_annotations(
             fail_text = perception.failure_code.value
             cv2.putText(frame, fail_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 200), 1)
 
-        # Buffer stats (top-right)
-        x_right = frame.shape[1] - 220
-        if perception.active_buf_total > 0:
-            a_text = f"act: {perception.active_buf_consumed}/{perception.active_buf_total}"
-            a_col = (128, 128, 128) if perception.has_pending_tracker else (0, 200, 0)
-            cv2.putText(frame, a_text, (x_right, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, a_col, 1)
-        if perception.pending_buf_total > 0:
-            p_text = f"pend: {perception.pending_buf_consumed}/{perception.pending_buf_total}"
-            cv2.putText(frame, p_text, (x_right, 45), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 200), 1)
     else:
         color = (128, 128, 128)
 
