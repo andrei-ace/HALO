@@ -56,6 +56,7 @@ WRIST_ACTIVE_PHASES: frozenset[PhaseId] = frozenset(
         PhaseId.EXECUTE_APPROACH,
         PhaseId.CLOSE_GRIPPER,
         PhaseId.VERIFY_GRASP,
+        PhaseId.LIFT,
     }
 )
 

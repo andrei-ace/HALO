@@ -67,5 +67,7 @@ def test_gripper_semantics():
 
 def test_wrist_active_phases():
     """WRIST_ACTIVE_PHASES contains exactly the expected phases."""
-    expected = frozenset({PHASE_VISUAL_ALIGN, PHASE_EXECUTE_APPROACH, PHASE_CLOSE_GRIPPER, PHASE_VERIFY_GRASP})
+    expected = frozenset(
+        {PHASE_VISUAL_ALIGN, PHASE_EXECUTE_APPROACH, PHASE_CLOSE_GRIPPER, PHASE_VERIFY_GRASP, PHASE_LIFT}
+    )
     assert WRIST_ACTIVE_PHASES == expected

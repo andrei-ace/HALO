@@ -22,6 +22,7 @@ WRIST_ACTIVE_PHASES = frozenset(
         PHASE_EXECUTE_APPROACH,
         PHASE_CLOSE_GRIPPER,
         PHASE_VERIFY_GRASP,
+        PHASE_LIFT,
     }
 )
 

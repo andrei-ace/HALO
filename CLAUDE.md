@@ -145,7 +145,7 @@ Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_REGRASP`, `RECOVER_ABORT`
 
 `CLOSE_GRIPPER` is triggered **deterministically** (distance < threshold held for `grasp_persistence_ms`), never by the planner.
 
-Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
+Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP`, `LIFT` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
 
 ### ACT action space
 `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` in the EE frame, per-timestep servo increments.

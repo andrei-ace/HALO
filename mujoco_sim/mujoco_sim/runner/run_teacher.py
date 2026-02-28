@@ -284,6 +284,7 @@ def _run_single_episode(
             frame = obs["rgb_scene"][::-1].copy()
             if tracker_active:
                 frame = _draw_tracking_overlay(frame, current_bbox, tracker_ok)
+            frame = _composite_wrist(frame, obs["rgb_wrist"], phase_id)
             video_frames.append(frame)
 
         # Record BEFORE stepping (obs is current, action is what we're about to apply)
@@ -333,6 +334,37 @@ def _run_single_episode(
 # ---------------------------------------------------------------------------
 # Video helpers
 # ---------------------------------------------------------------------------
+
+
+def _composite_wrist(
+    frame: np.ndarray,
+    rgb_wrist: np.ndarray,
+    phase_id: int,
+    scale: float = 0.4,
+    margin: int = 8,
+) -> np.ndarray:
+    """Overlay wrist camera as picture-in-picture in the bottom-right corner.
+
+    Shows black when phase is outside WRIST_ACTIVE_PHASES, live feed when active.
+    """
+    from mujoco_sim.constants import WRIST_ACTIVE_PHASES
+
+    wrist = rgb_wrist[::-1]  # flip (robosuite bottom-up)
+    wh, ww = wrist.shape[:2]
+    th, tw = int(wh * scale), int(ww * scale)
+
+    if phase_id in WRIST_ACTIVE_PHASES:
+        import cv2
+
+        thumb = cv2.resize(wrist, (tw, th), interpolation=cv2.INTER_AREA)
+    else:
+        thumb = np.zeros((th, tw, 3), dtype=np.uint8)
+
+    fh, fw = frame.shape[:2]
+    y0 = fh - th - margin
+    x0 = fw - tw - margin
+    frame[y0 : y0 + th, x0 : x0 + tw] = thumb
+    return frame
 
 
 def _draw_tracking_overlay(
