@@ -1,17 +1,18 @@
 """Contract sync verification — ensures mujoco_sim.constants stays in sync with halo.contracts.
 
 Requires ``--extra sim`` (halo-mujoco-sim). Auto-skips if not installed.
+
+Note: Action fields are *intentionally different* between sim (6D joint-position for
+SO-101) and HALO core (7D EE-delta). Only phase IDs, wrist active phases, and
+gripper semantics are synced.
 """
 
 import pytest
 
-from halo.contracts.actions import Action
 from halo.contracts.enums import WRIST_ACTIVE_PHASES, PhaseId
 
 try:
     from mujoco_sim.constants import (
-        ACTION_DIM,
-        ACTION_FIELDS,
         GRIPPER_CLOSE,
         GRIPPER_OPEN,
         PHASE_CLOSE_GRIPPER,
@@ -60,21 +61,11 @@ def test_phase_id_values_match():
         assert sim_val == int(phase_id), f"{const_name}: mujoco_sim={sim_val} != halo={int(phase_id)}"
 
 
-def test_action_fields_match():
-    """ACTION_FIELDS matches Action.__dataclass_fields__ ordering."""
-    action_fields = list(Action.__dataclass_fields__.keys())
-    assert ACTION_FIELDS == action_fields
-
-
-def test_action_dim_matches():
-    """ACTION_DIM matches number of Action fields."""
-    assert ACTION_DIM == len(Action.__dataclass_fields__)
-
-
-def test_gripper_semantics_match():
-    """GRIPPER_OPEN/CLOSE match robosuite convention (-1.0=open, 1.0=close)."""
-    assert GRIPPER_OPEN == -1.0
-    assert GRIPPER_CLOSE == 1.0
+def test_gripper_semantics():
+    """GRIPPER_OPEN/CLOSE are SO-101 joint angles (not robosuite ±1)."""
+    # SO-101 gripper joint range: -0.17 (open) to 1.75 (close)
+    assert GRIPPER_OPEN == -0.17
+    assert GRIPPER_CLOSE == 1.75
 
 
 def test_wrist_active_phases_match():

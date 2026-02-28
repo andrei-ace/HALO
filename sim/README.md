@@ -31,7 +31,7 @@ After the MuJoCo pipeline is validated end-to-end (teacher demos → ACT trainin
 - 64 parallel envs on A6000 48GB for batched demo generation
 - Same action space: `[dx, dy, dz, droll, dpitch, dyaw, gripper_cmd]` EE-frame deltas at 10 Hz
 - Wrist camera gating (black image when phase not in WRIST_ACTIVE_PHASES)
-- ZeroMQ bridge reusing `halo/bridge/` adapters (sim_apply_fn, sim_observe_fn, sim_chunk_fn)
+- ZeroMQ bridge reusing `halo/bridge/` adapters (SimClient, SimSource)
 - Sharded HDF5 dataset recording with manifest
 
 ## Key Contracts (preserved in halo.contracts)

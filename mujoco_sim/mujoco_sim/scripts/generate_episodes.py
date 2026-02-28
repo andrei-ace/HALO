@@ -2,7 +2,11 @@
 
 Usage::
 
+    # Managed mode (spawns sim server automatically):
     python -m mujoco_sim.scripts.generate_episodes --num-episodes 10 --output-dir episodes
+
+    # Standalone mode (connect to running sim server):
+    python -m mujoco_sim.scripts.generate_episodes --standalone --num-episodes 10
 """
 
 from __future__ import annotations
@@ -25,6 +29,12 @@ def main() -> None:
     parser.add_argument("--vlm-url", type=str, default="http://localhost:11434", help="Ollama base URL for VLM")
     parser.add_argument("--vlm-model", type=str, default="qwen2.5vl:3b", help="VLM model name")
     parser.add_argument("--no-progress", action="store_true", help="Disable tqdm progress bar")
+    parser.add_argument(
+        "--standalone", action="store_true", help="Connect to an already-running sim server (don't spawn)"
+    )
+    parser.add_argument("--command-url", type=str, default=None, help="Ch3 command URL (standalone mode)")
+    parser.add_argument("--telemetry-url", type=str, default=None, help="Ch1 telemetry URL (standalone mode)")
+    parser.add_argument("--query-url", type=str, default=None, help="Ch4 query URL (standalone mode)")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = parser.parse_args()
 
@@ -61,6 +71,10 @@ def main() -> None:
         vlm_base_url=args.vlm_url,
         vlm_model=args.vlm_model,
         progress=not args.no_progress,
+        managed=not args.standalone,
+        command_url=args.command_url,
+        telemetry_url=args.telemetry_url,
+        query_url=args.query_url,
     )
 
     _print_summary(results, output_dir, args.save_video)

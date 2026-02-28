@@ -1,11 +1,11 @@
-"""E2E test: MuJocoVideoSource → real VLM + real OpenCV tracker → bbox verification.
+"""E2E test: SimSource (ZMQ bridge) → real VLM + real OpenCV tracker → bbox verification.
 
-Full pipeline: MuJoCo scene camera → VLM describe → track red cube → settle →
-VLM re-query → compare tracker bbox vs VLM bbox (IoU).
+Full pipeline: MuJoCo sim server → ZMQ telemetry → SimSource → VLM describe →
+track green cube → settle → VLM re-query → compare tracker bbox vs VLM bbox (IoU).
 
-The Lift env has a single static red cube, so one test covers the tracking pipeline.
+The SO-101 pick scene has a single static green cube.
 
-Requires: robosuite, Ollama with VLM model.
+Requires: mujoco (SO-101 env), Ollama with VLM model.
 Auto-skips if either is unavailable.
 """
 
@@ -20,39 +20,37 @@ from tests.e2e.conftest import skip_no_vlm
 from tests.e2e.utils import assert_bbox_overlap, iou
 
 try:
-    from halo.services.target_perception_service.mujoco_source import _suppress_robosuite_warnings
+    import mujoco  # noqa: F401
+    from mujoco_sim.env import SO101Env  # noqa: F401
 
-    _suppress_robosuite_warnings()
-    import robosuite  # noqa: F401
-
-    _has_robosuite = True
+    _has_mujoco = True
 except ImportError:
-    _has_robosuite = False
+    _has_mujoco = False
 
-skip_no_robosuite = pytest.mark.skipif(not _has_robosuite, reason="robosuite not installed")
+skip_no_mujoco = pytest.mark.skipif(not _has_mujoco, reason="mujoco/mujoco_sim not installed")
 
 
 def _log(msg: str) -> None:
     print(f"  [{time.strftime('%H:%M:%S')}] {msg}")
 
 
-@skip_no_robosuite
+@skip_no_mujoco
 @skip_no_vlm
 async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
     """MuJoCo scene → VLM describe → track cube → settle → VLM re-query → IoU check."""
+    from halo.bridge.sim_source import SimSource
     from halo.contracts.events import EventType
-    from halo.services.target_perception_service.mujoco_source import MuJocoVideoSource
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
     from halo.testing.runner import HeadlessRunner, RunnerConfig
 
     _log(f"VLM model: {vlm_model}")
 
-    # ── Start MuJoCo source (blocks until first frame) ─────────────────
-    _log("Creating MuJocoVideoSource...")
-    source = MuJocoVideoSource(fps=10.0, seed=42)
+    # ── Start SimSource (managed mode — spawns sim server) ───────────
+    _log("Creating SimSource (managed)...")
+    source = SimSource(managed=True)
     source.start(timeout=60.0)
-    _log(f"MuJocoVideoSource ready (fps={source.fps})")
+    _log("SimSource ready (telemetry streaming)")
 
     assert source.latest_frame is not None, "Source should have at least one frame after start()"
     frame_shape = source.latest_frame.shape
@@ -203,12 +201,12 @@ async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
         source.stop()
 
 
-@skip_no_robosuite
-async def test_mujoco_source_frame_basics():
-    """MuJocoVideoSource produces valid BGR frames and capture_fn works."""
-    from halo.services.target_perception_service.mujoco_source import MuJocoVideoSource
+@skip_no_mujoco
+async def test_sim_source_frame_basics():
+    """SimSource produces valid BGR frames and capture_fn works."""
+    from halo.bridge.sim_source import SimSource
 
-    source = MuJocoVideoSource(fps=10.0, seed=42)
+    source = SimSource(managed=True)
     source.start(timeout=60.0)
 
     try:
@@ -230,31 +228,51 @@ async def test_mujoco_source_frame_basics():
         captured2 = await capture_fn("arm0")
         assert captured2.ts_ms >= captured.ts_ms
 
-        # latest_frame should reflect the last capture_fn render (cached, not re-rendered)
+        # latest_frame should reflect the last telemetry frame
         latest = source.latest_frame
         assert latest is not None
         assert latest.shape == (480, 640, 3)
+
+        # qpos/qvel should be available from telemetry
+        qpos = source.latest_qpos
+        qvel = source.latest_qvel
+        assert qpos is not None, "qpos should be available from telemetry"
+        assert qvel is not None, "qvel should be available from telemetry"
+        assert qpos.shape == (13,)
+        assert qvel.shape == (12,)
 
     finally:
         source.stop()
 
 
-@skip_no_robosuite
-async def test_mujoco_source_seeded_reproducibility():
-    """Two MuJocoVideoSource instances with the same seed produce identical first frames."""
+@skip_no_mujoco
+async def test_sim_source_client_commands():
+    """SimSource's underlying SimClient can send commands to the server."""
     import numpy as np
 
-    from halo.services.target_perception_service.mujoco_source import MuJocoVideoSource
+    from halo.bridge.sim_source import SimSource
 
-    source1 = MuJocoVideoSource(fps=10.0, seed=42)
-    source1.start(timeout=60.0)
-    frame1 = source1.latest_frame
-    source1.stop()
+    source = SimSource(managed=True)
+    source.start(timeout=60.0)
 
-    source2 = MuJocoVideoSource(fps=10.0, seed=42)
-    source2.start(timeout=60.0)
-    frame2 = source2.latest_frame
-    source2.stop()
+    try:
+        client = source.client
 
-    assert frame1 is not None and frame2 is not None
-    assert np.array_equal(frame1, frame2), "Seeded sources should produce identical first frames"
+        # Reset with seed
+        resp = client.reset(seed=42)
+        assert resp["type"] == "reset_ok"
+        assert resp["seed"] == 42
+
+        # Step with home pose
+        home = np.zeros(6)
+        resp = client.step(home)
+        assert resp["type"] == "step_ok"
+        assert isinstance(resp["done"], bool)
+
+        # Get state
+        resp = client.get_state()
+        assert resp["type"] == "state"
+        assert isinstance(resp["qpos"], bytes)
+
+    finally:
+        source.client.shutdown()

@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live sim-server ruff help
 
 install:
 	uv sync --extra dev
@@ -70,6 +70,9 @@ run-headless-live:
 		--base-url $(OLLAMA_URL) \
 		--arm $(ARM_ID)
 
+sim-server:
+	uv run python -m mujoco_sim.server -v
+
 ruff:
 	uv run ruff check --fix .
 	uv run ruff format .
@@ -103,7 +106,7 @@ test-integration:
 
 help:
 	@echo "install            install deps (uv sync --extra dev)"
-	@echo "install-sim        install deps + MuJoCo/robosuite (uv sync --extra dev --extra sim)"
+	@echo "install-sim        install deps + MuJoCo (uv sync --extra dev --extra sim)"
 	@echo "generate-episodes        generate teacher episodes w/ VLM tracking (requires Ollama)"
 	@echo "generate-episodes-video  same + save mp4 preview per episode (requires opencv)"
 	@echo "test-sim           run mujoco_sim tests (requires --extra sim)"
@@ -122,4 +125,5 @@ help:
 	@echo "run-headless-live  run headless HALO (live, requires Ollama)"
 	@echo "tui-mock           launch the HALO terminal dashboard (mock mode)"
 	@echo "tui-live-videoloop launch the TUI with video loop source (requires Ollama)"
-	@echo "tui-live-mujoco    launch the TUI with MuJoCo scene camera (requires Ollama + robosuite)"
+	@echo "sim-server         start the MuJoCo sim ZMQ server (requires --extra sim)"
+	@echo "tui-live-mujoco    launch the TUI with MuJoCo scene camera (requires Ollama + MuJoCo)"

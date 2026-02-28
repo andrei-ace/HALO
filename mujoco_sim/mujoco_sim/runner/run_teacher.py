@@ -1,10 +1,19 @@
-"""Episode generation loop: reset env → stabilize → run teacher → write HDF5."""
+"""Episode generation loop: reset env → stabilize → run teacher → write HDF5.
+
+Architecture: MuJoCo env + teacher run in a **SimServer** process (macOS
+requires OpenGL on the main thread).  VLM + OpenCV tracker run in the
+**client** process via ``SimTrackerService``.  ZMQ bridges the two:
+
+    Ch3 (REQ/REP): client sends step/reset/teacher_step commands
+    Ch4 (REQ/REP): server sends VLM/tracker queries to client
+
+Standalone mode (``make sim-server`` already running) or managed mode
+(server spawned automatically) are both supported.
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,11 +56,20 @@ def run_teacher(
     vlm_base_url: str = "http://localhost:11434",
     vlm_model: str = "qwen2.5vl:3b",
     progress: bool = True,
+    managed: bool = True,
+    command_url: str | None = None,
+    telemetry_url: str | None = None,
+    hints_url: str | None = None,
+    query_url: str | None = None,
 ) -> list[EpisodeResult]:
-    """Generate episodes by running the scripted teacher in the environment.
+    """Generate episodes by running the scripted teacher via ZMQ SimServer.
 
-    Each episode begins with a stabilization phase (zero-action steps for
+    Each episode begins with a stabilization phase (home-pose steps for
     ``stabilize_seconds``) to let physics settle before recording starts.
+
+    The teacher runs server-side (needs MuJoCo model/data for IK).  VLM
+    and OpenCV tracker run client-side (need Ollama).  The ZMQ bridge
+    connects them.
 
     Args:
         num_episodes: Number of episodes to generate.
@@ -60,31 +78,62 @@ def run_teacher(
         env_config: Environment configuration (default: ``EnvConfig()``).
         teacher_config: Teacher gains/thresholds (default: ``TeacherConfig()``).
         max_steps: Maximum steps per episode (safety limit).
-        stabilize_seconds: Seconds of zero-action settling before recording.
+        stabilize_seconds: Seconds of home-pose settling before recording.
         save_video: If True, save an mp4 preview alongside each HDF5 file.
         vlm_base_url: Ollama base URL for VLM.
         vlm_model: VLM model name.
         progress: If True, show a tqdm progress bar.
+        managed: If True, spawn the sim server automatically.
+        command_url: Override Ch3 command URL (standalone mode).
+        telemetry_url: Override Ch1 telemetry URL (standalone mode).
+        hints_url: Override Ch2 hints URL (standalone mode).
+        query_url: Override Ch4 query URL (standalone mode).
 
     Returns:
         List of EpisodeResult for each episode (including failures).
     """
-    # Lazy import to avoid requiring robosuite at module level
-    from mujoco_sim.env import RobosuiteEnv
+    from halo.bridge.config import SimBridgeConfig
+    from halo.bridge.sim_client import SimClient
+    from halo.bridge.sim_tracker_service import SimTrackerService
+    from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
+    from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
 
     env_config = env_config or EnvConfig()
-    teacher_config = teacher_config or TeacherConfig()
     output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    env = RobosuiteEnv(env_config)
-    teacher = PickTeacher(teacher_config)
-    results: list[EpisodeResult] = []
+    stabilize_steps = int(stabilize_seconds * env_config.control_freq)
 
-    # VLM detection + OpenCV tracker (always on)
     print(f"[track] VLM tracking — model={vlm_model} url={vlm_base_url}")
-    tracker_ctx = _TrackerContext(vlm_base_url, vlm_model)
 
-    # tqdm progress bar (graceful fallback if not installed)
+    # Build bridge config
+    bridge_config = SimBridgeConfig(managed=managed)
+    if command_url:
+        bridge_config.command_url = command_url
+    if telemetry_url:
+        bridge_config.telemetry_url = telemetry_url
+    if hints_url:
+        bridge_config.hints_url = hints_url
+    if query_url:
+        bridge_config.query_url = query_url
+
+    # Start VLM + tracker service on Ch4
+    vlm_fn = make_ollama_vlm_fn(base_url=vlm_base_url, model=vlm_model)
+    tracker_factory_fn = make_tracker_factory_fn()
+    tracker_svc = SimTrackerService(
+        query_url=bridge_config.query_url,
+        vlm_fn=vlm_fn,
+        tracker_factory_fn=tracker_factory_fn,
+    )
+    tracker_svc.start()
+
+    # Connect to sim server
+    client = SimClient(bridge_config)
+    client.start(timeout=60.0)
+
+    # Enable teacher mode and tell server where Ch4 is
+    client.configure(teacher_mode=True, query_url=bridge_config.query_url)
+
     pbar = None
     if progress:
         try:
@@ -94,126 +143,151 @@ def run_teacher(
         except ImportError:
             pass
 
+    results: list[EpisodeResult] = []
+
     try:
         for ep_idx in range(num_episodes):
             seed = seed_base + ep_idx
             try:
-                result = _run_single_episode(
-                    env=env,
-                    teacher=teacher,
+                result = _run_episode_via_zmq(
+                    client=client,
                     ep_idx=ep_idx,
                     seed=seed,
                     output_dir=output_dir,
                     env_config=env_config,
                     max_steps=max_steps,
-                    stabilize_steps=int(stabilize_seconds * env_config.control_freq),
+                    stabilize_steps=stabilize_steps,
                     save_video=save_video,
-                    tracker_ctx=tracker_ctx,
-                )
-                logger.info(
-                    "Episode %d/%d — seed=%d, steps=%d, %s → %s",
-                    ep_idx + 1,
-                    num_episodes,
-                    seed,
-                    result.num_steps,
-                    "OK" if result.success else "INCOMPLETE",
-                    result.path,
                 )
             except Exception:
-                logger.exception("Episode %d (seed=%d) FAILED", ep_idx, seed)
-                result = EpisodeResult(episode_idx=ep_idx, seed=seed, error=_format_exc())
+                import traceback
+
+                err = traceback.format_exc().strip().splitlines()[-1]
+                result = EpisodeResult(episode_idx=ep_idx, seed=seed, error=err)
 
             results.append(result)
-
             if pbar is not None:
                 status = "ok" if result.success else ("FAIL" if result.error else "inc")
-                pbar.set_postfix(seed=seed, steps=result.num_steps, status=status)
+                pbar.set_postfix(seed=result.seed, steps=result.num_steps, status=status)
                 pbar.update(1)
     finally:
         if pbar is not None:
             pbar.close()
-        env.close()
+        try:
+            client.shutdown()
+        except Exception:
+            client.stop()
+        tracker_svc.stop()
 
     return results
 
 
 # ---------------------------------------------------------------------------
-# Tracker context — wraps VLM + OpenCV tracker from halo project
+# Episode runner via ZMQ
 # ---------------------------------------------------------------------------
 
 
-class _TrackerContext:
-    """Holds VLM fn + tracker factory, lazily initialized."""
+def _run_episode_via_zmq(
+    *,
+    client,
+    ep_idx: int,
+    seed: int,
+    output_dir: Path,
+    env_config: EnvConfig,
+    max_steps: int,
+    stabilize_steps: int,
+    save_video: bool,
+) -> EpisodeResult:
+    """Run one episode via SimClient Ch3 commands."""
+    from mujoco_sim.server.protocol import bytes_to_ndarray
 
-    def __init__(self, vlm_base_url: str, vlm_model: str) -> None:
-        self._vlm_base_url = vlm_base_url
-        self._vlm_model = vlm_model
-        self._vlm_fn = None
-        self._tracker_factory = None
+    # Reset
+    client.reset(seed=seed)
 
-    def _ensure_init(self):
-        if self._vlm_fn is None:
-            from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
-            from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
+    # Stabilize — step with home pose (zeros for now; server starts at home)
+    home_action = np.zeros(6)
+    for _ in range(stabilize_steps):
+        client.step(home_action)
 
-            self._vlm_fn = make_ollama_vlm_fn(
-                base_url=self._vlm_base_url,
-                model=self._vlm_model,
-            )
-            self._tracker_factory = make_tracker_factory_fn()
+    # Recording phase
+    meta = EpisodeMetadata(
+        seed=seed,
+        env_name=env_config.scene_xml,
+        robot=env_config.robot,
+        control_freq=env_config.control_freq,
+        extra={"teacher": "pick", "stabilize_steps": str(stabilize_steps)},
+    )
+    episode = RawEpisode(metadata=meta)
+    video_frames: list[np.ndarray] = []
 
-    def detect_and_init_tracker(self, rgb_scene: np.ndarray) -> tuple[object | None, tuple[int, int, int, int] | None]:
-        """Run VLM on the scene frame, init tracker with first detection.
+    for step_idx in range(max_steps):
+        # Teacher step — server runs teacher policy, returns obs + action
+        resp = client.teacher_step()
 
-        Args:
-            rgb_scene: (H, W, 3) uint8 RGB image (raw from robosuite, bottom-up).
+        action = bytes_to_ndarray(resp["action"], shape=(6,))
+        phase_id = resp["phase_id"]
+        done = resp["done"]
 
-        Returns:
-            (update_fn, init_bbox_xywh) or (None, None) if detection failed.
-        """
-        import cv2
-        from halo.services.target_perception_service.frame_buffer import CapturedFrame
+        # Decode observation from response
+        qpos = bytes_to_ndarray(resp["qpos"], shape=(13,))
+        qvel = bytes_to_ndarray(resp["qvel"], shape=(12,))
+        ee_pose = bytes_to_ndarray(resp["ee_pose"], shape=(7,))
+        object_pose = bytes_to_ndarray(resp["object_pose"], shape=(7,))
+        joint_pos = bytes_to_ndarray(resp["joint_pos"], shape=(6,))
+        gripper = resp["gripper"]
 
-        self._ensure_init()
+        # Decode images (raw numpy bytes)
+        scene_h, scene_w = env_config.scene_resolution
+        wrist_h, wrist_w = env_config.wrist_resolution
+        rgb_scene = bytes_to_ndarray(resp["rgb_scene"], dtype=np.uint8, shape=(scene_h, scene_w, 3))
+        rgb_wrist = bytes_to_ndarray(resp["rgb_wrist"], dtype=np.uint8, shape=(wrist_h, wrist_w, 3))
 
-        # Flip to get correct orientation (robosuite renders bottom-up)
-        rgb_flipped = rgb_scene[::-1]
-        bgr = cv2.cvtColor(rgb_flipped, cv2.COLOR_RGB2BGR)
+        # Video preview
+        if save_video:
+            frame = rgb_scene.copy()
+            frame = _composite_wrist(frame, rgb_wrist, phase_id)
+            video_frames.append(frame)
 
-        frame = CapturedFrame(image=bgr, ts_ms=int(time.monotonic() * 1000), arm_id="arm0")
+        # Record timestep
+        ts = Timestep(
+            rgb_scene=rgb_scene,
+            rgb_wrist=rgb_wrist,
+            qpos=qpos,
+            qvel=qvel,
+            gripper=float(gripper),
+            ee_pose=ee_pose,
+            action=np.array(action, copy=True),
+            phase_id=phase_id,
+            object_pose=object_pose,
+            joint_pos=joint_pos,
+        )
+        episode.append(ts)
 
-        # Call VLM (async → sync bridge)
-        print(f"[track] Calling VLM ({self._vlm_model}) for object detection...")
-        vlm_scene = asyncio.run(self._vlm_fn("arm0", bgr, known_handles=[], target_handle=None))
-        if not vlm_scene.detections:
-            print("[track] VLM returned NO detections — episode will be skipped")
-            return None, None
+        if done:
+            break
 
-        detection = vlm_scene.detections[0]
-        print(f"[track] VLM detected: {detection.handle} bbox={detection.bbox}")
+    final_phase = phase_id
+    success = final_phase == PHASE_DONE
 
-        # Init tracker
-        init_hint, update_fn = asyncio.run(self._tracker_factory(frame, detection))
-        print(f"[track] Tracker initialized — bbox_xywh={init_hint.bbox_xywh}")
-        return update_fn, init_hint.bbox_xywh
+    path = episode_path(output_dir, ep_idx)
+    write_episode(episode, path)
 
-    def update_tracker(self, update_fn: object, rgb_scene: np.ndarray) -> tuple[bool, tuple[int, int, int, int] | None]:
-        """Feed a frame to the tracker, return (ok, bbox_xywh)."""
-        import cv2
-        from halo.services.target_perception_service.frame_buffer import CapturedFrame
+    if save_video and video_frames:
+        video_path = path.with_suffix(".mp4")
+        _write_preview_video(video_frames, video_path, fps=env_config.control_freq)
 
-        rgb_flipped = rgb_scene[::-1]
-        bgr = cv2.cvtColor(rgb_flipped, cv2.COLOR_RGB2BGR)
-
-        frame = CapturedFrame(image=bgr, ts_ms=int(time.monotonic() * 1000), arm_id="arm0")
-        hint = asyncio.run(update_fn(frame))
-        if hint is None:
-            return False, None
-        return True, hint.bbox_xywh
+    return EpisodeResult(
+        episode_idx=ep_idx,
+        seed=seed,
+        path=path,
+        success=success,
+        num_steps=len(episode),
+        final_phase=final_phase,
+    )
 
 
 # ---------------------------------------------------------------------------
-# Single episode
+# Sync single-episode runner (no ZMQ, used by tests)
 # ---------------------------------------------------------------------------
 
 
@@ -228,39 +302,22 @@ def _run_single_episode(
     max_steps: int,
     stabilize_steps: int,
     save_video: bool = False,
-    tracker_ctx: _TrackerContext | None = None,  # None only in tests
+    tracker_ctx: None = None,
 ) -> EpisodeResult:
-    """Run one episode and write to HDF5."""
+    """Run one episode and write to HDF5.  Tests only (tracker_ctx always None)."""
     obs = env.reset(seed=seed)
 
-    # --- Stabilization phase: step with zero actions to let physics settle ---
-    zero_action = np.zeros(7)
+    # --- Stabilization phase: step with home pose to let physics settle ---
+    home_action = env.home_qpos
     for _ in range(stabilize_steps):
-        obs, _, _, _ = env.step(zero_action)
+        obs, _, _, _ = env.step(home_action)
     logger.debug("Stabilized for %d steps (seed=%d)", stabilize_steps, seed)
 
-    # --- Initialize tracker if requested (must succeed before teacher starts) ---
-    update_fn = None
-    current_bbox: tuple[int, int, int, int] | None = None
-    tracker_active = False
-
-    if tracker_ctx is not None:
-        update_fn, current_bbox = tracker_ctx.detect_and_init_tracker(obs["rgb_scene"])
-        tracker_active = update_fn is not None
-        if not tracker_active:
-            return EpisodeResult(
-                episode_idx=ep_idx,
-                seed=seed,
-                error="VLM detection failed — no objects found, skipping episode",
-            )
-        logger.info("Tracker initialized — bbox=%s (seed=%d)", current_bbox, seed)
-
-    # --- Recording phase (starts only after tracking is confirmed) ---
     teacher.reset()
 
     meta = EpisodeMetadata(
         seed=seed,
-        env_name=env_config.env_name,
+        env_name=env_config.scene_xml,
         robot=env_config.robot,
         control_freq=env_config.control_freq,
         extra={"teacher": "pick", "stabilize_steps": str(stabilize_steps)},
@@ -268,26 +325,15 @@ def _run_single_episode(
     episode = RawEpisode(metadata=meta)
 
     video_frames: list[np.ndarray] = []
-    tracker_ok = True if tracker_active else None
 
     for step_idx in range(max_steps):
-        action, phase_id, done = teacher.step(obs)
+        action, phase_id, done = teacher.step(obs, env.mujoco_model, env.mujoco_data)
 
-        # Update tracker
-        if tracker_active and update_fn is not None:
-            tracker_ok, new_bbox = tracker_ctx.update_tracker(update_fn, obs["rgb_scene"])
-            if tracker_ok:
-                current_bbox = new_bbox
-
-        # Capture frame for video preview (flip vertically — robosuite renders bottom-up)
         if save_video:
-            frame = obs["rgb_scene"][::-1].copy()
-            if tracker_active:
-                frame = _draw_tracking_overlay(frame, current_bbox, tracker_ok)
+            frame = obs["rgb_scene"].copy()
             frame = _composite_wrist(frame, obs["rgb_wrist"], phase_id)
             video_frames.append(frame)
 
-        # Record BEFORE stepping (obs is current, action is what we're about to apply)
         ts = Timestep(
             rgb_scene=obs["rgb_scene"],
             rgb_wrist=obs["rgb_wrist"],
@@ -298,8 +344,7 @@ def _run_single_episode(
             action=np.array(action, copy=True),
             phase_id=phase_id,
             object_pose=obs.get("object_pose"),
-            bbox_xywh=current_bbox if tracker_active else None,
-            tracker_ok=tracker_ok if tracker_active else None,
+            joint_pos=obs.get("joint_pos"),
         )
         episode.append(ts)
 
@@ -316,7 +361,6 @@ def _run_single_episode(
     path = episode_path(output_dir, ep_idx)
     write_episode(episode, path)
 
-    # Write video preview if requested
     if save_video and video_frames:
         video_path = path.with_suffix(".mp4")
         _write_preview_video(video_frames, video_path, fps=env_config.control_freq)
@@ -349,7 +393,7 @@ def _composite_wrist(
     """
     from mujoco_sim.constants import WRIST_ACTIVE_PHASES
 
-    wrist = rgb_wrist[::-1]  # flip (robosuite bottom-up)
+    wrist = rgb_wrist
     wh, ww = wrist.shape[:2]
     th, tw = int(wh * scale), int(ww * scale)
 
@@ -376,7 +420,6 @@ def _draw_tracking_overlay(
     import cv2
 
     frame = frame.copy()
-    h, w = frame.shape[:2]
 
     if bbox_xywh is not None and tracker_ok:
         x, y, bw, bh = bbox_xywh
@@ -404,10 +447,3 @@ def _write_preview_video(frames: list[np.ndarray], video_path: Path, fps: int) -
             writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     finally:
         writer.release()
-
-
-def _format_exc() -> str:
-    """Format the current exception as a one-line string."""
-    import traceback
-
-    return traceback.format_exc().strip().splitlines()[-1]

@@ -1520,9 +1520,9 @@ def _run_live(args: list[str]) -> None:
     )
 
     if source_type == "mujoco":
-        from halo.services.target_perception_service.mujoco_source import MuJocoVideoSource
+        from halo.bridge.sim_source import SimSource
 
-        video_source = MuJocoVideoSource()
+        video_source = SimSource(managed=True)
     else:
         video_source = VideoSource()
     video_source.start()

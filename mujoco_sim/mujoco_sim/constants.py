@@ -26,23 +26,24 @@ WRIST_ACTIVE_PHASES = frozenset(
     }
 )
 
-# Action space layout (halo.contracts.actions.Action field order)
-ACTION_FIELDS = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "gripper_cmd"]
-ACTION_DIM = 7
-GRIPPER_OPEN = -1.0  # robosuite convention: -1 = open
-GRIPPER_CLOSE = 1.0  # robosuite convention: +1 = close
+# Action space layout — 6D joint-position control (SO-101: 5 arm DOF + 1 gripper)
+ACTION_FIELDS = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
+ACTION_DIM = 6
+
+# SO-101 joint names (5 DOF arm + 1 DOF gripper)
+SO101_ARM_JOINT_NAMES: tuple[str, ...] = (
+    "shoulder_pan",
+    "shoulder_lift",
+    "elbow_flex",
+    "wrist_flex",
+    "wrist_roll",
+)
+GRIPPER_JOINT_NAME = "gripper"
+
+# Gripper semantics (joint angle, not ±1 command)
+GRIPPER_OPEN = -0.17  # fully open (joint range minimum, rad)
+GRIPPER_CLOSE = 1.75  # fully closed (joint range maximum, rad)
 
 # Control timing
 CONTROL_RATE_HZ = 10
 CHUNK_HORIZON_STEPS = 10
-
-# Panda arm joint names (7 DOF, excludes gripper fingers)
-PANDA_JOINT_NAMES: tuple[str, ...] = (
-    "J1_shoulder",
-    "J2_shoulder",
-    "J3_elbow",
-    "J4_elbow",
-    "J5_wrist",
-    "J6_wrist",
-    "J7_wrist",
-)

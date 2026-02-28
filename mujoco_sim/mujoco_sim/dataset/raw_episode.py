@@ -13,7 +13,8 @@ class Timestep:
 
     All arrays are stored as numpy.  Images are uint8 (H, W, 3).
     Poses are (7,) — [x, y, z, qx, qy, qz, qw].
-    Action is (7,) — [dx, dy, dz, droll, dpitch, dyaw, gripper_cmd].
+    Action is (6,) — [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]
+    (joint-position targets for SO-101).
     """
 
     rgb_scene: np.ndarray  # (H, W, 3) uint8
@@ -22,9 +23,10 @@ class Timestep:
     qvel: np.ndarray  # (nv,)
     gripper: float
     ee_pose: np.ndarray  # (7,)
-    action: np.ndarray  # (7,)
+    action: np.ndarray  # (6,) joint-position targets
     phase_id: int | None = None  # teacher/detector phase label
     object_pose: np.ndarray | None = None  # (7,) optional
+    joint_pos: np.ndarray | None = None  # (6,) all actuated joint positions, optional
     contacts: np.ndarray | None = None  # (N,) optional
     bbox_xywh: tuple[int, int, int, int] | None = None  # tracker bbox (x, y, w, h)
     tracker_ok: bool | None = None  # tracker status (True=tracking, False=lost)
@@ -35,8 +37,8 @@ class EpisodeMetadata:
     """Metadata attached to a recorded episode."""
 
     seed: int | None = None
-    env_name: str = "Lift"
-    robot: str = "Panda"
+    env_name: str = "PickScene"
+    robot: str = "SO101"
     control_freq: int = 20
     extra: dict = field(default_factory=dict)
 
@@ -96,8 +98,15 @@ class RawEpisode:
         return np.stack([ts.ee_pose for ts in self._steps])
 
     @property
+    def joint_pos_array(self) -> np.ndarray | None:
+        """(T, 6) or None if no timestep has joint_pos."""
+        if not self._steps or self._steps[0].joint_pos is None:
+            return None
+        return np.stack([ts.joint_pos for ts in self._steps])
+
+    @property
     def actions(self) -> np.ndarray:
-        """(T, 7)."""
+        """(T, 6) joint-position targets."""
         return np.stack([ts.action for ts in self._steps])
 
     @property

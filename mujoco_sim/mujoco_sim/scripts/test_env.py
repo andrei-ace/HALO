@@ -10,15 +10,14 @@ def main() -> None:
     from PIL import Image
 
     from mujoco_sim.config.env_config import EnvConfig
-    from mujoco_sim.env.robosuite_env import RobosuiteEnv
+    from mujoco_sim.env.so101_env import SO101Env
 
     config = EnvConfig()
-    env = RobosuiteEnv(config)
+    env = SO101Env(config)
 
     print("Environment created successfully.")
-    print(f"  env_name: {config.env_name}")
     print(f"  robot: {config.robot}")
-    print(f"  controller: {config.controller}")
+    print(f"  scene_xml: {config.scene_xml}")
     print(f"  action_dim: {env.action_dim}")
 
     # First reset with seed
@@ -43,7 +42,7 @@ def main() -> None:
     # Second reset with same seed — verify reproducibility
     obs2 = env.reset(seed=42)
     print("\nReset 2 (seed=42) — reproducibility check:")
-    for key in ["ee_pose", "object_pose", "qpos"]:
+    for key in ["ee_pose", "object_pose", "qpos", "joint_pos"]:
         match = np.allclose(obs1[key], obs2[key])
         status = "PASS" if match else "FAIL"
         print(f"  {key}: {status}")

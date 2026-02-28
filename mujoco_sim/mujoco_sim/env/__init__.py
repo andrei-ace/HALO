@@ -1,3 +1,3 @@
-from .robosuite_env import RobosuiteEnv
+from .so101_env import SO101Env
 
-__all__ = ["RobosuiteEnv"]
+__all__ = ["SO101Env"]

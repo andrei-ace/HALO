@@ -11,18 +11,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync --extra dev                   # install + dev deps (first time or after pyproject.toml changes)
-uv sync --extra dev --extra sim       # install + dev deps + MuJoCo/robosuite (for tui-live-mujoco / e2e tests)
+uv sync --extra dev --extra sim       # install + dev deps + MuJoCo (for tui-live-mujoco / e2e tests)
 uv run python -m pytest               # run all unit tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
 make install           # install deps (uv sync --extra dev)
-make install-sim       # install deps + MuJoCo/robosuite (uv sync --extra dev --extra sim)
+make install-sim       # install deps + MuJoCo (uv sync --extra dev --extra sim)
 make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
 make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
 make tui-live-videoloop # launch TUI with video loop source (requires Ollama)
-make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + robosuite; run make install-sim first)
+make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + MuJoCo; run make install-sim first)
 make generate-episodes # generate teacher episodes (EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0; requires make install-sim)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
@@ -47,8 +47,8 @@ All v0 backbone services are implemented and tested:
 | TUI (`halo/tui/app.py`) | ✅ done |
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
-| Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ sim_apply_fn, sim_observe_fn, sim_chunk_fn, transforms) |
-| MuJoCo sim (`mujoco_sim/`) | 🚧 in progress — PR1-3 done (env, dataset, teacher); PR4-6 pending (phase FSM, VCR, annotation) |
+| Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ 4-channel: SimClient, SimSource, transforms) |
+| MuJoCo sim (`mujoco_sim/`) | 🚧 in progress — SO-101 + raw MuJoCo (env, dataset, teacher, IK); PR4-6 pending (phase FSM, VCR, annotation) |
 | Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
 The TUI supports two modes:
@@ -68,9 +68,9 @@ halo/
   contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
                     # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
-  bridge/            # ZeroMQ adapters for Isaac Lab sim connection
-                      # __init__.py (BridgeTransportError), config.py, sim_apply_fn.py,
-                      # sim_observe_fn.py, sim_chunk_fn.py, transforms.py
+  bridge/            # ZMQ 4-channel bridge to MuJoCo sim server
+                      # __init__.py (BridgeTransportError), config.py (SimBridgeConfig),
+                      # sim_client.py (SimClient), sim_source.py (SimSource), transforms.py
   services/                    # each service has its own CLAUDE.md with detailed docs
     control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
     skill_runner_service/      # config.py, fsm.py, service.py
@@ -148,8 +148,9 @@ Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_REGRASP`, `RECOVER_ABORT`
 Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP`, `LIFT` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
 
 ### ACT action space
-`[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` in the EE frame, per-timestep servo increments.
-Do **not** integrate and play back whole chunks open-loop. Temporal ensembling blends overlapping deltas per-timestep before IK/OSC mapping.
+**HALO core (runtime/bridge):** `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas, per-timestep servo increments. Temporal ensembling blends overlapping deltas per-timestep before IK/OSC mapping.
+
+**MuJoCo sim (`mujoco_sim/`):** `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets for SO-101 (5 arm DOF + 1 gripper DOF). Written directly to `data.ctrl[:]`.
 
 ### Planner snapshot fields (compact; no raw telemetry)
 `snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8).
@@ -176,7 +177,7 @@ Current sim work uses MuJoCo + robosuite (phase 1), then Isaac Lab (phase 2). Th
 
 ## Sim strategy (three phases)
 
-**Phase 1 — MuJoCo + robosuite (current):** Single-env teacher demos, ACT training pipeline, closed-loop eval. PR1-3 done (env wrapper, HDF5 episode format, scripted teacher with 5 s stabilization + phase tracking). See `mujoco_sim/ROADMAP.md`.
+**Phase 1 — MuJoCo + SO-101 (current):** Single-env teacher demos with raw MuJoCo (no robosuite), 6D joint-position actions, damped least-squares IK. ACT training pipeline, closed-loop eval. SO-101 env, HDF5 episodes, scripted teacher with 5 s stabilization + phase tracking. See `mujoco_sim/ROADMAP.md`.
 
 **Phase 2 — Isaac Lab (future):** GPU-accelerated parallel envs (64 envs on A6000), domain randomization at scale, sim-to-real transfer. See `sim/README.md`.
 

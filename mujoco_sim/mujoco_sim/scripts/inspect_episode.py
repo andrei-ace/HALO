@@ -121,10 +121,11 @@ def inspect(path: Path) -> None:
 
     # Actions summary
     actions = ep.actions
-    action_norms = np.linalg.norm(actions[:, :3], axis=1)
-    print("\nAction norms (xyz):")
+    action_norms = np.linalg.norm(actions, axis=1)
+    print("\nAction norms (full):")
     print(f"  mean: {action_norms.mean():.4f}  max: {action_norms.max():.4f}")
     print(f"  last 50 mean: {action_norms[-50:].mean():.6f}")
+    print(f"  action dim: {actions.shape[1]}")
 
     # Tracker data
     bbox_arr = ep.bbox_xywh_array

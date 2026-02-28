@@ -8,6 +8,7 @@ from mujoco_sim.constants import (
     ACTION_DIM,
     ACTION_FIELDS,
     GRIPPER_CLOSE,
+    GRIPPER_JOINT_NAME,
     GRIPPER_OPEN,
     PHASE_CLOSE_GRIPPER,
     PHASE_DONE,
@@ -22,6 +23,7 @@ from mujoco_sim.constants import (
     PHASE_SELECT_GRASP,
     PHASE_VERIFY_GRASP,
     PHASE_VISUAL_ALIGN,
+    SO101_ARM_JOINT_NAMES,
     WRIST_ACTIVE_PHASES,
 )
 
@@ -48,21 +50,21 @@ def test_phase_id_values():
 
 
 def test_action_fields():
-    """ACTION_FIELDS matches expected 7-DOF EE-delta field names."""
-    expected = ["dx", "dy", "dz", "droll", "dpitch", "dyaw", "gripper_cmd"]
+    """ACTION_FIELDS matches expected 6D joint-position field names."""
+    expected = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper"]
     assert ACTION_FIELDS == expected
 
 
 def test_action_dim():
     """ACTION_DIM matches len(ACTION_FIELDS)."""
     assert ACTION_DIM == len(ACTION_FIELDS)
-    assert ACTION_DIM == 7
+    assert ACTION_DIM == 6
 
 
 def test_gripper_semantics():
-    """GRIPPER_OPEN=-1.0, GRIPPER_CLOSE=1.0 (robosuite convention)."""
-    assert GRIPPER_OPEN == -1.0
-    assert GRIPPER_CLOSE == 1.0
+    """GRIPPER_OPEN=-0.17, GRIPPER_CLOSE=1.75 (SO-101 joint angle, rad)."""
+    assert GRIPPER_OPEN == -0.17
+    assert GRIPPER_CLOSE == 1.75
 
 
 def test_wrist_active_phases():
@@ -71,3 +73,18 @@ def test_wrist_active_phases():
         {PHASE_VISUAL_ALIGN, PHASE_EXECUTE_APPROACH, PHASE_CLOSE_GRIPPER, PHASE_VERIFY_GRASP, PHASE_LIFT}
     )
     assert WRIST_ACTIVE_PHASES == expected
+
+
+def test_so101_arm_joint_names():
+    """SO101_ARM_JOINT_NAMES has 5 arm joints, GRIPPER_JOINT_NAME is 'gripper'."""
+    assert len(SO101_ARM_JOINT_NAMES) == 5
+    assert SO101_ARM_JOINT_NAMES == (
+        "shoulder_pan",
+        "shoulder_lift",
+        "elbow_flex",
+        "wrist_flex",
+        "wrist_roll",
+    )
+    assert GRIPPER_JOINT_NAME == "gripper"
+    # All action fields = arm joints + gripper
+    assert list(SO101_ARM_JOINT_NAMES) + [GRIPPER_JOINT_NAME] == ACTION_FIELDS

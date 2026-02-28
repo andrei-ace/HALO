@@ -55,6 +55,11 @@ def write_episode(episode: RawEpisode, path: str | Path) -> Path:
         if obj_poses is not None:
             obs.create_dataset("object_pose", data=obj_poses)
 
+        # Optional joint positions (6 actuated joints)
+        joint_pos = episode.joint_pos_array
+        if joint_pos is not None:
+            obs.create_dataset("joint_pos", data=joint_pos)
+
         # Optional contacts (variable-length per step)
         contacts = episode.contacts_list
         has_contacts = any(c is not None for c in contacts)

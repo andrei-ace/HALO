@@ -1,15 +1,14 @@
 """Scripted PICK teacher using privileged sim state.
 
 Mirrors the PickFSM phase sequence from ``halo/services/skill_runner_service/fsm.py``
-with the same distance thresholds from ``SkillRunnerConfig``.  Uses proportional
-control in world-frame to generate EE-delta actions that approach, grasp, and lift
-the target cube.
+with the same distance thresholds from ``SkillRunnerConfig``.  Computes Cartesian
+targets then solves IK → 6D joint-position actions for the SO-101.
 
 Usage::
 
     teacher = PickTeacher()
     teacher.reset()
-    action, phase_id, done = teacher.step(obs)
+    action, phase_id, done = teacher.step(obs, model, data)
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+import mujoco
 import numpy as np
 
 from mujoco_sim.constants import (
@@ -33,6 +33,7 @@ from mujoco_sim.constants import (
     PHASE_VERIFY_GRASP,
     PHASE_VISUAL_ALIGN,
 )
+from mujoco_sim.teacher.ik_helper import solve_ik
 
 logger = logging.getLogger(__name__)
 
@@ -47,26 +48,19 @@ class TeacherConfig:
     # Phase transition distance thresholds (m) — same as SkillRunnerConfig
     approach_align_threshold_m: float = 0.15
     execute_approach_threshold_m: float = 0.05
-    grasp_distance_threshold_m: float = 0.025
+    grasp_distance_threshold_m: float = 0.03
 
     # Timed phase durations (steps at control_freq)
     close_gripper_steps: int = 20  # 1 s at 20 Hz
     verify_steps: int = 10  # 0.5 s at 20 Hz
     lift_steps: int = 120  # 6 s at 20 Hz
 
-    # Proportional control gains
-    approach_gain: float = 0.8  # gain for MOVE_PREGRASP (coarse approach)
-    align_gain: float = 0.5  # gain for VISUAL_ALIGN (slower, more precise)
-    execute_gain: float = 0.5  # gain for EXECUTE_APPROACH (fine approach)
-    lift_speed: float = 0.05  # m/step vertical lift increment (OSC attenuates heavily)
-
     # Pre-grasp offset: approach from above the cube
-    pregrasp_height_offset: float = 0.05  # m above cube center
-    grasp_height_offset: float = -0.01  # m relative to cube center for final grasp position
+    pregrasp_height_offset: float = 0.08  # m above cube center
+    grasp_height_offset: float = 0.02  # m above cube center — fingers straddle from above
 
-    # Action clamp (per-axis, m/step)
-    max_delta: float = 0.05
-    min_action: float = 0.002  # minimum action magnitude to prevent proportional stall
+    # Lift target height above cube initial position
+    lift_height: float = 0.15  # m
 
 
 class PickTeacher:
@@ -84,6 +78,9 @@ class PickTeacher:
         self._config = config or TeacherConfig()
         self._phase = PHASE_IDLE
         self._phase_step = 0
+        # Cache IDs on first step (need model)
+        self._ee_site_id: int | None = None
+        self._arm_joint_ids: list[int] | None = None
 
     def reset(self) -> None:
         """Reset teacher state for a new episode."""
@@ -100,18 +97,37 @@ class PickTeacher:
         """Whether the pick task is complete."""
         return self._phase == PHASE_DONE
 
-    def step(self, obs: dict) -> tuple[np.ndarray, int, bool]:
+    def _ensure_ids(self, model: mujoco.MjModel) -> None:
+        """Cache site/joint IDs on first call."""
+        if self._ee_site_id is None:
+            self._ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+            self._arm_joint_ids = [
+                mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
+            ]
+
+    def step(
+        self,
+        obs: dict,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+    ) -> tuple[np.ndarray, int, bool]:
         """Compute one teacher action from the current observation.
 
         Args:
-            obs: Observation dict from ``RobosuiteEnv`` with keys:
-                ``ee_pose`` (7,), ``object_pose`` (7,), ``gripper`` (float).
+            obs: Observation dict from ``SO101Env`` with keys:
+                ``ee_pose`` (7,), ``object_pose`` (7,), ``gripper`` (float), ``joint_pos`` (6,).
+            model: MuJoCo model (for IK).
+            data: MuJoCo data (for IK — will NOT be mutated).
 
         Returns:
-            (action, phase_id, done) where action is (7,) EE-delta.
+            (action, phase_id, done) where action is (6,) joint-position targets.
         """
+        self._ensure_ids(model)
+
         ee_pos = obs["ee_pose"][:3]
         cube_pos = obs["object_pose"][:3]
+        current_joints = obs["joint_pos"]
         cfg = self._config
 
         # v0 pass-throughs: advance immediately
@@ -124,25 +140,25 @@ class PickTeacher:
 
         distance = float(np.linalg.norm(cube_pos - ee_pos))
 
-        action = np.zeros(7)
+        # Default: hold current position
+        arm_joints = current_joints[:5].copy()
+        gripper_angle = float(current_joints[5])
 
         if self._phase == PHASE_MOVE_PREGRASP:
             # Approach to pre-grasp position (above cube)
             target = cube_pos.copy()
             target[2] += cfg.pregrasp_height_offset
-            delta = target - ee_pos
-            action[:3] = np.clip(delta * cfg.approach_gain, -cfg.max_delta, cfg.max_delta)
-            # gripper neutral (0.0) — no need to open yet
+            arm_joints = solve_ik(model, data, target, self._ee_site_id, self._arm_joint_ids)
+            gripper_angle = GRIPPER_OPEN
 
             pregrasp_dist = float(np.linalg.norm(target - ee_pos))
             if pregrasp_dist < cfg.approach_align_threshold_m:
                 self._transition(PHASE_VISUAL_ALIGN)
 
         elif self._phase == PHASE_VISUAL_ALIGN:
-            # Descend toward cube, slower
-            delta = cube_pos - ee_pos
-            action[:3] = np.clip(delta * cfg.align_gain, -cfg.max_delta, cfg.max_delta)
-            # gripper neutral (0.0) — no need to open yet
+            # Descend toward cube
+            arm_joints = solve_ik(model, data, cube_pos, self._ee_site_id, self._arm_joint_ids)
+            gripper_angle = GRIPPER_OPEN
 
             if distance < cfg.execute_approach_threshold_m:
                 self._transition(PHASE_EXECUTE_APPROACH)
@@ -151,16 +167,10 @@ class PickTeacher:
             # Fine approach — target at/below cube center so fingers straddle it
             target = cube_pos.copy()
             target[2] += cfg.grasp_height_offset
-            delta = target - ee_pos
-            target_dist = float(np.linalg.norm(delta))
-            scaled = delta * cfg.execute_gain
-            # Enforce minimum action magnitude to prevent proportional stall
-            norm = np.linalg.norm(scaled)
-            if 0 < norm < cfg.min_action:
-                scaled = scaled / norm * cfg.min_action
-            action[:3] = np.clip(scaled, -cfg.max_delta, cfg.max_delta)
-            action[6] = GRIPPER_OPEN
+            arm_joints = solve_ik(model, data, target, self._ee_site_id, self._arm_joint_ids)
+            gripper_angle = GRIPPER_OPEN
 
+            target_dist = float(np.linalg.norm(target - ee_pos))
             if self._phase_step % 50 == 0:
                 logger.debug(
                     "EXECUTE_APPROACH step=%d dist_cube=%.4f dist_target=%.4f ee=%s cube=%s",
@@ -176,26 +186,29 @@ class PickTeacher:
 
         elif self._phase == PHASE_CLOSE_GRIPPER:
             # Hold position, close gripper
-            action[6] = GRIPPER_CLOSE
+            gripper_angle = GRIPPER_CLOSE
             self._phase_step += 1
             if self._phase_step >= cfg.close_gripper_steps:
                 self._transition(PHASE_VERIFY_GRASP)
 
         elif self._phase == PHASE_VERIFY_GRASP:
             # Hold position, gripper closed, verify
-            action[6] = GRIPPER_CLOSE
+            gripper_angle = GRIPPER_CLOSE
             self._phase_step += 1
             if self._phase_step >= cfg.verify_steps:
                 self._transition(PHASE_LIFT)
 
         elif self._phase == PHASE_LIFT:
-            # Lift straight up
-            action[2] = cfg.lift_speed
-            action[6] = GRIPPER_CLOSE
+            # Lift: IK to a position above current EE
+            lift_target = ee_pos.copy()
+            lift_target[2] = cube_pos[2] + cfg.lift_height
+            arm_joints = solve_ik(model, data, lift_target, self._ee_site_id, self._arm_joint_ids)
+            gripper_angle = GRIPPER_CLOSE
             self._phase_step += 1
             if self._phase_step >= cfg.lift_steps:
                 self._transition(PHASE_DONE)
 
+        action = np.concatenate([arm_joints, [gripper_angle]])
         return action, self._phase, self.done
 
     def _transition(self, new_phase: int) -> None:

@@ -14,8 +14,8 @@ from mujoco_sim.dataset import EpisodeMetadata, RawEpisode, Timestep, episode_pa
 # Helpers
 # ---------------------------------------------------------------------------
 
-NQ = 9  # Panda: 7 joints + 2 gripper fingers
-NV = 9
+NQ = 13  # SO-101: 6 joints + 7 cube freejoint
+NV = 12  # 6 + 6
 SCENE_H, SCENE_W = 48, 64  # small for tests
 WRIST_H, WRIST_W = 24, 32
 
@@ -26,6 +26,7 @@ def _make_timestep(
     with_object: bool = True,
     with_contacts: bool = False,
     with_phase: bool = False,
+    with_joint_pos: bool = True,
 ) -> Timestep:
     """Create a synthetic timestep with deterministic values."""
     rng = np.random.RandomState(i)
@@ -36,9 +37,10 @@ def _make_timestep(
         qvel=rng.randn(NV).astype(np.float64),
         gripper=float(rng.rand()),
         ee_pose=rng.randn(7).astype(np.float64),
-        action=rng.randn(7).astype(np.float64),
+        action=rng.randn(6).astype(np.float64),
         phase_id=i % 10 if with_phase else None,
         object_pose=rng.randn(7).astype(np.float64) if with_object else None,
+        joint_pos=rng.randn(6).astype(np.float64) if with_joint_pos else None,
         contacts=rng.randn(rng.randint(1, 5)).astype(np.float64) if with_contacts else None,
     )
     return ts
@@ -46,7 +48,7 @@ def _make_timestep(
 
 def _make_episode(n: int = 10, **kwargs) -> RawEpisode:
     """Build a RawEpisode with *n* synthetic timesteps."""
-    meta = EpisodeMetadata(seed=42, env_name="Lift", robot="Panda", control_freq=20)
+    meta = EpisodeMetadata(seed=42, env_name="PickScene", robot="SO101", control_freq=20)
     ep = RawEpisode(metadata=meta)
     for i in range(n):
         ep.append(_make_timestep(i, **kwargs))
@@ -66,14 +68,16 @@ class TestTimestep:
         assert ts.qpos.shape == (NQ,)
         assert ts.qvel.shape == (NV,)
         assert ts.ee_pose.shape == (7,)
-        assert ts.action.shape == (7,)
+        assert ts.action.shape == (6,)
         assert ts.object_pose.shape == (7,)
+        assert ts.joint_pos.shape == (6,)
 
     def test_optional_fields_none(self):
-        ts = _make_timestep(0, with_object=False, with_contacts=False)
+        ts = _make_timestep(0, with_object=False, with_contacts=False, with_joint_pos=False)
         assert ts.phase_id is None
         assert ts.object_pose is None
         assert ts.contacts is None
+        assert ts.joint_pos is None
 
     def test_phase_id_set(self):
         ts = _make_timestep(3, with_phase=True)
@@ -132,7 +136,16 @@ class TestRawEpisode:
 
     def test_bulk_actions(self):
         ep = _make_episode(5)
-        assert ep.actions.shape == (5, 7)
+        assert ep.actions.shape == (5, 6)
+
+    def test_bulk_joint_pos_present(self):
+        ep = _make_episode(5, with_joint_pos=True)
+        assert ep.joint_pos_array is not None
+        assert ep.joint_pos_array.shape == (5, 6)
+
+    def test_bulk_joint_pos_absent(self):
+        ep = _make_episode(5, with_joint_pos=False)
+        assert ep.joint_pos_array is None
 
     def test_bulk_object_poses_present(self):
         ep = _make_episode(5, with_object=True)
@@ -156,7 +169,8 @@ class TestRawEpisode:
     def test_metadata_defaults(self):
         ep = RawEpisode()
         assert ep.metadata.seed is None
-        assert ep.metadata.env_name == "Lift"
+        assert ep.metadata.env_name == "PickScene"
+        assert ep.metadata.robot == "SO101"
 
 
 # ---------------------------------------------------------------------------
@@ -192,6 +206,7 @@ class TestHDF5Roundtrip:
             np.testing.assert_allclose(rt.ee_pose, orig.ee_pose)
             np.testing.assert_allclose(rt.action, orig.action)
             np.testing.assert_allclose(rt.object_pose, orig.object_pose)
+            np.testing.assert_allclose(rt.joint_pos, orig.joint_pos)
 
     def test_roundtrip_no_object_pose(self, tmp_path):
         """Episodes without object_pose should roundtrip cleanly."""
@@ -201,6 +216,15 @@ class TestHDF5Roundtrip:
 
         assert loaded[0].object_pose is None
         assert loaded.object_poses is None
+
+    def test_roundtrip_no_joint_pos(self, tmp_path):
+        """Episodes without joint_pos should roundtrip cleanly."""
+        ep = _make_episode(5, with_joint_pos=False)
+        out = write_episode(ep, tmp_path / "no_jpos.hdf5")
+        loaded = read_episode(out)
+
+        assert loaded[0].joint_pos is None
+        assert loaded.joint_pos_array is None
 
     def test_roundtrip_with_contacts(self, tmp_path):
         """Contacts (variable-length) survive roundtrip."""
@@ -278,6 +302,7 @@ class TestHDF5Roundtrip:
         np.testing.assert_allclose(loaded.ee_poses, ep.ee_poses)
         np.testing.assert_allclose(loaded.actions, ep.actions)
         np.testing.assert_allclose(loaded.object_poses, ep.object_poses)
+        np.testing.assert_allclose(loaded.joint_pos_array, ep.joint_pos_array)
 
 
 # ---------------------------------------------------------------------------
