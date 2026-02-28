@@ -20,6 +20,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8"]
 viewer = ["opencv-python>=4.8"]
 sim = ["pyzmq>=25", "msgpack>=1.0"]
+mujoco = ["robosuite>=1.5", "mujoco>=3.0"]
 
 [tool.ruff]
 line-length = 120

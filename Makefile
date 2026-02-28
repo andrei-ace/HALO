@@ -1,4 +1,4 @@
-.PHONY: install test test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration tui-mock tui-live run-headless-mock run-headless-live ruff help
+.PHONY: install test test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live ruff help
 
 install:
 	uv sync --extra dev
@@ -26,12 +26,21 @@ VLM_MODEL      ?= qwen2.5vl:3b
 OLLAMA_URL     ?= http://localhost:11434
 ARM_ID         ?= arm0
 
-tui-live:
+tui-live-videoloop:
 	uv run python -m halo.tui.app --live \
 		--arm $(ARM_ID) \
 		--model $(PLANNER_MODEL) \
 		--vlm-model $(VLM_MODEL) \
-		--base-url $(OLLAMA_URL)
+		--base-url $(OLLAMA_URL) \
+		--source videoloop
+
+tui-live-mujoco:
+	uv run python -m halo.tui.app --live \
+		--arm $(ARM_ID) \
+		--model $(PLANNER_MODEL) \
+		--vlm-model $(VLM_MODEL) \
+		--base-url $(OLLAMA_URL) \
+		--source mujoco
 
 test-component:
 	uv run pytest tests/component/ -v
@@ -83,4 +92,5 @@ help:
 	@echo "run-headless-mock  run headless HALO (mock mode)"
 	@echo "run-headless-live  run headless HALO (live, requires Ollama)"
 	@echo "tui-mock           launch the HALO terminal dashboard (mock mode)"
-	@echo "tui-live           launch the TUI wired to HALORuntime + PlannerAgent"
+	@echo "tui-live-videoloop launch the TUI with video loop source (requires Ollama)"
+	@echo "tui-live-mujoco    launch the TUI with MuJoCo scene camera (requires Ollama + robosuite)"
