@@ -24,8 +24,9 @@ def _log(msg: str) -> None:
 async def test_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
     """VLM describes scene → track cube → re-query VLM → compare bboxes."""
     from halo.contracts.events import EventType
+    from halo.services.target_perception_service.handle_match import find_detection_by_handle
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
-    from halo.services.target_perception_service.tracker_fn import find_detection_by_handle, make_tracker_factory_fn
+    from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
     from halo.testing.mock_fns import make_video_capture_fn
     from halo.testing.runner import HeadlessRunner, RunnerConfig
 

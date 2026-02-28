@@ -40,8 +40,9 @@ async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
     """MuJoCo scene → VLM describe → track cube → VLM re-query → IoU check."""
     from halo.bridge.sim_source import SimSource
     from halo.contracts.events import EventType
+    from halo.services.target_perception_service.handle_match import find_detection_by_handle
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
-    from halo.services.target_perception_service.tracker_fn import find_detection_by_handle, make_tracker_factory_fn
+    from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
     from halo.testing.runner import HeadlessRunner, RunnerConfig
 
     _log(f"VLM model: {vlm_model}")

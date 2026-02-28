@@ -19,10 +19,9 @@ import numpy as np
 
 from halo.contracts.snapshots import TargetInfo
 from halo.services.target_perception_service.frame_buffer import CapturedFrame
-from halo.services.target_perception_service.handle_match import find_detection_by_handle
 from halo.services.target_perception_service.vlm_parser import VlmDetection
 
-__all__ = ["find_detection_by_handle", "get_tracker_name", "make_tracker_factory_fn"]
+__all__ = ["get_tracker_name", "make_tracker_factory_fn"]
 
 # NanoTrack ONNX model paths (relative to repo root).
 _MODELS_DIR = Path(__file__).resolve().parents[3] / "models"

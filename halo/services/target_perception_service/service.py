@@ -51,17 +51,6 @@ TrackerUpdateFn = Callable[[CapturedFrame], Awaitable[TargetInfo | None]]
 TrackerFactoryFn = Callable[[CapturedFrame, VlmDetection], Awaitable[tuple[TargetInfo, TrackerUpdateFn]]]
 
 
-def _find_detection(target_handle: str, detections: list[VlmDetection]) -> VlmDetection | None:
-    """Find a detection matching *target_handle*, with fuzzy fallback.
-
-    1. Exact handle match.
-    2. Fuzzy: strip trailing ``_NN`` suffix and match on prefix
-       (e.g. ``black_cube_01`` matches ``black_cube_02``).
-       If multiple candidates share the prefix, pick the first.
-    """
-    return find_detection_by_handle(target_handle, detections)
-
-
 def _stabilize_scene_for_tracked_target(
     scene: VlmScene,
     tracked_handle: str | None,
@@ -719,7 +708,7 @@ class TargetPerceptionService:
                 self._tracker_init_attempts += 1
                 max_attempts = self._config.tracker_init_retries
 
-                match = _find_detection(target_handle, scene.detections)
+                match = find_detection_by_handle(target_handle, scene.detections)
                 if match is None:
                     if self._run_logger is not None:
                         got = [d.handle for d in scene.detections]

@@ -36,7 +36,7 @@ async def _track_and_verify(
 ) -> dict:
     """Track a target, re-query VLM, compare bboxes. Returns metrics dict."""
     from halo.contracts.events import EventType
-    from halo.services.target_perception_service.tracker_fn import find_detection_by_handle
+    from halo.services.target_perception_service.handle_match import find_detection_by_handle
 
     # ── Track target ───────────────────────────────────────────────
     _log(f"  [{label}] setting tracking target: {handle}")

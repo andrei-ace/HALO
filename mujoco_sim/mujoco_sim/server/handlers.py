@@ -170,6 +170,17 @@ def _handle_configure(msg: dict) -> dict:
 
 
 def _handle_set_hint(msg: dict) -> dict:
-    """Acknowledge a hint update delivered over CommandRPC."""
-    logger.debug("Set hint: %s", {k: v for k, v in msg.items() if k != "type"})
-    return {"type": RESP_OK}
+    """Acknowledge a hint update delivered over CommandRPC.
+
+    Returns RESP_OK with the parsed hint fields so the server main loop
+    can store the latest hint from a single source of truth.
+    """
+    hint = {
+        "ts_ms": msg.get("ts_ms"),
+        "target_handle": msg.get("target_handle"),
+        "bbox_xywh": msg.get("bbox_xywh"),
+        "confidence": msg.get("confidence"),
+        "tracker_ok": msg.get("tracker_ok"),
+    }
+    logger.debug("Set hint: %s", hint)
+    return {"type": RESP_OK, "hint": hint}

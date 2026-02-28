@@ -361,13 +361,18 @@ class SimClient:
         cmd.extend(["--command-port", str(self._parse_port(cfg.command_url))])
 
         logger.info("Starting managed sim server: %s", " ".join(cmd))
-        self._server_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self._server_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
 
         # Give the server a moment to bind sockets
         time.sleep(1.0)
 
         if self._server_proc.poll() is not None:
-            raise BridgeTransportError("Managed server exited immediately")
+            stderr_out = ""
+            if self._server_proc.stderr:
+                stderr_out = self._server_proc.stderr.read().decode(errors="replace").strip()
+                self._server_proc.stderr.close()
+            detail = f": {stderr_out}" if stderr_out else ""
+            raise BridgeTransportError(f"Managed server exited immediately (rc={self._server_proc.returncode}){detail}")
 
     def _stop_managed(self) -> None:
         """Stop the managed server subprocess."""

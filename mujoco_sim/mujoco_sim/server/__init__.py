@@ -46,6 +46,9 @@ class SimServer:
         # Latest hint from HALO
         self._latest_hint: dict | None = None
 
+        # Telemetry drop counter
+        self._telemetry_drops: int = 0
+
         # Env + teacher (created in run())
         self._env = None
         self._teacher = None
@@ -102,16 +105,11 @@ class SimServer:
                         if "teacher_mode" in msg:
                             self._teacher_mode = msg["teacher_mode"]
                             logger.info("teacher_mode = %s", self._teacher_mode)
-                    if msg.get("type") == "set_hint":
-                        self._latest_hint = {
-                            "ts_ms": msg.get("ts_ms"),
-                            "target_handle": msg.get("target_handle"),
-                            "bbox_xywh": msg.get("bbox_xywh"),
-                            "confidence": msg.get("confidence"),
-                            "tracker_ok": msg.get("tracker_ok"),
-                        }
-
                     reply, shutdown = dispatch_command(msg, self._env, self._teacher, teacher_mode=self._teacher_mode)
+
+                    # Store hint from handler response (single source of truth)
+                    if "hint" in reply:
+                        self._latest_hint = reply.pop("hint")
                     self._rep_commands.send(msgpack.packb(reply, use_bin_type=True))
 
                     if msg.get("type") == "step" and reply.get("type") == "step_ok":
@@ -160,7 +158,11 @@ class SimServer:
         try:
             self._pub_telemetry.send(packed, zmq.NOBLOCK)
         except zmq.ZMQError as exc:
-            logger.debug("TelemetryStream send skipped: %s", exc)
+            self._telemetry_drops += 1
+            if self._telemetry_drops == 1:
+                logger.warning("TelemetryStream send skipped (first drop): %s", exc)
+            else:
+                logger.debug("TelemetryStream send skipped (drop #%d): %s", self._telemetry_drops, exc)
 
     def _cleanup(self) -> None:
         """Close sockets and ZMQ context."""
