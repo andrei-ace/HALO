@@ -11,14 +11,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 uv sync --extra dev                   # install + dev deps (first time or after pyproject.toml changes)
+uv sync --extra dev --extra sim       # install + dev deps + MuJoCo/robosuite (for tui-live-mujoco / e2e tests)
 uv run python -m pytest               # run all unit tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
+make install           # install deps (uv sync --extra dev)
+make install-sim       # install deps + MuJoCo/robosuite (uv sync --extra dev --extra sim)
 make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
+make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
 make tui-live-videoloop # launch TUI with video loop source (requires Ollama)
-make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + robosuite)
+make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + robosuite; run make install-sim first)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
 

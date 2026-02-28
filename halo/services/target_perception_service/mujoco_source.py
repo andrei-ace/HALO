@@ -114,8 +114,12 @@ def _renderer_main(
             rgb = env.sim.render(camera_name=_CAMERA_NAME, width=_CAMERA_W, height=_CAMERA_H)[::-1]
             bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
+            # Extract joint state (qpos/qvel) to send alongside the frame
+            qpos = env.sim.data.qpos.copy()
+            qvel = env.sim.data.qvel.copy()
+
             try:
-                frame_conn.send(bgr)
+                frame_conn.send((bgr, qpos, qvel))
             except (BrokenPipeError, OSError):
                 break
 
@@ -172,6 +176,8 @@ class MuJocoVideoSource:
         self._cond = threading.Condition()
         self._frame_queue: deque[np.ndarray] = deque(maxlen=max_queue_size)
         self._latest_frame: np.ndarray | None = None
+        self._latest_qpos: np.ndarray | None = None
+        self._latest_qvel: np.ndarray | None = None
 
         self._process: mp.Process | None = None
         self._frame_conn: multiprocessing.connection.Connection | None = None
@@ -285,6 +291,18 @@ class MuJocoVideoSource:
         with self._cond:
             return self._latest_frame
 
+    @property
+    def latest_qpos(self) -> np.ndarray | None:
+        """Most recent joint positions from sim, or None if unavailable."""
+        with self._cond:
+            return self._latest_qpos
+
+    @property
+    def latest_qvel(self) -> np.ndarray | None:
+        """Most recent joint velocities from sim, or None if unavailable."""
+        with self._cond:
+            return self._latest_qvel
+
     def make_capture_fn(self, arm_id: str = "arm0") -> object:
         """Return a CaptureFn that reads sequential frames from the renderer."""
         source = self
@@ -323,11 +341,21 @@ class MuJocoVideoSource:
             try:
                 if not conn.poll(timeout=0.1):
                     continue
-                frame = conn.recv()
+                data = conn.recv()
             except (EOFError, OSError):
                 break
 
+            # Unpack (frame, qpos, qvel) tuple or plain frame for backward compat
+            if isinstance(data, tuple):
+                frame, qpos, qvel = data
+            else:
+                frame = data
+                qpos = None
+                qvel = None
+
             with self._cond:
                 self._latest_frame = frame
+                self._latest_qpos = qpos
+                self._latest_qvel = qvel
                 self._frame_queue.append(frame)
                 self._cond.notify_all()

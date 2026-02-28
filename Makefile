@@ -1,10 +1,16 @@
-.PHONY: install test test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live ruff help
 
 install:
 	uv sync --extra dev
 
+install-sim:
+	uv sync --extra dev --extra sim
+
 test:
 	uv run pytest
+
+test-sim:
+	uv run pytest mujoco_sim/mujoco_sim/tests/ -v
 
 test-unit:
 	uv run pytest tests/ --ignore=tests/component --ignore=tests/system --ignore=tests/e2e
@@ -78,6 +84,8 @@ test-integration:
 
 help:
 	@echo "install            install deps (uv sync --extra dev)"
+	@echo "install-sim        install deps + MuJoCo/robosuite (uv sync --extra dev --extra sim)"
+	@echo "test-sim           run mujoco_sim tests (requires --extra sim)"
 	@echo "test               run all unit tests"
 	@echo "test-unit          run unit tests (excluding component/system/e2e)"
 	@echo "test-v             run all tests (verbose)"

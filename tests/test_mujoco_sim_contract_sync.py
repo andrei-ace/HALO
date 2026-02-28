@@ -1,33 +1,42 @@
 """Contract sync verification — ensures mujoco_sim.constants stays in sync with halo.contracts.
 
-mujoco_sim is a workspace member, so its constants module is directly importable.
+Requires ``--extra sim`` (halo-mujoco-sim). Auto-skips if not installed.
 """
 
-from mujoco_sim.constants import (
-    ACTION_DIM,
-    ACTION_FIELDS,
-    GRIPPER_CLOSE,
-    GRIPPER_OPEN,
-    PHASE_CLOSE_GRIPPER,
-    PHASE_DONE,
-    PHASE_EXECUTE_APPROACH,
-    PHASE_IDLE,
-    PHASE_LIFT,
-    PHASE_MOVE_PREGRASP,
-    PHASE_PLAN_APPROACH,
-    PHASE_RECOVER_ABORT,
-    PHASE_RECOVER_REGRASP,
-    PHASE_RECOVER_RETRY_APPROACH,
-    PHASE_SELECT_GRASP,
-    PHASE_VERIFY_GRASP,
-    PHASE_VISUAL_ALIGN,
-)
-from mujoco_sim.constants import (
-    WRIST_ACTIVE_PHASES as SIM_WRIST_ACTIVE_PHASES,
-)
+import pytest
 
 from halo.contracts.actions import Action
 from halo.contracts.enums import WRIST_ACTIVE_PHASES, PhaseId
+
+try:
+    from mujoco_sim.constants import (
+        ACTION_DIM,
+        ACTION_FIELDS,
+        GRIPPER_CLOSE,
+        GRIPPER_OPEN,
+        PHASE_CLOSE_GRIPPER,
+        PHASE_DONE,
+        PHASE_EXECUTE_APPROACH,
+        PHASE_IDLE,
+        PHASE_LIFT,
+        PHASE_MOVE_PREGRASP,
+        PHASE_PLAN_APPROACH,
+        PHASE_RECOVER_ABORT,
+        PHASE_RECOVER_REGRASP,
+        PHASE_RECOVER_RETRY_APPROACH,
+        PHASE_SELECT_GRASP,
+        PHASE_VERIFY_GRASP,
+        PHASE_VISUAL_ALIGN,
+    )
+    from mujoco_sim.constants import (
+        WRIST_ACTIVE_PHASES as SIM_WRIST_ACTIVE_PHASES,
+    )
+
+    _has_mujoco_sim = True
+except ImportError:
+    _has_mujoco_sim = False
+
+pytestmark = pytest.mark.skipif(not _has_mujoco_sim, reason="halo-mujoco-sim not installed (uv sync --extra sim)")
 
 
 def test_phase_id_values_match():

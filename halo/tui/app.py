@@ -84,12 +84,13 @@ _DATA = dict(
     ctrl_action_xyz=(0.12, -0.05, 0.08),
     ctrl_gripper=0.0,
     servos=[
-        ("J1", "base_yaw", "OK", 42, 0.35),
-        ("J2", "shoulder", "OK", 45, 0.55),
-        ("J3", "elbow", "OK", 46, 0.55),
-        ("J4", "wrist_pitch", "OK", 44, 0.50),
-        ("J5", "wrist_yaw", "OK", 42, 0.25),
-        ("J6", "wrist_roll", "OK", 41, 0.30),
+        ("J1", "shoulder", "OK", 0.00, 0.01),
+        ("J2", "shoulder", "OK", -0.79, 0.02),
+        ("J3", "elbow", "OK", 0.00, -0.01),
+        ("J4", "elbow", "OK", -2.36, 0.03),
+        ("J5", "wrist", "OK", 0.00, 0.00),
+        ("J6", "wrist", "OK", 1.57, -0.02),
+        ("J7", "wrist", "OK", 0.79, 0.01),
     ],
     # Prompt history — shown newest-at-bottom inside the Talk panel
     prompt_history=[
@@ -153,12 +154,13 @@ _EMPTY_DATA = dict(
     ctrl_action_xyz=None,
     ctrl_gripper=None,
     servos=[
-        ("J1", "base_yaw", "NC", None, None),
+        ("J1", "shoulder", "NC", None, None),
         ("J2", "shoulder", "NC", None, None),
         ("J3", "elbow", "NC", None, None),
-        ("J4", "wrist_pitch", "NC", None, None),
-        ("J5", "wrist_yaw", "NC", None, None),
-        ("J6", "wrist_roll", "NC", None, None),
+        ("J4", "elbow", "NC", None, None),
+        ("J5", "wrist", "NC", None, None),
+        ("J6", "wrist", "NC", None, None),
+        ("J7", "wrist", "NC", None, None),
     ],
     prompt_history=[],
     suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
@@ -589,21 +591,42 @@ class ServosPanel(Container):
         self._data = data
 
     def on_mount(self) -> None:
-        self.border_title = "Servos (6DOF)"
+        self.border_title = "Joints (7DOF)"
+
+    @staticmethod
+    def _vel_bar(vel: float, width: int = 6, max_vel: float = 2.0) -> Text:
+        """Velocity magnitude bar (0..max_vel mapped to width chars)."""
+        frac = min(abs(vel) / max_vel, 1.0)
+        n = round(frac * width)
+        color = "bright_green" if frac < 0.4 else "yellow" if frac < 0.75 else "red"
+        t = Text(no_wrap=True)
+        t.append("█" * n, style=color)
+        t.append("░" * (width - n), style="grey30")
+        return t
+
+    @staticmethod
+    def _build_row(jid: str, name: str, status: str, pos: float | None, vel: float | None) -> Text:
+        t = Text(no_wrap=True)
+        t.append(f"{jid} ", style="bold white")
+        t.append(f"{name:<10}", style="white")
+        if status == "NC":
+            t.append("NC   ", style="#9e9e9e")
+            t.append("not connected", style="#9e9e9e")
+        else:
+            t.append(f"{pos:+7.2f} rad  " if pos is not None else "  —  rad  ", style="#b0bcd0")
+            t.append_text(ServosPanel._vel_bar(vel if vel is not None else 0.0))
+        return t
 
     def compose(self) -> ComposeResult:
-        for jid, name, status, temp, load in self._data["servos"]:
-            t = Text(no_wrap=True)
-            t.append(f"{jid} ", style="bold white")
-            t.append(f"{name:<13}", style="white")
-            if status == "NC":
-                t.append("NC   ", style="#9e9e9e")
-                t.append("not connected", style="#9e9e9e")
-            else:
-                t.append(f"{status:<5}", style="bold bright_green")
-                t.append(f"{temp}°C  ", style="white")
-                t.append_text(_bar(load))
-            yield Static(t)
+        for i, (jid, name, status, pos, vel) in enumerate(self._data["servos"]):
+            yield Static(self._build_row(jid, name, status, pos, vel), id=f"servo-{i}")
+
+    def refresh_live(self, servos: list[tuple[str, str, str, float | None, float | None]]) -> None:
+        for i, (jid, name, status, pos, vel) in enumerate(servos):
+            try:
+                self.query_one(f"#servo-{i}", Static).update(self._build_row(jid, name, status, pos, vel))
+            except Exception:
+                pass
 
 
 class TalkPanel(Container):
@@ -1237,8 +1260,30 @@ class HALOApp(App):
             typing_active = self.focused is inp and bool(inp.value)
             if not typing_active:
                 self.query_one("#perception-panel", TargetPerceptionPanel).refresh_live(panel_data)
+            # Update joints panel from MuJocoVideoSource if available
+            self._update_joints_panel()
         except Exception:
             pass
+
+    # Panda 7-DOF joint names (mirrored from mujoco_sim.constants.PANDA_JOINT_NAMES
+    # to avoid a hard dependency on the sim extra).
+    _PANDA_JOINT_NAMES = ("shoulder", "shoulder", "elbow", "elbow", "wrist", "wrist", "wrist")
+
+    def _update_joints_panel(self) -> None:
+        """Build servos list from MuJocoVideoSource qpos/qvel and refresh the panel."""
+        if self._video_source is None:
+            return
+        qpos = getattr(self._video_source, "latest_qpos", None)
+        qvel = getattr(self._video_source, "latest_qvel", None)
+        if qpos is None:
+            return
+        n = min(len(self._PANDA_JOINT_NAMES), len(qpos))
+        servos = []
+        for i in range(n):
+            jid = f"J{i + 1}"
+            vel = float(qvel[i]) if qvel is not None and i < len(qvel) else 0.0
+            servos.append((jid, self._PANDA_JOINT_NAMES[i], "OK", float(qpos[i]), vel))
+        self.query_one("#servos-panel", ServosPanel).refresh_live(servos)
 
     def _with_task_context(self, system_msg: str) -> str:
         """Append the last operator instruction so the agent keeps task context."""

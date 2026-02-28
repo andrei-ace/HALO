@@ -34,3 +34,14 @@ GRIPPER_CLOSE = 1.0
 # Control timing
 CONTROL_RATE_HZ = 10
 CHUNK_HORIZON_STEPS = 10
+
+# Panda arm joint names (7 DOF, excludes gripper fingers)
+PANDA_JOINT_NAMES: tuple[str, ...] = (
+    "J1_shoulder",
+    "J2_shoulder",
+    "J3_elbow",
+    "J4_elbow",
+    "J5_wrist",
+    "J6_wrist",
+    "J7_wrist",
+)

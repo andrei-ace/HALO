@@ -16,11 +16,11 @@ dependencies = [
     "opencv-python>=4.8",
     "pyzmq>=25",
     "msgpack>=1.0",
-    "halo-mujoco-sim",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8"]
+sim = ["halo-mujoco-sim[sim]"]
 
 [tool.uv.workspace]
 members = ["mujoco_sim"]
@@ -37,7 +37,7 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests", "mujoco_sim/mujoco_sim/tests"]
+testpaths = ["tests"]
 markers = [
     "integration: LLM integration tests — require a running Ollama instance",
     "component: component tests — one real service with mocked deps and latency",

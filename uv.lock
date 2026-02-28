@@ -264,7 +264,6 @@ name = "halo"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "halo-mujoco-sim" },
     { name = "langchain" },
     { name = "langchain-core" },
     { name = "langchain-ollama" },
@@ -282,10 +281,13 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
+sim = [
+    { name = "halo-mujoco-sim", extra = ["sim"] },
+]
 
 [package.metadata]
 requires-dist = [
-    { name = "halo-mujoco-sim", editable = "mujoco_sim" },
+    { name = "halo-mujoco-sim", extras = ["sim"], marker = "extra == 'sim'", editable = "mujoco_sim" },
     { name = "langchain", specifier = ">=0.3" },
     { name = "langchain-core", specifier = ">=0.3" },
     { name = "langchain-ollama", specifier = ">=0.2" },
@@ -299,7 +301,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "textual", specifier = ">=0.70" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "sim"]
 
 [[package]]
 name = "halo-mujoco-sim"
