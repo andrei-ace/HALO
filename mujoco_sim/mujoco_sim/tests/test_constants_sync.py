@@ -62,9 +62,9 @@ def test_action_dim():
 
 
 def test_gripper_semantics():
-    """GRIPPER_OPEN=-0.17, GRIPPER_CLOSE=1.75 (SO-101 joint angle, rad)."""
-    assert GRIPPER_OPEN == -0.17
-    assert GRIPPER_CLOSE == 1.75
+    """GRIPPER_OPEN=1.75, GRIPPER_CLOSE=-0.17 (SO-101 joint angle, rad)."""
+    assert GRIPPER_OPEN == 1.75
+    assert GRIPPER_CLOSE == -0.17
 
 
 def test_wrist_active_phases():

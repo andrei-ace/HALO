@@ -49,7 +49,7 @@ def run_teacher(
     seed_base: int = 0,
     env_config: EnvConfig | None = None,
     teacher_config: TeacherConfig | None = None,
-    max_steps: int = 800,
+    max_steps: int = 1200,
     stabilize_seconds: float = DEFAULT_STABILIZE_SECONDS,
     save_video: bool = False,
     vlm_base_url: str = "http://localhost:11434",

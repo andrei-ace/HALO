@@ -63,9 +63,9 @@ def test_phase_id_values_match():
 
 def test_gripper_semantics():
     """GRIPPER_OPEN/CLOSE are SO-101 joint angles (not robosuite ±1)."""
-    # SO-101 gripper joint range: -0.17 (open) to 1.75 (close)
-    assert GRIPPER_OPEN == -0.17
-    assert GRIPPER_CLOSE == 1.75
+    # SO-101 gripper joint range: 1.75 (open) to -0.17 (close)
+    assert GRIPPER_OPEN == 1.75
+    assert GRIPPER_CLOSE == -0.17
 
 
 def test_wrist_active_phases_match():

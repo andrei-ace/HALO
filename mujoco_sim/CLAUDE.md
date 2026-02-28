@@ -55,7 +55,23 @@ uv run python -m pytest -v  # includes mujoco_sim tests (in root testpaths)
 uv run python -m mujoco_sim.scripts.test_env  # acceptance: dump scene.png + wrist.png
 uv run python -m mujoco_sim.scripts.generate_episodes --num-episodes 10 --output-dir episodes  # generate demos
 uv run python -m mujoco_sim.scripts.inspect_episode  # inspect latest episode
+uv run python -m mujoco_sim.scripts.inspect_episode data/episodes/20260301_004533/ep_000000.hdf5  # specific file
 ```
+
+### inspect_episode — episode debug inspector
+
+`inspect_episode.py` prints a diagnostic summary of an HDF5 episode. Use it to verify teacher behaviour after generation. With no arguments it finds the latest episode in `data/episodes/`.
+
+What it reports:
+- **Step count, seed, duration, control freq**
+- **Phase sequence** with per-phase step ranges and durations
+- **Lift check** — verifies cube actually moved up ≥5 cm during LIFT phase (FAILED = grasp problem)
+- **EE and cube positions** (first/last) + EE-cube distance over time (start, min, final)
+- **Distance at each phase transition** — useful for spotting approach/grasp timing issues
+- **Gripper** range (first → last)
+- **Action norms** (mean, max, last-50 mean, action dim)
+- **Tracker** status (if tracking data present)
+- **Video** presence and size
 
 ## SO-101 Joint/Actuator Names
 

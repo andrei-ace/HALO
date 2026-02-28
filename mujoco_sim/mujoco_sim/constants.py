@@ -41,8 +41,8 @@ SO101_ARM_JOINT_NAMES: tuple[str, ...] = (
 GRIPPER_JOINT_NAME = "gripper"
 
 # Gripper semantics (joint angle, not ±1 command)
-GRIPPER_OPEN = -0.17  # fully open (joint range minimum, rad)
-GRIPPER_CLOSE = 1.75  # fully closed (joint range maximum, rad)
+GRIPPER_OPEN = 1.75  # fully open (joint range maximum, rad)
+GRIPPER_CLOSE = -0.17  # fully closed (joint range minimum, rad)
 
 # Control timing
 CONTROL_RATE_HZ = 10
