@@ -25,7 +25,7 @@ from PIL import Image
 from mujoco_sim.config.env_config import EnvConfig
 from mujoco_sim.constants import SO101_ARM_JOINT_NAMES
 from mujoco_sim.env.so101_env import SO101Env
-from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
+from mujoco_sim.teacher.keyframe_planner import _TCP_PINCH_OFFSET_LOCAL, plan_pick_keyframes
 from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
 
 logger = logging.getLogger(__name__)
@@ -105,7 +105,10 @@ def main() -> None:
 
     # Render each waypoint
     print(f"\nRendering to {out_dir}/\n")
-    print(f"{'Label':<15} {'Target pos':>30} {'Achieved pos':>30} {'Err (mm)':>10} {'Joints (deg)':>50}")
+    print(
+        f"{'Label':<15} {'Target pos':>30} {'Achieved pos':>30} {'Err (mm)':>10}"
+        f" {'Pinch pos':>30} {'Pinch→Cube (mm)':>16}"
+    )
     print("-" * 140)
 
     for kf, wp in zip(keyframes, waypoints):
@@ -119,7 +122,12 @@ def main() -> None:
 
         # Read achieved EE position
         achieved_pos = data.site_xpos[ee_site_id].copy()
+        achieved_rot = data.site_xmat[ee_site_id].reshape(3, 3).copy()
         pos_err = np.linalg.norm(kf.position - achieved_pos) * 1000  # mm
+
+        # Compute jaw midpoint (pinch point) from achieved pose
+        pinch_world = achieved_pos + achieved_rot @ _TCP_PINCH_OFFSET_LOCAL
+        pinch_to_cube = np.linalg.norm(pinch_world - cube_pos) * 1000  # mm
 
         # Render and save
         img = env.render()
@@ -127,11 +135,12 @@ def main() -> None:
         Image.fromarray(img).save(img_path)
 
         # Print diagnostics
-        joints_deg = np.degrees(wp.arm_joints)
         target_str = f"[{kf.position[0]:7.4f}, {kf.position[1]:7.4f}, {kf.position[2]:7.4f}]"
         achieved_str = f"[{achieved_pos[0]:7.4f}, {achieved_pos[1]:7.4f}, {achieved_pos[2]:7.4f}]"
-        joints_str = ", ".join(f"{d:7.1f}" for d in joints_deg)
-        print(f"{wp.label:<15} {target_str:>30} {achieved_str:>30} {pos_err:>9.2f} [{joints_str}]")
+        pinch_str = f"[{pinch_world[0]:7.4f}, {pinch_world[1]:7.4f}, {pinch_world[2]:7.4f}]"
+        print(
+            f"{wp.label:<15} {target_str:>30} {achieved_str:>30} {pos_err:>9.2f} {pinch_str:>30} {pinch_to_cube:>15.2f}"
+        )
 
     env.close()
     print(f"\nDone. Images saved to {out_dir}/")

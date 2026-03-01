@@ -25,6 +25,12 @@ from mujoco_sim.constants import (
     PHASE_MOVE_PREGRASP,
 )
 
+# Offset from gripperframe site to jaw contact-surface centroid,
+# expressed in gripperframe-local coordinates.
+# Measured via mujoco_sim.scripts.measure_pinch_offset (vertex proximity method,
+# centroid of jaw mesh vertices within 3 mm when gripper closed).
+_TCP_PINCH_OFFSET_LOCAL = np.array([-0.003, 0.0, 0.003])
+
 
 @dataclass
 class Keyframe:
@@ -103,10 +109,16 @@ def plan_pick_keyframes(
     yaw = _yaw_from_quat(cube_quat)
     grasp_rot = _gripper_down_rotation(yaw)
 
-    # Positions
-    pregrasp_pos = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_hover])
-    grasp_pos = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_grasp])
-    lift_pos = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_lift])
+    # Contact positions (where we want the jaw midpoint to be)
+    contact_pregrasp = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_hover])
+    contact_grasp = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_grasp])
+    contact_lift = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_lift])
+
+    # Shift so IK places the jaw midpoint (not gripperframe) at the contact point
+    offset_world = grasp_rot @ _TCP_PINCH_OFFSET_LOCAL
+    pregrasp_pos = contact_pregrasp - offset_world
+    grasp_pos = contact_grasp - offset_world
+    lift_pos = contact_lift - offset_world
 
     return [
         Keyframe(

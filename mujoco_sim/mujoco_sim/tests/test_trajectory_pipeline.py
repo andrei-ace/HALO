@@ -20,7 +20,7 @@ from mujoco_sim.constants import (
     PHASE_LIFT,
     PHASE_MOVE_PREGRASP,
 )
-from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
+from mujoco_sim.teacher.keyframe_planner import _TCP_PINCH_OFFSET_LOCAL, plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
 from mujoco_sim.teacher.waypoint_generator import JointWaypoint, generate_joint_waypoints
 
@@ -99,8 +99,11 @@ class TestKeyframePlanner:
         )
 
         pregrasp = keyframes[1]
-        np.testing.assert_allclose(pregrasp.position[:2], cube_pos[:2])
-        np.testing.assert_allclose(pregrasp.position[2], cube_pos[2] + z_hover)
+        # Gripperframe is offset from cube so that jaw midpoint lands at contact point
+        grasp_rot = pregrasp.orientation
+        offset_world = grasp_rot @ _TCP_PINCH_OFFSET_LOCAL
+        expected_pos = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_hover]) - offset_world
+        np.testing.assert_allclose(pregrasp.position, expected_pos)
 
     def test_grasp_at_cube(self, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
@@ -110,8 +113,11 @@ class TestKeyframePlanner:
         keyframes = plan_pick_keyframes(home_joints, cube_pos, cube_quat, ee_site_id, mj_model, mj_data)
 
         grasp = keyframes[2]
-        np.testing.assert_allclose(grasp.position[:2], cube_pos[:2])
-        np.testing.assert_allclose(grasp.position[2], cube_pos[2])
+        # Gripperframe is offset from cube so that jaw midpoint lands at cube center
+        grasp_rot = grasp.orientation
+        offset_world = grasp_rot @ _TCP_PINCH_OFFSET_LOCAL
+        expected_pos = cube_pos - offset_world
+        np.testing.assert_allclose(grasp.position, expected_pos)
 
     def test_gripper_sequence(self, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
@@ -136,6 +142,23 @@ class TestKeyframePlanner:
         for kf in keyframes[1:]:
             z_axis = kf.orientation[:, 2]
             np.testing.assert_allclose(z_axis, [0.0, 0.0, -1.0], atol=1e-10)
+
+    def test_tcp_offset_applied(self, mj_model, mj_data, ee_site_id):
+        """Grasp keyframe position differs from cube_pos by the TCP pinch offset."""
+        home_joints = mj_data.qpos[:6].copy()
+        cube_pos = np.array([0.15, 0.0, 0.395])
+        cube_quat = np.array([1.0, 0.0, 0.0, 0.0])
+
+        keyframes = plan_pick_keyframes(home_joints, cube_pos, cube_quat, ee_site_id, mj_model, mj_data)
+
+        grasp = keyframes[2]
+        # Reconstruct: grasp.position + grasp_rot @ offset should equal cube_pos
+        grasp_rot = grasp.orientation
+        jaw_midpoint = grasp.position + grasp_rot @ _TCP_PINCH_OFFSET_LOCAL
+        np.testing.assert_allclose(jaw_midpoint, cube_pos, atol=1e-10)
+        # The offset should be non-zero
+        diff = grasp.position - cube_pos
+        assert np.linalg.norm(diff) > 1e-6, "Grasp keyframe should be offset from cube center"
 
     def test_orientation_varies_with_cube_yaw(self, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
