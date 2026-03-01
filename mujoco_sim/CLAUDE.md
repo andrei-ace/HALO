@@ -3,8 +3,8 @@
 ## Overview
 
 Raw MuJoCo simulation module for SO-101 PICK demo generation, episode recording,
-offline phase detection, and VCR replay with manual annotation. Uses damped
-least-squares IK for joint-position control. No robosuite dependency.
+and ZMQ-based bridge to the HALO runtime. Uses trajectory-planned pick with
+jerk-limited ruckig profiles and damped least-squares IK. No robosuite dependency.
 
 ## Structure
 
@@ -22,23 +22,36 @@ mujoco_sim/
     writer_hdf5.py      # write_episode() — one HDF5 per episode, gzip images
     reader_hdf5.py      # read_episode() — load HDF5 → RawEpisode
   teacher/
-    pick_teacher.py     # PickTeacher scripted policy (IK-based, joint-position output)
+    pick_teacher.py     # PickTeacher trajectory-planned policy (pre-computes full trajectory on first step)
     ik_helper.py        # Damped least-squares IK: EE position → 5 arm joint angles
+    keyframe_planner.py # SE(3) keyframe planner: cube pose → 5 Cartesian keyframes with phase tags
+    waypoint_generator.py # Cartesian keyframes → joint-space waypoints via orientation-aware IK
+    trajectory.py       # Jerk-limited trajectory planning via ruckig (joint waypoints → smooth profiles)
   runner/
     run_teacher.py      # run_teacher() — stabilize → teacher loop → write HDF5
+  server/
+    __init__.py         # SimServer: standalone ZMQ server owning SO101Env + PickTeacher
+    __main__.py         # CLI: python -m mujoco_sim.server
+    config.py           # SimServerConfig (host, ports, render FPS, JPEG quality)
+    handlers.py         # dispatch_command() — routes CommandRPC messages
+    protocol.py         # Message types, msgpack + JPEG serialization helpers
   scripts/
     test_env.py             # acceptance: dump scene.png + wrist.png
-    generate_episodes.py    # CLI: --num-episodes, --output-dir, --stabilize
+    generate_episodes.py    # CLI: --num-episodes, --output-dir, --stabilize, --standalone
     inspect_episode.py      # CLI: inspect HDF5 episode
+    measure_pinch_offset.py # measure TCP pinch-point offset (gripperframe → jaw contact surface)
+    visualize_ik_pose.py    # render IK-solved poses as static FK snapshots
   assets/
     so101/                  # MJCF + STL meshes (from SO-ARM100 repo)
       so101_new_calib.xml   # SO-101 robot model (position-controlled STS3215 servos)
       pick_scene.xml        # Pick scene: robot + floor + cube + scene_cam
       assets/               # 13 STL mesh files
   tests/
-    test_constants_sync.py  # verify constants match halo.contracts
-    test_raw_episode.py     # Timestep, RawEpisode, HDF5 roundtrip, phase_id, joint_pos
-    test_pick_teacher.py    # PickTeacher phases, actions, full episode (uses real MuJoCo model)
+    test_constants_sync.py      # verify constants match halo.contracts (6 tests)
+    test_raw_episode.py         # Timestep, RawEpisode, HDF5 roundtrip, phase_id, joint_pos (29 tests)
+    test_pick_teacher.py        # PickTeacher phases, actions, full episode (20 tests)
+    test_trajectory_pipeline.py # keyframes → IK → ruckig integration (28 tests)
+    test_server.py              # protocol serialization + command dispatch (21 tests)
 ```
 
 ## Commands
@@ -47,15 +60,20 @@ mujoco_sim is a uv workspace member — all commands run from the **repo root** 
 
 ```bash
 # From repo root
-uv run python -m pytest mujoco_sim/mujoco_sim/tests/ -v   # all mujoco_sim tests
+uv run python -m pytest mujoco_sim/mujoco_sim/tests/ -v   # all mujoco_sim tests (104 tests)
 uv run python -m pytest tests/test_mujoco_sim_contract_sync.py -v  # contract sync
 uv run python -m pytest -v  # includes mujoco_sim tests (in root testpaths)
 
 # Requires mujoco (uv sync --extra sim)
 uv run python -m mujoco_sim.scripts.test_env  # acceptance: dump scene.png + wrist.png
 uv run python -m mujoco_sim.scripts.generate_episodes --num-episodes 10 --output-dir episodes  # generate demos
+uv run python -m mujoco_sim.scripts.generate_episodes --standalone --num-episodes 10  # connect to running sim server
 uv run python -m mujoco_sim.scripts.inspect_episode  # inspect latest episode
 uv run python -m mujoco_sim.scripts.inspect_episode data/episodes/20260301_004533/ep_000000.hdf5  # specific file
+uv run python -m mujoco_sim.scripts.visualize_ik_pose  # render IK waypoint snapshots
+uv run python -m mujoco_sim.scripts.visualize_ik_pose --seed 7 -v  # with seed + verbose IK logging
+uv run python -m mujoco_sim.scripts.measure_pinch_offset  # measure jaw contact offset
+uv run python -m mujoco_sim.server  # start ZMQ sim server
 ```
 
 ### inspect_episode — episode debug inspector
@@ -65,10 +83,10 @@ uv run python -m mujoco_sim.scripts.inspect_episode data/episodes/20260301_00453
 What it reports:
 - **Step count, seed, duration, control freq**
 - **Phase sequence** with per-phase step ranges and durations
-- **Lift check** — verifies cube actually moved up ≥5 cm during LIFT phase (FAILED = grasp problem)
+- **Lift check** — verifies cube actually moved up >=5 cm during LIFT phase (FAILED = grasp problem)
 - **EE and cube positions** (first/last) + EE-cube distance over time (start, min, final)
 - **Distance at each phase transition** — useful for spotting approach/grasp timing issues
-- **Gripper** range (first → last)
+- **Gripper** range (first -> last)
 - **Action norms** (mean, max, last-50 mean, action dim)
 - **Tracker** status (if tracking data present)
 - **Video** presence and size
@@ -77,10 +95,10 @@ What it reports:
 
 | Idx | Joint | Range (rad) |
 |-----|-------|-------------|
-| 0 | `shoulder_pan` | ±1.92 |
-| 1 | `shoulder_lift` | ±1.75 |
-| 2 | `elbow_flex` | ±1.69 |
-| 3 | `wrist_flex` | ±1.66 |
+| 0 | `shoulder_pan` | +/-1.92 |
+| 1 | `shoulder_lift` | +/-1.75 |
+| 2 | `elbow_flex` | +/-1.69 |
+| 3 | `wrist_flex` | +/-1.66 |
 | 4 | `wrist_roll` | -2.74 to 2.84 |
 | 5 | `gripper` | -0.17 to 1.75 |
 
@@ -93,6 +111,83 @@ EE site: `gripperframe` on the `gripper` body.
 Written directly to `data.ctrl[:]`. Position actuators with `kp=998.22` track targets.
 
 Gripper semantics: `-0.17` = fully open, `1.75` = fully closed (joint angle, rad).
+
+## Trajectory Planning Pipeline
+
+PickTeacher pre-computes a full trajectory on the first `step()` call, then samples it in real time:
+
+```
+keyframe_planner.plan_pick_keyframes()  →  5 SE(3) keyframes (pos + ori + gripper + phase_id)
+    ↓
+waypoint_generator.generate_joint_waypoints()  →  5 joint-space waypoints via IK (with yaw-retry fallbacks)
+    ↓
+trajectory.plan_trajectory()  →  TrajectoryPlan (jerk-limited ruckig segments)
+    ↓
+pick_teacher.step()  →  samples plan at elapsed time → (action, phase_id, done)
+```
+
+### Keyframe planner
+
+Generates 5 Cartesian keyframes from cube pose + home joints: `home → pregrasp → grasp → grasp_closed → lift`. Each keyframe is a `Keyframe` dataclass with position (3,), orientation (3x3 rot matrix), gripper, phase_id, label.
+
+Orientation rule: gripperframe Z-axis aligned with world -Z (gripper pointing down). Yaw extracted from cube quaternion.
+
+TCP pinch-point offset: `[-0.003, 0.0, 0.003]` (measured via `measure_pinch_offset.py`).
+
+### Waypoint generator
+
+Solves IK for each keyframe independently, seeded from the previous waypoint for continuity. Falls back to yaw-rotated retries `[0, 90, -90, 180]` degrees on IK failure. Raises `IKFailure` if position error exceeds tolerance.
+
+### Trajectory (ruckig)
+
+Each waypoint pair becomes one ruckig segment with per-joint velocity/acceleration/jerk limits. All segments start/end at rest (v=0, a=0). Gripper interpolated linearly within each segment.
+
+Default limits: vel `[1.0, 1.0, 1.0, 1.0, 1.5]`, accel `[3.0, 3.0, 3.0, 3.0, 4.0]`, jerk `[10.0, 10.0, 10.0, 10.0, 15.0]`.
+
+### TeacherConfig
+
+```python
+TeacherConfig(
+    pregrasp_height_offset=0.08,  # m above cube center
+    grasp_height_offset=0.0,      # at cube center
+    lift_height=0.08,             # m above initial position
+    max_velocity=None,            # defaults in JointLimits
+    max_acceleration=None,
+    max_jerk=None,
+    ik_pos_weight=1.0,
+    ik_ori_weight=0.1,
+    ik_max_iters=200,
+    ik_tol=1e-3,
+    ik_pos_tol=1e-2,
+)
+```
+
+## ZMQ Sim Server
+
+Standalone process owning SO101Env + PickTeacher, bridged to HALO runtime via ZMQ.
+
+### Channels
+
+| Channel | ZMQ Pattern | Default Port | Purpose |
+|---------|-------------|--------------|---------|
+| TelemetryStream | PUB | 5560 | Frames + state at render_fps (10 Hz) |
+| CommandRPC | REP | 5561 | step, reset, teacher_step, configure, set_hint, shutdown |
+
+Single-threaded main loop (required for macOS OpenGL rendering). Protocol uses msgpack + raw bytes for numpy arrays, JPEG for camera frames.
+
+### SimServerConfig
+
+```python
+SimServerConfig(
+    host="127.0.0.1",
+    telemetry_port=5560,
+    command_port=5561,
+    render_fps=10,
+    jpeg_quality=85,
+    env_config=EnvConfig(),
+    teacher_config=TeacherConfig(),
+)
+```
 
 ## Usage
 
@@ -154,39 +249,49 @@ write_episode(episode, "episodes/ep_000000.hdf5")
 env.close()
 ```
 
-### Teacher phase sequence
+### Teacher phase sequence (executed in trajectory)
 
 ```
-IDLE(0) → SELECT_GRASP(1) → PLAN_APPROACH(2) → MOVE_PREGRASP(3) → VISUAL_ALIGN(4)
-→ EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → VERIFY_GRASP(7) → LIFT(8) → DONE(9)
+IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(8) → DONE(9)
 ```
+
+SELECT_GRASP, PLAN_APPROACH, and VISUAL_ALIGN are folded into the planning step (instantaneous). VERIFY_GRASP is implicit in the gripper-close segment.
 
 ### HDF5 file layout
 
 ```
 ep_000000.hdf5
-├── obs/
-│   ├── rgb_scene    (T, H, W, 3) uint8  [gzip]
-│   ├── rgb_wrist    (T, H, W, 3) uint8  [gzip]
-│   ├── qpos         (T, 13)
-│   ├── qvel         (T, 12)
-│   ├── gripper      (T,)
-│   ├── ee_pose      (T, 7)
-│   ├── joint_pos    (T, 6)             [if present]
-│   ├── phase_id     (T,) int32         [if present]
-│   ├── object_pose  (T, 7)             [if present]
-│   └── contacts/    step_NNNNNN (N,)   [if present]
-├── action           (T, 6)
-└── attrs: seed, env_name, robot, control_freq, num_steps, created_at
++-- obs/
+|   +-- rgb_scene    (T, H, W, 3) uint8  [gzip]
+|   +-- rgb_wrist    (T, H, W, 3) uint8  [gzip]
+|   +-- qpos         (T, 13)
+|   +-- qvel         (T, 12)
+|   +-- gripper      (T,)
+|   +-- ee_pose      (T, 7)
+|   +-- joint_pos    (T, 6)             [if present]
+|   +-- phase_id     (T,) int32         [if present]
+|   +-- object_pose  (T, 7)             [if present]
+|   +-- contacts/    step_NNNNNN (N,)   [if present]
++-- action           (T, 6)
++-- attrs: seed, env_name, robot, control_freq, num_steps, created_at
+```
+
+## Dependencies
+
+```
+numpy, h5py>=3.0, tqdm>=4.60, ruckig>=0.14
+Optional: mujoco>=3.1.6 (sim), pyzmq>=25 + msgpack>=1.0 (server), opencv-python>=4.8 (viewer/server)
 ```
 
 ## Key Design
 
 - **SO-101** arm (5 DOF + 1 gripper) via raw MuJoCo (no robosuite)
 - **Position actuators** — joint targets written to `data.ctrl[:]`
-- **Damped least-squares IK** — Cartesian targets → 5 arm joint angles
+- **Trajectory-planned pick** — full trajectory computed on first step via keyframe planner + IK + ruckig
+- **Damped least-squares IK** — Cartesian targets -> 5 arm joint angles, with yaw-retry fallbacks
 - **Dual cameras**: `scene_cam` (overhead) + `wrist_cam` (on gripper body, TBD)
 - **20 Hz control freq**, 10 physics substeps per step (`dt=0.005`)
 - **Seeded resets** with cube position randomization
 - **Stabilization**: 5 s home-pose settling before recording (configurable)
 - **Phase tracking**: each Timestep records `phase_id` from teacher
+- **ZMQ bridge**: SimServer exposes env + teacher to HALO runtime (TelemetryStream PUB + CommandRPC REP)
