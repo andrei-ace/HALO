@@ -1,11 +1,12 @@
 """SE(3) keyframe planner for scripted pick trajectories.
 
 Generates a sequence of Cartesian keyframes (position + orientation + gripper)
-from cube pose and home pose.  Each keyframe is tagged with a phase ID and label
-so downstream modules can map trajectory segments to FSM phases.
+from a scored GraspPose and home pose.  Each keyframe is tagged with a phase ID
+and label so downstream modules can map trajectory segments to FSM phases.
 
-Orientation rule: "gripper down" = gripperframe Z-axis aligned with world -Z.
-Yaw is extracted from the cube quaternion (rotation about world Z).
+The grasp orientation and approach direction come from ``GraspPose`` (produced
+by ``grasp_planner.evaluate_grasps``).  Pregrasp is offset along the approach
+direction; lift is always vertical.
 """
 
 from __future__ import annotations
@@ -24,12 +25,8 @@ from mujoco_sim.constants import (
     PHASE_LIFT,
     PHASE_MOVE_PREGRASP,
 )
-
-# Offset from gripperframe site to jaw contact-surface centroid,
-# expressed in gripperframe-local coordinates.
-# Measured via mujoco_sim.scripts.measure_pinch_offset (vertex proximity method,
-# centroid of jaw mesh vertices within 3 mm when gripper closed).
-_TCP_PINCH_OFFSET_LOCAL = np.array([-0.003, 0.0, 0.003])
+from mujoco_sim.scene_info import TCP_PINCH_OFFSET_LOCAL
+from mujoco_sim.teacher.grasp_planner import GraspPose
 
 
 @dataclass
@@ -43,56 +40,27 @@ class Keyframe:
     label: str  # human-readable tag
 
 
-def _gripper_down_rotation(yaw: float = 0.0) -> np.ndarray:
-    """Build a rotation matrix with Z-axis pointing down (world -Z) and given yaw.
-
-    The resulting frame has:
-    - Z-column = [0, 0, -1]  (gripper pointing down)
-    - X-column = [cos(yaw), sin(yaw), 0]
-    - Y-column = [-sin(yaw), cos(yaw), 0]  (right-hand rule adjusted for Z down)
-
-    Actually, for Z = [0,0,-1] and X = [cos(yaw), sin(yaw), 0]:
-    Y = Z × X (right-hand rule to ensure det(R)=+1)
-    """
-    c, s = np.cos(yaw), np.sin(yaw)
-    x_axis = np.array([c, s, 0.0])
-    z_axis = np.array([0.0, 0.0, -1.0])
-    y_axis = np.cross(z_axis, x_axis)
-    R = np.column_stack([x_axis, y_axis, z_axis])
-    return R
-
-
-def _yaw_from_quat(quat: np.ndarray) -> float:
-    """Extract yaw (rotation about world Z) from a quaternion [w, x, y, z]."""
-    w, x, y, z = quat
-    # atan2(2(wz + xy), 1 - 2(y² + z²))
-    return float(np.arctan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z)))
-
-
 def plan_pick_keyframes(
     home_joints: np.ndarray,
-    cube_pos: np.ndarray,
-    cube_quat: np.ndarray,
+    grasp_pose: GraspPose,
     ee_site_id: int,
     model: mujoco.MjModel,
     data: mujoco.MjData,
     *,
-    z_hover: float = 0.08,
-    z_grasp: float = 0.0,
+    standoff: float = 0.04,
     z_lift: float = 0.08,
 ) -> list[Keyframe]:
     """Plan Cartesian keyframes for a pick trajectory.
 
     Args:
         home_joints: (6,) home joint positions (arm + gripper).
-        cube_pos: (3,) cube center in world frame.
-        cube_quat: (4,) cube orientation quaternion [w,x,y,z].
+        grasp_pose: GraspPose from the grasp planner (contact point, orientation,
+            approach direction).
         ee_site_id: MuJoCo site id for gripperframe.
         model: MuJoCo model.
         data: MuJoCo data (used to forward-kinematics the home pose).
-        z_hover: Height above cube for pregrasp.
-        z_grasp: Height offset from cube center for grasp.
-        z_lift: Height above cube for lift.
+        standoff: Distance along approach direction for pregrasp offset.
+        z_lift: Vertical lift height above grasp contact point.
 
     Returns:
         List of 5 Keyframe instances: home, pregrasp, grasp, grasp_closed, lift.
@@ -105,17 +73,15 @@ def plan_pick_keyframes(
     home_pos = d.site_xpos[ee_site_id].copy()
     home_rot = d.site_xmat[ee_site_id].reshape(3, 3).copy()
 
-    # Orientation: gripper-down with yaw from cube
-    yaw = _yaw_from_quat(cube_quat)
-    grasp_rot = _gripper_down_rotation(yaw)
+    grasp_rot = grasp_pose.orientation
 
     # Contact positions (where we want the jaw midpoint to be)
-    contact_pregrasp = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_hover])
-    contact_grasp = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_grasp])
-    contact_lift = np.array([cube_pos[0], cube_pos[1], cube_pos[2] + z_lift])
+    contact_grasp = grasp_pose.contact_point
+    contact_pregrasp = contact_grasp - standoff * grasp_pose.approach_dir
+    contact_lift = contact_grasp + np.array([0.0, 0.0, z_lift])
 
     # Shift so IK places the jaw midpoint (not gripperframe) at the contact point
-    offset_world = grasp_rot @ _TCP_PINCH_OFFSET_LOCAL
+    offset_world = grasp_rot @ TCP_PINCH_OFFSET_LOCAL
     pregrasp_pos = contact_pregrasp - offset_world
     grasp_pos = contact_grasp - offset_world
     lift_pos = contact_lift - offset_world

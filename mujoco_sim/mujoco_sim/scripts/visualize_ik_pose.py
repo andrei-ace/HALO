@@ -1,8 +1,8 @@
 """Visualize IK-solved poses by setting joint configurations and rendering snapshots.
 
-Runs the keyframe planner + waypoint generator (IK), then for each solved
-waypoint directly sets qpos and renders a scene camera image.  No physics
-stepping — purely static FK snapshots.
+Runs the grasp planner + keyframe planner + waypoint generator (IK), then for
+each solved waypoint directly sets qpos and renders a scene camera image.
+No physics stepping — purely static FK snapshots.
 
 Usage::
 
@@ -25,7 +25,9 @@ from PIL import Image
 from mujoco_sim.config.env_config import EnvConfig
 from mujoco_sim.constants import SO101_ARM_JOINT_NAMES
 from mujoco_sim.env.so101_env import SO101Env
-from mujoco_sim.teacher.keyframe_planner import _TCP_PINCH_OFFSET_LOCAL, plan_pick_keyframes
+from mujoco_sim.scene_info import TCP_PINCH_OFFSET_LOCAL, SceneInfo
+from mujoco_sim.teacher.grasp_planner import evaluate_grasps
+from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
 
 logger = logging.getLogger(__name__)
@@ -45,7 +47,7 @@ def _resolve_ids(model: mujoco.MjModel) -> tuple[int, list[int], int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Visualize IK-solved poses as rendered snapshots")
-    parser.add_argument("--seed", type=int, default=42, help="Cube placement seed (default: 42)")
+    parser.add_argument("--seed", type=int, default=7, help="Cube placement seed (default: 7)")
     parser.add_argument("--output-dir", type=str, default="data/ik_poses", help="Base output directory")
     parser.add_argument(
         "--resolution", type=int, nargs=2, metavar=("H", "W"), default=[480, 640], help="Render resolution"
@@ -75,17 +77,38 @@ def main() -> None:
     print(f"Resolution: {h}x{w}")
 
     ee_site_id, arm_joint_ids, gripper_joint_id = _resolve_ids(model)
+    scene = SceneInfo.from_model(model)
 
-    # Plan keyframes
-    keyframes = plan_pick_keyframes(
-        home_joints=home_joints,
+    # Evaluate grasp candidates and select best
+    best = evaluate_grasps(
         cube_pos=cube_pos,
         cube_quat=cube_quat,
+        cube_half_sizes=scene.cube_half_sizes,
+        model=model,
+        data=data,
+        ee_site_id=ee_site_id,
+        arm_joint_ids=arm_joint_ids,
+        seed_joints=home_joints[:5],
+        standoff=0.04,
+        z_lift=0.08,
+        table_z=scene.table_z,
+        pos_tol=0.03,
+    )
+    print(
+        f"\nSelected grasp: face={best.grasp.face_label} yaw={best.grasp.yaw_variant}"
+        f" tilt={best.grasp.tilt_deg:.0f}°"
+        f" score={best.score:.3f} pos_err={best.ik_pos_err:.4f}m ori_err={best.ori_err_deg:.1f}°"
+    )
+
+    # Plan keyframes from selected grasp
+    keyframes = plan_pick_keyframes(
+        home_joints=home_joints,
+        grasp_pose=best.grasp,
         ee_site_id=ee_site_id,
         model=model,
         data=data,
     )
-    print(f"\nPlanned {len(keyframes)} keyframes: {[kf.label for kf in keyframes]}")
+    print(f"Planned {len(keyframes)} keyframes: {[kf.label for kf in keyframes]}")
 
     # Solve IK
     waypoints = generate_joint_waypoints(
@@ -126,7 +149,7 @@ def main() -> None:
         pos_err = np.linalg.norm(kf.position - achieved_pos) * 1000  # mm
 
         # Compute jaw midpoint (pinch point) from achieved pose
-        pinch_world = achieved_pos + achieved_rot @ _TCP_PINCH_OFFSET_LOCAL
+        pinch_world = achieved_pos + achieved_rot @ TCP_PINCH_OFFSET_LOCAL
         pinch_to_cube = np.linalg.norm(pinch_world - cube_pos) * 1000  # mm
 
         # Render and save

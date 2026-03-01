@@ -1,9 +1,9 @@
 """Trajectory-planned PICK teacher using privileged sim state.
 
 Mirrors the PickFSM phase sequence from ``halo/services/skill_runner_service/fsm.py``.
-On the first ``step()`` call, pre-computes the full trajectory (keyframes → IK
-waypoints → jerk-limited ruckig segments).  Each subsequent ``step()`` samples the
-trajectory at ``t = step_count * dt``.
+On the first ``step()`` call, pre-computes the full trajectory (grasp evaluation →
+keyframes → IK waypoints → jerk-limited ruckig segments).  Each subsequent ``step()``
+samples the trajectory at ``t = step_count * dt``.
 
 Usage::
 
@@ -24,6 +24,8 @@ from mujoco_sim.constants import (
     PHASE_DONE,
     PHASE_IDLE,
 )
+from mujoco_sim.scene_info import EE_SITE_NAME, SceneInfo
+from mujoco_sim.teacher.grasp_planner import evaluate_grasps
 from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, TrajectoryPlan, plan_trajectory
 from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
@@ -35,12 +37,14 @@ logger = logging.getLogger(__name__)
 class TeacherConfig:
     """Configuration for the trajectory-planned pick teacher."""
 
-    # Pre-grasp offset: approach from above the cube (gripper points down)
-    pregrasp_height_offset: float = 0.08  # m above cube center
-    grasp_height_offset: float = 0.0  # at cube center
+    # Standoff distance along approach direction for pregrasp
+    pregrasp_height_offset: float = 0.08  # m along approach direction
 
-    # Lift target height above cube initial position
+    # Lift target height above grasp contact point
     lift_height: float = 0.08  # m
+
+    # Grasp planner orientation tolerance
+    ori_tol_deg: float = 35.0
 
     # Trajectory limits (per-joint)
     max_velocity: list[float] | None = None  # defaults in JointLimits
@@ -52,7 +56,7 @@ class TeacherConfig:
     ik_ori_weight: float = 0.1
     ik_max_iters: int = 200
     ik_tol: float = 1e-3
-    ik_pos_tol: float = 1e-2
+    ik_pos_tol: float = 0.03
 
 
 class PickTeacher:
@@ -77,9 +81,10 @@ class PickTeacher:
         self._step_count: int = 0
         self._dt: float | None = None
 
-        # Cache IDs on first step (need model)
+        # Cache IDs + scene info on first step (need model)
         self._ee_site_id: int | None = None
         self._arm_joint_ids: list[int] | None = None
+        self._scene_info: SceneInfo | None = None
 
     def reset(self) -> None:
         """Reset teacher state for a new episode."""
@@ -99,13 +104,14 @@ class PickTeacher:
         return self._phase == PHASE_DONE
 
     def _ensure_ids(self, model: mujoco.MjModel) -> None:
-        """Cache site/joint IDs on first call."""
+        """Cache site/joint IDs and scene info on first call."""
         if self._ee_site_id is None:
-            self._ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
+            self._ee_site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, EE_SITE_NAME)
             self._arm_joint_ids = [
                 mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
                 for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
             ]
+            self._scene_info = SceneInfo.from_model(model)
 
     def step(
         self,
@@ -164,16 +170,40 @@ class PickTeacher:
         cube_quat = obs["object_pose"][3:]
         home_joints = obs["joint_pos"][:6].copy()
 
-        # Step 1: Cartesian keyframes
-        keyframes = plan_pick_keyframes(
-            home_joints=home_joints,
+        # Step 1: Evaluate grasp candidates (enumerate → filter → score → best)
+        best = evaluate_grasps(
             cube_pos=cube_pos,
             cube_quat=cube_quat,
+            cube_half_sizes=self._scene_info.cube_half_sizes,
+            model=model,
+            data=data,
+            ee_site_id=self._ee_site_id,
+            arm_joint_ids=self._arm_joint_ids,
+            seed_joints=home_joints[:5],
+            standoff=cfg.pregrasp_height_offset,
+            z_lift=cfg.lift_height,
+            table_z=self._scene_info.table_z,
+            pos_tol=cfg.ik_pos_tol,
+            ori_tol_deg=cfg.ori_tol_deg,
+        )
+
+        logger.info(
+            "Selected grasp: face=%s yaw=%d score=%.3f (pos_err=%.4f m, ori_err=%.1f°)",
+            best.grasp.face_label,
+            best.grasp.yaw_variant,
+            best.score,
+            best.ik_pos_err,
+            best.ori_err_deg,
+        )
+
+        # Step 2: Cartesian keyframes from grasp pose
+        keyframes = plan_pick_keyframes(
+            home_joints=home_joints,
+            grasp_pose=best.grasp,
             ee_site_id=self._ee_site_id,
             model=model,
             data=data,
-            z_hover=cfg.pregrasp_height_offset,
-            z_grasp=cfg.grasp_height_offset,
+            standoff=cfg.pregrasp_height_offset,
             z_lift=cfg.lift_height,
         )
 
@@ -183,7 +213,7 @@ class PickTeacher:
             [kf.label for kf in keyframes],
         )
 
-        # Step 2: IK → joint waypoints
+        # Step 3: IK → joint waypoints
         waypoints = generate_joint_waypoints(
             keyframes=keyframes,
             model=model,
@@ -204,7 +234,7 @@ class PickTeacher:
             [(wp.label, wp.arm_joints.round(3).tolist()) for wp in waypoints],
         )
 
-        # Step 3: Jerk-limited trajectory
+        # Step 4: Jerk-limited trajectory
         limits = JointLimits(
             max_velocity=cfg.max_velocity or JointLimits().max_velocity,
             max_acceleration=cfg.max_acceleration or JointLimits().max_acceleration,
