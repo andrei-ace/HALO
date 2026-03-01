@@ -15,5 +15,5 @@ class EnvConfig:
     wrist_resolution: tuple[int, int] = (240, 320)  # (H, W)
     control_freq: int = 20
     horizon: int = 1000
-    cube_x_range: tuple[float, float] = (0.14, 0.18)  # reachable workspace in +X
-    cube_y_range: tuple[float, float] = (-0.04, 0.04)
+    cube_x_range: tuple[float, float] = (0.21, 0.27)  # reachable workspace in +X (1.5× further from base)
+    cube_y_range: tuple[float, float] = (-0.06, 0.06)

@@ -1,10 +1,11 @@
 """Multi-face grasp planner for parallel-jaw pick on a cube.
 
-Generates 64 random grasp candidates across 4 side faces (16 per face), each
-with an approach direction within a tight cone (5°) of the face normal and a
-random yaw.  Filters geometrically infeasible ones (table collision, unreachable
-pregrasp), scores the rest by IK quality + joint-limit margin + manipulability +
-orientation error, and returns the best candidate.
+Generates 64 grasp candidates across 4 side faces (16 per face), each with a
+contact point that can slide across the face interior, an approach direction
+within a tight cone (5°) of the face normal, and a swept yaw around that
+approach axis. Filters geometrically infeasible ones (table collision,
+unreachable pregrasp), scores the rest by IK quality + joint-limit margin +
+manipulability + orientation error, and returns the best candidate.
 
 Pipeline::
 
@@ -29,16 +30,20 @@ from mujoco_sim.teacher.ik_helper import solve_ik, solve_ik_with_orientation
 
 logger = logging.getLogger(__name__)
 
+# Default tangential contact span on cube side faces.
+# 0.0 = exact face center only, 1.0 = anywhere on the face.
+DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.35
+
 
 @dataclass
 class GraspPose:
     """A candidate grasp pose for a cube face."""
 
-    contact_point: np.ndarray  # (3,) world — where jaw midpoint should land (face center)
+    contact_point: np.ndarray  # (3,) world — where jaw midpoint should land on the face
     orientation: np.ndarray  # (3,3) rotation matrix for gripperframe
     approach_dir: np.ndarray  # (3,) unit vector (gripperframe Z = approach into face)
     face_label: str  # "+X", "-X", "+Y", "-Y"
-    yaw_variant: int  # 0 or 1
+    yaw_variant: int  # index in per-face yaw sweep (0-based)
     tilt_deg: float = 0.0  # downward tilt from horizontal (0=horizontal, 30=angled down)
 
 
@@ -89,7 +94,7 @@ def _build_gripper_rotation(approach: np.ndarray, yaw_angle: float) -> np.ndarra
 
     Args:
         approach: (3,) unit vector — gripperframe Z-axis (points into face).
-        yaw_angle: Rotation about approach axis (0 or pi/2 for the two variants).
+        yaw_angle: Rotation about approach axis (radians).
 
     Returns:
         (3,3) rotation matrix with det=+1.
@@ -105,6 +110,43 @@ def _build_gripper_rotation(approach: np.ndarray, yaw_angle: float) -> np.ndarra
     y_grip = -s * x_ref + c * y_ref
 
     return np.column_stack([x_grip, y_grip, approach])
+
+
+def _yaw_sweep_angles(n: int, rng: np.random.RandomState) -> np.ndarray:
+    """Generate approximately uniform yaw samples in [0, 2π).
+
+    A random phase offset keeps seeds useful while preserving full 360° coverage,
+    which is important for 5-DOF arms where only certain roll windows may be
+    reachable.
+    """
+    if n <= 0:
+        return np.zeros(0, dtype=np.float64)
+    if n == 1:
+        return np.array([rng.uniform(0.0, 2 * np.pi)], dtype=np.float64)
+
+    base = np.linspace(0.0, 2 * np.pi, num=n, endpoint=False, dtype=np.float64)
+    offset = rng.uniform(0.0, 2 * np.pi / n)
+    return np.mod(base + offset, 2 * np.pi)
+
+
+def _sample_face_contact_offset(
+    axis_idx: int,
+    cube_half_sizes: np.ndarray,
+    span_ratio: float,
+    rng: np.random.RandomState,
+) -> np.ndarray:
+    """Sample a local-frame contact offset along the two tangent face axes.
+
+    ``span_ratio`` is relative to each axis half-extent:
+    - 0.0: always face center
+    - 1.0: entire face (up to edges)
+    """
+    offset_local = np.zeros(3, dtype=np.float64)
+    tangent_axes = [idx for idx in (0, 1, 2) if idx != axis_idx]
+    for tidx in tangent_axes:
+        half_span = span_ratio * float(cube_half_sizes[tidx])
+        offset_local[tidx] = rng.uniform(-half_span, half_span)
+    return offset_local
 
 
 # Side face normals in cube-local frame (4 faces, no top/bottom)
@@ -148,14 +190,16 @@ def enumerate_face_grasps(
     *,
     n_candidates: int = 64,
     max_cone_deg: float = 5.0,
+    face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN,
     seed: int | None = None,
 ) -> list[GraspPose]:
     """Enumerate random side-face grasp candidates for a cube.
 
-    For each of the 4 side faces, generates ``n_candidates // 4`` random
-    approach directions within a narrow cone (``max_cone_deg``) around the
-    face normal, each with a random yaw.  The contact point is always the
-    face centre.
+    For each of the 4 side faces, generates ``n_candidates // 4`` candidates.
+    Approach directions are sampled within a narrow cone (``max_cone_deg``)
+    around the face normal, and each direction is paired with a swept yaw around
+    the approach axis to improve 5-DOF IK coverage. Contact points are sampled
+    on the face interior using ``face_contact_span``.
 
     Args:
         cube_pos: (3,) cube center in world frame.
@@ -163,6 +207,8 @@ def enumerate_face_grasps(
         cube_half_sizes: (3,) half-extents [hx, hy, hz].
         n_candidates: Total number of candidates (split evenly across 4 faces).
         max_cone_deg: Maximum angular deviation from face normal (degrees).
+        face_contact_span: Fraction of tangential half-extent used for contact
+            sampling on each face (0=center only, 1=full face).
         seed: Random seed for reproducibility (None = random).
 
     Returns:
@@ -173,37 +219,89 @@ def enumerate_face_grasps(
     candidates: list[GraspPose] = []
     n_per_face = n_candidates // len(_SIDE_FACE_NORMALS)
     max_cone_rad = np.radians(max_cone_deg)
+    face_contact_span = float(np.clip(face_contact_span, 0.0, 1.0))
+    n_yaw = min(8, max(1, n_per_face))
 
     for face_label, normal_local in _SIDE_FACE_NORMALS:
         normal_world = R_cube @ normal_local
 
-        # Contact point = face centre in world frame
+        # Face geometry in local/world frames
         axis_idx = {"X": 0, "Y": 1, "Z": 2}[face_label[1]]
-        contact_point = cube_pos + normal_world * cube_half_sizes[axis_idx]
+        face_center_local = normal_local * cube_half_sizes[axis_idx]
 
         # Base approach direction: gripper Z points INTO the face
         approach_centre = -normal_world
 
+        yaw_angles = _yaw_sweep_angles(n_yaw, rng)
         for i in range(n_per_face):
             approach_dir = _random_cone_vector(approach_centre, max_cone_rad, rng)
-            yaw_angle = rng.uniform(0, 2 * np.pi)
-            orientation = _build_gripper_rotation(approach_dir, yaw_angle)
+            contact_offset_local = _sample_face_contact_offset(axis_idx, cube_half_sizes, face_contact_span, rng)
+            contact_point = cube_pos + R_cube @ (face_center_local + contact_offset_local)
+            yaw_idx = i % n_yaw
+            yaw_angle = float(yaw_angles[yaw_idx])
 
             # Compute tilt from horizontal for diagnostics
             tilt_deg = float(np.degrees(np.arcsin(np.clip(-approach_dir[2], -1.0, 1.0))))
 
+            orientation = _build_gripper_rotation(approach_dir, yaw_angle)
             candidates.append(
                 GraspPose(
                     contact_point=contact_point.copy(),
                     orientation=orientation,
                     approach_dir=approach_dir.copy(),
                     face_label=face_label,
-                    yaw_variant=i,
+                    yaw_variant=yaw_idx,
                     tilt_deg=tilt_deg,
                 )
             )
 
     return candidates
+
+
+def _score_candidate_set(
+    candidates: list[GraspPose],
+    *,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    ee_site_id: int,
+    arm_joint_ids: list[int],
+    seed_joints: np.ndarray,
+    standoff: float,
+    z_lift: float,
+    tcp_offset: np.ndarray | None,
+    pos_tol: float,
+    ori_tol_deg: float,
+) -> list[ScoredGrasp]:
+    """Score all candidates and keep successful results."""
+    scored: list[ScoredGrasp] = []
+    for candidate in candidates:
+        result = score_grasp(
+            candidate,
+            model,
+            data,
+            ee_site_id,
+            arm_joint_ids,
+            seed_joints,
+            standoff=standoff,
+            z_lift=z_lift,
+            tcp_offset=tcp_offset,
+            pos_tol=pos_tol,
+            ori_tol_deg=ori_tol_deg,
+        )
+        if result is not None:
+            scored.append(result)
+            logger.info(
+                "  %s yaw=%d tilt=%.0f°: score=%.3f (pos_err=%.4f m, ori_err=%.1f°, margin=%.2f, manip=%.3f)",
+                candidate.face_label,
+                candidate.yaw_variant,
+                candidate.tilt_deg,
+                result.score,
+                result.ik_pos_err,
+                result.ori_err_deg,
+                result.joint_margin,
+                result.manipulability,
+            )
+    return scored
 
 
 def filter_grasps(
@@ -487,6 +585,9 @@ def evaluate_grasps(
     standoff: float = 0.04,
     z_lift: float = 0.08,
     table_z: float,
+    n_candidates: int = 64,
+    max_cone_deg: float = 5.0,
+    face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN,
     tcp_offset: np.ndarray | None = None,
     pos_tol: float = 0.01,
     ori_tol_deg: float = 55.0,
@@ -506,6 +607,10 @@ def evaluate_grasps(
         standoff: Pregrasp standoff distance along approach direction.
         z_lift: Vertical lift height for lift-reachability check.
         table_z: Table surface height.
+        n_candidates: Number of sampled grasp orientations before scoring.
+        max_cone_deg: Max approach tilt away from the face normal.
+        face_contact_span: Fraction of tangential face half-extent used to
+            sample contact points (0=center only, 1=full face).
         tcp_offset: (3,) local-frame TCP offset.
         pos_tol: IK position tolerance (metres).
         ori_tol_deg: Orientation tolerance (degrees).
@@ -517,7 +622,14 @@ def evaluate_grasps(
     Raises:
         GraspPlanningFailure: If no candidate passes all checks (and best_effort is False).
     """
-    candidates = enumerate_face_grasps(cube_pos, cube_quat, cube_half_sizes)
+    candidates = enumerate_face_grasps(
+        cube_pos,
+        cube_quat,
+        cube_half_sizes,
+        n_candidates=n_candidates,
+        max_cone_deg=max_cone_deg,
+        face_contact_span=face_contact_span,
+    )
     logger.info("Enumerated %d grasp candidates", len(candidates))
 
     feasible = filter_grasps(candidates, table_z=table_z, standoff=standoff)
@@ -526,53 +638,68 @@ def evaluate_grasps(
     if not feasible:
         raise GraspPlanningFailure(f"All {len(candidates)} candidates filtered by geometry")
 
-    scored: list[ScoredGrasp] = []
-    for candidate in feasible:
-        result = score_grasp(
-            candidate,
-            model,
-            data,
-            ee_site_id,
-            arm_joint_ids,
-            seed_joints,
+    scored = _score_candidate_set(
+        feasible,
+        model=model,
+        data=data,
+        ee_site_id=ee_site_id,
+        arm_joint_ids=arm_joint_ids,
+        seed_joints=seed_joints,
+        standoff=standoff,
+        z_lift=z_lift,
+        tcp_offset=tcp_offset,
+        pos_tol=pos_tol,
+        ori_tol_deg=ori_tol_deg,
+    )
+
+    # Strict retry with broader sampling before giving up.
+    if not scored:
+        expanded_n = max(128, n_candidates * 2)
+        expanded_cone = max(max_cone_deg, min(20.0, max_cone_deg * 2.0))
+        logger.warning(
+            "No strict grasp found; retrying with expanded search (n=%d, cone=%.1f°)",
+            expanded_n,
+            expanded_cone,
+        )
+        retry_candidates = enumerate_face_grasps(
+            cube_pos,
+            cube_quat,
+            cube_half_sizes,
+            n_candidates=expanded_n,
+            max_cone_deg=expanded_cone,
+            face_contact_span=face_contact_span,
+        )
+        retry_feasible = filter_grasps(retry_candidates, table_z=table_z, standoff=standoff)
+        logger.info("Expanded search feasible candidates: %d", len(retry_feasible))
+        scored = _score_candidate_set(
+            retry_feasible,
+            model=model,
+            data=data,
+            ee_site_id=ee_site_id,
+            arm_joint_ids=arm_joint_ids,
+            seed_joints=seed_joints,
             standoff=standoff,
             z_lift=z_lift,
             tcp_offset=tcp_offset,
             pos_tol=pos_tol,
             ori_tol_deg=ori_tol_deg,
         )
-        if result is not None:
-            scored.append(result)
-            logger.info(
-                "  %s yaw=%d tilt=%.0f°: score=%.3f (pos_err=%.4f m, ori_err=%.1f°, margin=%.2f, manip=%.3f)",
-                candidate.face_label,
-                candidate.yaw_variant,
-                candidate.tilt_deg,
-                result.score,
-                result.ik_pos_err,
-                result.ori_err_deg,
-                result.joint_margin,
-                result.manipulability,
-            )
 
     if not scored and best_effort:
         logger.warning("No candidates passed strict scoring — retrying with relaxed tolerances (best_effort)")
-        for candidate in feasible:
-            result = score_grasp(
-                candidate,
-                model,
-                data,
-                ee_site_id,
-                arm_joint_ids,
-                seed_joints,
-                standoff=standoff,
-                z_lift=z_lift,
-                tcp_offset=tcp_offset,
-                pos_tol=0.10,
-                ori_tol_deg=180.0,
-            )
-            if result is not None:
-                scored.append(result)
+        scored = _score_candidate_set(
+            feasible,
+            model=model,
+            data=data,
+            ee_site_id=ee_site_id,
+            arm_joint_ids=arm_joint_ids,
+            seed_joints=seed_joints,
+            standoff=standoff,
+            z_lift=z_lift,
+            tcp_offset=tcp_offset,
+            pos_tol=0.10,
+            ori_tol_deg=180.0,
+        )
 
     if not scored:
         raise GraspPlanningFailure(f"No candidates passed IK scoring ({len(feasible)} tried)")

@@ -150,6 +150,37 @@ class TestEnumerateFaceGrasps:
             np.testing.assert_array_equal(ca.approach_dir, cb.approach_dir)
             np.testing.assert_array_equal(ca.orientation, cb.orientation)
 
+    def test_face_contact_span_controls_center_vs_offcenter(self, scene_info):
+        face_normals = {
+            "+X": np.array([1.0, 0.0, 0.0]),
+            "-X": np.array([-1.0, 0.0, 0.0]),
+            "+Y": np.array([0.0, 1.0, 0.0]),
+            "-Y": np.array([0.0, -1.0, 0.0]),
+        }
+
+        center_only = enumerate_face_grasps(
+            scene_info.cube_default_pos,
+            _DEFAULT_CUBE_QUAT,
+            scene_info.cube_half_sizes,
+            face_contact_span=0.0,
+            seed=123,
+        )
+        for c in center_only:
+            axis_idx = {"X": 0, "Y": 1, "Z": 2}[c.face_label[1]]
+            expected = scene_info.cube_default_pos + face_normals[c.face_label] * scene_info.cube_half_sizes[axis_idx]
+            np.testing.assert_allclose(c.contact_point, expected, atol=1e-10)
+
+        offcenter = enumerate_face_grasps(
+            scene_info.cube_default_pos,
+            _DEFAULT_CUBE_QUAT,
+            scene_info.cube_half_sizes,
+            face_contact_span=0.35,
+            seed=123,
+        )
+        assert any(np.linalg.norm(a.contact_point - b.contact_point) > 1e-8 for a, b in zip(center_only, offcenter)), (
+            "Expected at least one off-center contact point when face_contact_span > 0"
+        )
+
 
 # ---------------------------------------------------------------------------
 # filter_grasps tests

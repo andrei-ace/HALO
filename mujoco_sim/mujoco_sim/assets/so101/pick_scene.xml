@@ -40,7 +40,7 @@
     <camera name="scene_cam" pos="0.18 -0.55 0.95" xyaxes="1 0 0 0 0.55 0.84" mode="fixed"/>
 
     <!-- Pick target: cube with freejoint, sits on table top (table top at z=0.37) -->
-    <body name="cube" pos="0.15 0 0.3825">
+    <body name="cube" pos="0.225 0 0.3825">
       <freejoint name="cube_joint"/>
       <geom type="box" name="cube_geom" size="0.01 0.01 0.0125"
             mass="0.05" material="cube_material"

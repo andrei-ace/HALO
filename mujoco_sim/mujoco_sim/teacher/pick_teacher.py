@@ -25,7 +25,7 @@ from mujoco_sim.constants import (
     PHASE_IDLE,
 )
 from mujoco_sim.scene_info import EE_SITE_NAME, SceneInfo
-from mujoco_sim.teacher.grasp_planner import evaluate_grasps
+from mujoco_sim.teacher.grasp_planner import DEFAULT_CUBE_FACE_CONTACT_SPAN, evaluate_grasps
 from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, TrajectoryPlan, plan_trajectory
 from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
@@ -45,6 +45,11 @@ class TeacherConfig:
 
     # Grasp planner orientation tolerance
     ori_tol_deg: float = 55.0
+
+    # Grasp sampling (random candidates on cube side faces)
+    grasp_n_candidates: int = 64
+    grasp_max_cone_deg: float = 5.0
+    grasp_face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN
 
     # Trajectory limits (per-joint)
     max_velocity: list[float] | None = None  # defaults in JointLimits
@@ -183,6 +188,9 @@ class PickTeacher:
             standoff=cfg.pregrasp_height_offset,
             z_lift=cfg.lift_height,
             table_z=self._scene_info.table_z,
+            n_candidates=cfg.grasp_n_candidates,
+            max_cone_deg=cfg.grasp_max_cone_deg,
+            face_contact_span=cfg.grasp_face_contact_span,
             pos_tol=cfg.ik_pos_tol,
             ori_tol_deg=cfg.ori_tol_deg,
         )
