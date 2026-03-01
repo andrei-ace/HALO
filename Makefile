@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live sim-server ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live sim-server ruff help
 
 install:
 	uv sync --extra dev
@@ -96,6 +96,15 @@ generate-episodes-video:
 		--save-video \
 		$(GENERATE_ARGS)
 
+IK_SEED    ?= 42
+IK_OUT_DIR ?= data/ik_poses
+
+visualize-ik:
+	uv run python -m mujoco_sim.scripts.visualize_ik_pose \
+		--seed $(IK_SEED) \
+		--output-dir $(IK_OUT_DIR) \
+		$(VIZ_ARGS)
+
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))
 	mkdir -p $(RUN_DIR)
@@ -126,4 +135,5 @@ help:
 	@echo "tui-mock           launch the HALO terminal dashboard (mock mode)"
 	@echo "tui-live-videoloop launch the TUI with video loop source (requires Ollama)"
 	@echo "sim-server         start the MuJoCo sim ZMQ server (requires --extra sim)"
+	@echo "visualize-ik       render IK-solved poses as PNGs (IK_SEED=42 IK_OUT_DIR=data/ik_poses)"
 	@echo "tui-live-mujoco    launch the TUI with MuJoCo scene camera (requires Ollama + MuJoCo)"
