@@ -1,10 +1,9 @@
-"""Scripted PICK teacher using privileged sim state.
+"""Trajectory-planned PICK teacher using privileged sim state.
 
-Mirrors the PickFSM phase sequence from ``halo/services/skill_runner_service/fsm.py``
-with the same distance thresholds from ``SkillRunnerConfig``.  Computes Cartesian
-targets then solves IK → 6D joint-position actions for the SO-101.
-
-Trajectory: move above cube → settle XY → descend vertically → close → lift.
+Mirrors the PickFSM phase sequence from ``halo/services/skill_runner_service/fsm.py``.
+On the first ``step()`` call, pre-computes the full trajectory (keyframes → IK
+waypoints → jerk-limited ruckig segments).  Each subsequent ``step()`` samples the
+trajectory at ``t = step_count * dt``.
 
 Usage::
 
@@ -22,75 +21,62 @@ import mujoco
 import numpy as np
 
 from mujoco_sim.constants import (
-    GRIPPER_CLOSE,
-    GRIPPER_OPEN,
-    PHASE_CLOSE_GRIPPER,
     PHASE_DONE,
-    PHASE_EXECUTE_APPROACH,
     PHASE_IDLE,
-    PHASE_LIFT,
-    PHASE_MOVE_PREGRASP,
-    PHASE_PLAN_APPROACH,
-    PHASE_SELECT_GRASP,
-    PHASE_VERIFY_GRASP,
-    PHASE_VISUAL_ALIGN,
 )
-from mujoco_sim.teacher.ik_helper import solve_ik
+from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
+from mujoco_sim.teacher.trajectory import JointLimits, TrajectoryPlan, plan_trajectory
+from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TeacherConfig:
-    """Thresholds and gains for the scripted pick teacher.
+    """Configuration for the trajectory-planned pick teacher."""
 
-    Distance thresholds mirror ``SkillRunnerConfig`` from HALO core.
-    """
-
-    # Phase transition distance thresholds (m)
-    approach_align_threshold_m: float = 0.03  # tight — arm must arrive above cube
-    execute_approach_threshold_m: float = 0.05
-    grasp_distance_threshold_m: float = 0.03
-
-    # Joint speed limit: max rad/step per joint (prevents instant IK jumps)
-    max_joint_delta: float = 0.02  # rad/step — ~0.4 rad/s at 20 Hz
-    max_gripper_delta: float = 0.04  # rad/step — gripper closes/opens gradually
-
-    # Timed phase durations (steps at control_freq)
-    close_gripper_steps: int = 60  # 3 s at 20 Hz — enough for gradual gripper close
-    verify_steps: int = 10  # 0.5 s at 20 Hz
-    lift_steps: int = 400  # 20 s at 20 Hz
-
-    # Pre-grasp offset: approach from high above the cube (gripper points down)
-    pregrasp_height_offset: float = 0.15  # m above cube center — high enough for vertical approach
-    grasp_height_offset: float = 0.0  # at cube center — gripper body contacts cube top
+    # Pre-grasp offset: approach from above the cube (gripper points down)
+    pregrasp_height_offset: float = 0.08  # m above cube center
+    grasp_height_offset: float = 0.0  # at cube center
 
     # Lift target height above cube initial position
-    lift_height: float = 0.15  # m
+    lift_height: float = 0.08  # m
+
+    # Trajectory limits (per-joint)
+    max_velocity: list[float] | None = None  # defaults in JointLimits
+    max_acceleration: list[float] | None = None
+    max_jerk: list[float] | None = None
+
+    # IK parameters
+    ik_pos_weight: float = 1.0
+    ik_ori_weight: float = 0.1
+    ik_max_iters: int = 200
+    ik_tol: float = 1e-3
+    ik_pos_tol: float = 1e-2
 
 
 class PickTeacher:
-    """Scripted PICK policy using ground-truth sim state.
+    """Trajectory-planned PICK policy using ground-truth sim state.
 
-    Phase sequence mirrors PickFSM::
+    Phase sequence recorded in trajectory segments::
 
-        IDLE → SELECT_GRASP → PLAN_APPROACH → MOVE_PREGRASP → VISUAL_ALIGN
-        → EXECUTE_APPROACH → CLOSE_GRIPPER → VERIFY_GRASP → LIFT → DONE
+        IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE
 
-    Trajectory strategy:
-    - MOVE_PREGRASP: move to (cube_xy, cube_z + pregrasp_height) — travel above
-    - VISUAL_ALIGN: hold at pregrasp height, settle XY over cube
-    - EXECUTE_APPROACH: descend vertically to grasp height
+    SELECT_GRASP, PLAN_APPROACH, and VISUAL_ALIGN are folded into the planning
+    step (instantaneous). VERIFY_GRASP is implicit in the gripper-close segment.
 
-    SELECT_GRASP and PLAN_APPROACH are immediate pass-throughs (same as v0 FSM).
+    The ``step()`` interface is identical to the original reactive teacher, so
+    the runner, server, and recording pipeline remain untouched.
     """
 
     def __init__(self, config: TeacherConfig | None = None) -> None:
         self._config = config or TeacherConfig()
         self._phase = PHASE_IDLE
-        self._phase_step = 0
-        self._grasp_target: np.ndarray | None = None
-        self._pregrasp_wrist_joints: np.ndarray | None = None  # wrist_flex, wrist_roll at pregrasp
+        self._plan: TrajectoryPlan | None = None
+        self._t: float = 0.0
+        self._step_count: int = 0
+        self._dt: float | None = None
+
         # Cache IDs on first step (need model)
         self._ee_site_id: int | None = None
         self._arm_joint_ids: list[int] | None = None
@@ -98,9 +84,9 @@ class PickTeacher:
     def reset(self) -> None:
         """Reset teacher state for a new episode."""
         self._phase = PHASE_IDLE
-        self._phase_step = 0
-        self._grasp_target = None
-        self._pregrasp_wrist_joints = None
+        self._plan = None
+        self._t = 0.0
+        self._step_count = 0
 
     @property
     def phase(self) -> int:
@@ -121,18 +107,6 @@ class PickTeacher:
                 for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
             ]
 
-    def _clamp_joints(self, current: np.ndarray, target: np.ndarray) -> np.ndarray:
-        """Clamp per-joint delta to ``max_joint_delta`` rad/step."""
-        delta = target - current
-        limit = self._config.max_joint_delta
-        return current + np.clip(delta, -limit, limit)
-
-    def _clamp_gripper(self, current: float, target: float) -> float:
-        """Clamp gripper delta to ``max_gripper_delta`` rad/step."""
-        delta = target - current
-        limit = self._config.max_gripper_delta
-        return current + float(np.clip(delta, -limit, limit))
-
     def step(
         self,
         obs: dict,
@@ -141,123 +115,108 @@ class PickTeacher:
     ) -> tuple[np.ndarray, int, bool]:
         """Compute one teacher action from the current observation.
 
+        On the first call, plans the full trajectory. Subsequent calls sample
+        at ``t = step_count * dt``.
+
         Args:
             obs: Observation dict from ``SO101Env`` with keys:
                 ``ee_pose`` (7,), ``object_pose`` (7,), ``gripper`` (float), ``joint_pos`` (6,).
-            model: MuJoCo model (for IK).
-            data: MuJoCo data (for IK — will NOT be mutated).
+            model: MuJoCo model (for IK on first call).
+            data: MuJoCo data (for IK on first call — will NOT be mutated).
 
         Returns:
             (action, phase_id, done) where action is (6,) joint-position targets.
         """
         self._ensure_ids(model)
 
-        ee_pos = obs["ee_pose"][:3]
-        cube_pos = obs["object_pose"][:3]
-        current_joints = obs["joint_pos"]
+        if self._plan is None:
+            self._plan = self._build_plan(obs, model, data)
+            self._t = 0.0
+            self._step_count = 0
+            # Infer dt from model timestep and substep count
+            # SO101Env uses: substeps = round(1/(control_freq * model.opt.timestep))
+            # So dt = substeps * model.opt.timestep = 1/control_freq
+            # Default: 20 Hz → dt=0.05s
+            self._dt = model.opt.timestep * max(1, round(1.0 / (20.0 * model.opt.timestep)))
+
+        arm_joints, gripper, phase_id = self._plan.sample(self._t)
+        action = np.concatenate([arm_joints, [gripper]])
+
+        self._phase = phase_id
+        self._step_count += 1
+        self._t = self._step_count * self._dt
+
+        done = self._t >= self._plan.total_duration
+        if done:
+            self._phase = PHASE_DONE
+
+        return action, self._phase, done
+
+    def _build_plan(
+        self,
+        obs: dict,
+        model: mujoco.MjModel,
+        data: mujoco.MjData,
+    ) -> TrajectoryPlan:
+        """Build the full trajectory plan from current state."""
         cfg = self._config
+        cube_pos = obs["object_pose"][:3]
+        cube_quat = obs["object_pose"][3:]
+        home_joints = obs["joint_pos"][:6].copy()
 
-        # v0 pass-throughs: advance immediately
-        if self._phase == PHASE_IDLE:
-            self._transition(PHASE_SELECT_GRASP)
-        if self._phase == PHASE_SELECT_GRASP:
-            self._transition(PHASE_PLAN_APPROACH)
-        if self._phase == PHASE_PLAN_APPROACH:
-            self._transition(PHASE_MOVE_PREGRASP)
+        # Step 1: Cartesian keyframes
+        keyframes = plan_pick_keyframes(
+            home_joints=home_joints,
+            cube_pos=cube_pos,
+            cube_quat=cube_quat,
+            ee_site_id=self._ee_site_id,
+            model=model,
+            data=data,
+            z_hover=cfg.pregrasp_height_offset,
+            z_grasp=cfg.grasp_height_offset,
+            z_lift=cfg.lift_height,
+        )
 
-        distance = float(np.linalg.norm(cube_pos - ee_pos))
+        logger.info(
+            "Planned %d keyframes: %s",
+            len(keyframes),
+            [kf.label for kf in keyframes],
+        )
 
-        # Pre-grasp waypoint: directly above cube
-        pregrasp_target = cube_pos.copy()
-        pregrasp_target[2] += cfg.pregrasp_height_offset
+        # Step 2: IK → joint waypoints
+        waypoints = generate_joint_waypoints(
+            keyframes=keyframes,
+            model=model,
+            data=data,
+            ee_site_id=self._ee_site_id,
+            arm_joint_ids=self._arm_joint_ids,
+            seed_joints=home_joints[:5],
+            pos_weight=cfg.ik_pos_weight,
+            ori_weight=cfg.ik_ori_weight,
+            max_iters=cfg.ik_max_iters,
+            tol=cfg.ik_tol,
+            pos_tol=cfg.ik_pos_tol,
+        )
 
-        # Grasp target: at/below cube center for finger wrap
-        grasp_target = cube_pos.copy()
-        grasp_target[2] += cfg.grasp_height_offset
+        logger.info(
+            "Solved IK for %d waypoints: %s",
+            len(waypoints),
+            [(wp.label, wp.arm_joints.round(3).tolist()) for wp in waypoints],
+        )
 
-        # Default: hold current position
-        arm_joints = current_joints[:5].copy()
-        gripper_angle = float(current_joints[5])
+        # Step 3: Jerk-limited trajectory
+        limits = JointLimits(
+            max_velocity=cfg.max_velocity or JointLimits().max_velocity,
+            max_acceleration=cfg.max_acceleration or JointLimits().max_acceleration,
+            max_jerk=cfg.max_jerk or JointLimits().max_jerk,
+        )
+        plan = plan_trajectory(waypoints, limits)
 
-        if self._phase == PHASE_MOVE_PREGRASP:
-            # Move to position above cube
-            ik_joints = solve_ik(model, data, pregrasp_target, self._ee_site_id, self._arm_joint_ids)
-            arm_joints = self._clamp_joints(current_joints[:5], ik_joints)
-            gripper_angle = self._clamp_gripper(float(current_joints[5]), GRIPPER_OPEN)
+        logger.info(
+            "Trajectory planned: %d segments, %.2f s total — %s",
+            len(plan.segments),
+            plan.total_duration,
+            [(s.label, f"{s.duration:.2f}s") for s in plan.segments],
+        )
 
-            pregrasp_dist = float(np.linalg.norm(pregrasp_target - ee_pos))
-            if pregrasp_dist < cfg.approach_align_threshold_m:
-                self._transition(PHASE_VISUAL_ALIGN)
-
-        elif self._phase == PHASE_VISUAL_ALIGN:
-            # Hold at pregrasp height — settle XY alignment above cube
-            ik_joints = solve_ik(model, data, pregrasp_target, self._ee_site_id, self._arm_joint_ids)
-            arm_joints = self._clamp_joints(current_joints[:5], ik_joints)
-            gripper_angle = self._clamp_gripper(float(current_joints[5]), GRIPPER_OPEN)
-
-            # Transition once EE is XY-aligned above cube (ignore Z)
-            xy_dist = float(np.linalg.norm(cube_pos[:2] - ee_pos[:2]))
-            if xy_dist < cfg.execute_approach_threshold_m:
-                # Save wrist joint angles for orientation lock during descent
-                self._pregrasp_wrist_joints = current_joints[3:5].copy()
-                self._transition(PHASE_EXECUTE_APPROACH)
-
-        elif self._phase == PHASE_EXECUTE_APPROACH:
-            # Descend vertically to grasp height, locking wrist orientation
-            ik_joints = solve_ik(model, data, grasp_target, self._ee_site_id, self._arm_joint_ids)
-            # Override wrist_flex and wrist_roll with pregrasp values to keep gripper pointing down
-            if self._pregrasp_wrist_joints is not None:
-                ik_joints[3] = self._pregrasp_wrist_joints[0]  # wrist_flex
-                ik_joints[4] = self._pregrasp_wrist_joints[1]  # wrist_roll
-            arm_joints = self._clamp_joints(current_joints[:5], ik_joints)
-            gripper_angle = self._clamp_gripper(float(current_joints[5]), GRIPPER_OPEN)
-
-            target_dist = float(np.linalg.norm(grasp_target - ee_pos))
-            if self._phase_step % 50 == 0:
-                logger.debug(
-                    "EXECUTE_APPROACH step=%d dist_cube=%.4f dist_target=%.4f ee=%s cube=%s",
-                    self._phase_step,
-                    distance,
-                    target_dist,
-                    ee_pos.round(4),
-                    cube_pos.round(4),
-                )
-
-            if target_dist < cfg.grasp_distance_threshold_m:
-                self._grasp_target = grasp_target.copy()
-                self._transition(PHASE_CLOSE_GRIPPER)
-
-        elif self._phase == PHASE_CLOSE_GRIPPER:
-            # Hold position at grasp target, gradually close gripper
-            if self._grasp_target is not None:
-                arm_joints = solve_ik(model, data, self._grasp_target, self._ee_site_id, self._arm_joint_ids)
-            gripper_angle = self._clamp_gripper(float(current_joints[5]), GRIPPER_CLOSE)
-            self._phase_step += 1
-            if self._phase_step >= cfg.close_gripper_steps:
-                self._transition(PHASE_VERIFY_GRASP)
-
-        elif self._phase == PHASE_VERIFY_GRASP:
-            # Hold position, gripper closed, verify
-            gripper_angle = self._clamp_gripper(float(current_joints[5]), GRIPPER_CLOSE)
-            self._phase_step += 1
-            if self._phase_step >= cfg.verify_steps:
-                self._transition(PHASE_LIFT)
-
-        elif self._phase == PHASE_LIFT:
-            # Lift: IK to a position above current EE
-            lift_target = ee_pos.copy()
-            lift_target[2] = cube_pos[2] + cfg.lift_height
-            ik_joints = solve_ik(model, data, lift_target, self._ee_site_id, self._arm_joint_ids)
-            arm_joints = self._clamp_joints(current_joints[:5], ik_joints)
-            gripper_angle = self._clamp_gripper(float(current_joints[5]), GRIPPER_CLOSE)
-            self._phase_step += 1
-            if self._phase_step >= cfg.lift_steps:
-                self._transition(PHASE_DONE)
-
-        action = np.concatenate([arm_joints, [gripper_angle]])
-        return action, self._phase, self.done
-
-    def _transition(self, new_phase: int) -> None:
-        """Transition to a new phase, resetting the step counter."""
-        self._phase = new_phase
-        self._phase_step = 0
+        return plan

@@ -10,6 +10,7 @@ dependencies = [
     "numpy",
     "h5py>=3.0",
     "tqdm>=4.60",
+    "ruckig>=0.14",
 ]
 
 [project.optional-dependencies]
