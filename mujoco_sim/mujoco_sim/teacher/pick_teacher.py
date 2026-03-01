@@ -44,7 +44,7 @@ class TeacherConfig:
     lift_height: float = 0.08  # m
 
     # Grasp planner orientation tolerance
-    ori_tol_deg: float = 35.0
+    ori_tol_deg: float = 55.0
 
     # Trajectory limits (per-joint)
     max_velocity: list[float] | None = None  # defaults in JointLimits

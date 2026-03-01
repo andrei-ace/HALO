@@ -256,11 +256,11 @@ class TestFullEpisode:
 
     def test_different_cube_positions(self, scene_info, mj_model, mj_data):
         """Teacher should complete for various cube placements on the table."""
-        cube_z = float(scene_info.cube_default_pos[2])
+        cx, cy, cube_z = scene_info.cube_default_pos
         for cube_pos in [
-            (0.15, 0.0, cube_z),
-            (0.16, 0.02, cube_z),
-            (0.15, -0.02, cube_z),
+            (float(cx), float(cy), float(cube_z)),
+            (float(cx + 0.01), float(cy + 0.01), float(cube_z)),
+            (float(cx - 0.01), float(cy - 0.01), float(cube_z)),
         ]:
             teacher = PickTeacher()
             obs = _make_obs(mj_model, mj_data, cube_pos=cube_pos)

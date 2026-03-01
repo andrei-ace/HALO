@@ -275,7 +275,7 @@ def score_grasp(
     z_lift: float = 0.08,
     tcp_offset: np.ndarray | None = None,
     pos_tol: float = 0.01,
-    ori_tol_deg: float = 35.0,
+    ori_tol_deg: float = 55.0,
 ) -> ScoredGrasp | None:
     """Score a single grasp candidate by solving IK and evaluating quality.
 
@@ -489,7 +489,8 @@ def evaluate_grasps(
     table_z: float,
     tcp_offset: np.ndarray | None = None,
     pos_tol: float = 0.01,
-    ori_tol_deg: float = 35.0,
+    ori_tol_deg: float = 55.0,
+    best_effort: bool = False,
 ) -> ScoredGrasp:
     """Enumerate, filter, score, and select the best grasp candidate.
 
@@ -508,12 +509,13 @@ def evaluate_grasps(
         tcp_offset: (3,) local-frame TCP offset.
         pos_tol: IK position tolerance (metres).
         ori_tol_deg: Orientation tolerance (degrees).
+        best_effort: If True, retry with very relaxed tolerances instead of raising.
 
     Returns:
         Best ScoredGrasp.
 
     Raises:
-        GraspPlanningFailure: If no candidate passes all checks.
+        GraspPlanningFailure: If no candidate passes all checks (and best_effort is False).
     """
     candidates = enumerate_face_grasps(cube_pos, cube_quat, cube_half_sizes)
     logger.info("Enumerated %d grasp candidates", len(candidates))
@@ -552,6 +554,25 @@ def evaluate_grasps(
                 result.joint_margin,
                 result.manipulability,
             )
+
+    if not scored and best_effort:
+        logger.warning("No candidates passed strict scoring — retrying with relaxed tolerances (best_effort)")
+        for candidate in feasible:
+            result = score_grasp(
+                candidate,
+                model,
+                data,
+                ee_site_id,
+                arm_joint_ids,
+                seed_joints,
+                standoff=standoff,
+                z_lift=z_lift,
+                tcp_offset=tcp_offset,
+                pos_tol=0.10,
+                ori_tol_deg=180.0,
+            )
+            if result is not None:
+                scored.append(result)
 
     if not scored:
         raise GraspPlanningFailure(f"No candidates passed IK scoring ({len(feasible)} tried)")

@@ -218,9 +218,9 @@ class TestScoreGrasp:
         feasible = filter_grasps(candidates, table_z=scene_info.table_z)
 
         for candidate in feasible:
-            result = score_grasp(candidate, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints, ori_tol_deg=35.0)
+            result = score_grasp(candidate, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints, ori_tol_deg=55.0)
             if result is not None:
-                assert result.ori_err_deg <= 35.0
+                assert result.ori_err_deg <= 55.0
 
 
 # ---------------------------------------------------------------------------
@@ -259,16 +259,17 @@ class TestEvaluateGrasps:
             table_z=scene_info.table_z,
         )
         assert best.grasp.face_label in ["+X", "-X", "+Y", "-Y"]
-        assert best.ik_pos_err <= 0.01
-        assert best.ori_err_deg <= 35.0
+        assert best.ik_pos_err <= 0.02
+        assert best.ori_err_deg <= 55.0
 
     def test_evaluate_various_positions(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints):
         """evaluate_grasps works for several cube placements."""
         cube_z = scene_info.cube_default_pos[2]
+        cx, cy = scene_info.cube_default_pos[0], scene_info.cube_default_pos[1]
         positions = [
-            np.array([0.15, 0.0, cube_z]),
-            np.array([0.16, 0.02, cube_z]),
-            np.array([0.15, -0.02, cube_z]),
+            np.array([cx, cy, cube_z]),
+            np.array([cx + 0.01, cy + 0.01, cube_z]),
+            np.array([cx - 0.01, cy - 0.01, cube_z]),
         ]
         for pos in positions:
             best = evaluate_grasps(

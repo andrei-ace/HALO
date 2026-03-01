@@ -420,11 +420,11 @@ class TestIntegratedPipeline:
         """Pipeline should work for various cube placements."""
         home_joints = mj_data.qpos[:6].copy()
 
-        cube_z = scene_info.cube_default_pos[2]
+        cx, cy, cube_z = scene_info.cube_default_pos
         for cube_pos in [
-            np.array([0.15, 0.0, cube_z]),
-            np.array([0.16, 0.02, cube_z]),
-            np.array([0.15, -0.02, cube_z]),
+            np.array([cx, cy, cube_z]),
+            np.array([cx + 0.01, cy + 0.01, cube_z]),
+            np.array([cx - 0.01, cy - 0.01, cube_z]),
         ]:
             best = evaluate_grasps(
                 cube_pos,

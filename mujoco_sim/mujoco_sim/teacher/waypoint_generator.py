@@ -13,7 +13,8 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from mujoco_sim.teacher.ik_helper import solve_ik_with_orientation
+from mujoco_sim.constants import PHASE_LIFT
+from mujoco_sim.teacher.ik_helper import solve_ik, solve_ik_with_orientation
 from mujoco_sim.teacher.keyframe_planner import Keyframe
 
 logger = logging.getLogger(__name__)
@@ -84,6 +85,11 @@ def generate_joint_waypoints(
         seeds_to_try = [prev_joints] + list(reversed(all_solved[:-1]))
         solved = False
 
+        # Lift phase: object is already grasped, orientation can relax.
+        # Use position-only IK (matching score_grasp) with relaxed tolerance.
+        position_only = kf.phase_id == PHASE_LIFT
+        kf_pos_tol = max(pos_tol, 0.03) if position_only else pos_tol
+
         for seed in seeds_to_try:
             try:
                 joints = _solve_with_retries(
@@ -99,9 +105,10 @@ def generate_joint_waypoints(
                     max_iters=max_iters,
                     tol=tol,
                     damping=damping,
-                    pos_tol=pos_tol,
+                    pos_tol=kf_pos_tol,
                     d_check=d_check,
                     label=kf.label,
+                    position_only=position_only,
                 )
                 solved = True
                 break
@@ -142,6 +149,7 @@ def _solve_with_retries(
     pos_tol: float,
     d_check: mujoco.MjData,
     label: str,
+    position_only: bool = False,
 ) -> np.ndarray:
     """Solve IK with yaw-rotation fallbacks on failure."""
     # Try original orientation first
@@ -163,19 +171,31 @@ def _solve_with_retries(
             d_seed.qpos[jid] = seed_joints[i]
         mujoco.mj_forward(model, d_seed)
 
-        joints = solve_ik_with_orientation(
-            model,
-            d_seed,
-            target_pos,
-            rot,
-            ee_site_id,
-            arm_joint_ids,
-            pos_weight=pos_weight,
-            ori_weight=ori_weight,
-            max_iters=max_iters,
-            tol=tol,
-            damping=damping,
-        )
+        if position_only:
+            joints = solve_ik(
+                model,
+                d_seed,
+                target_pos,
+                ee_site_id,
+                arm_joint_ids,
+                max_iters=max_iters,
+                tol=tol,
+                damping=damping,
+            )
+        else:
+            joints = solve_ik_with_orientation(
+                model,
+                d_seed,
+                target_pos,
+                rot,
+                ee_site_id,
+                arm_joint_ids,
+                pos_weight=pos_weight,
+                ori_weight=ori_weight,
+                max_iters=max_iters,
+                tol=tol,
+                damping=damping,
+            )
 
         # Check position error via FK
         d_check.qpos[:] = data.qpos[:]

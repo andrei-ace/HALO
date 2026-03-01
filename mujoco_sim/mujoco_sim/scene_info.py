@@ -30,7 +30,7 @@ EE_SITE_NAME = "gripperframe"
 # expressed in gripperframe-local coordinates.
 # Measured via mujoco_sim.scripts.measure_pinch_offset (vertex proximity method,
 # centroid of jaw mesh vertices within 3 mm when gripper closed).
-TCP_PINCH_OFFSET_LOCAL = np.array([-0.003, 0.0, 0.003])
+TCP_PINCH_OFFSET_LOCAL = np.array([-0.003, 0.0, 0.010])
 
 
 # ---------------------------------------------------------------------------

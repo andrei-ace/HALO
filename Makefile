@@ -96,7 +96,7 @@ generate-episodes-video:
 		--save-video \
 		$(GENERATE_ARGS)
 
-IK_SEED    ?= 42
+IK_SEED    ?= 7
 IK_OUT_DIR ?= data/ik_poses
 
 visualize-ik:
@@ -135,5 +135,5 @@ help:
 	@echo "tui-mock           launch the HALO terminal dashboard (mock mode)"
 	@echo "tui-live-videoloop launch the TUI with video loop source (requires Ollama)"
 	@echo "sim-server         start the MuJoCo sim ZMQ server (requires --extra sim)"
-	@echo "visualize-ik       render IK-solved poses as PNGs (IK_SEED=42 IK_OUT_DIR=data/ik_poses)"
+	@echo "visualize-ik       render IK-solved poses as PNGs (IK_SEED=7 IK_OUT_DIR=data/ik_poses)"
 	@echo "tui-live-mujoco    launch the TUI with MuJoCo scene camera (requires Ollama + MuJoCo)"

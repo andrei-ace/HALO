@@ -89,10 +89,8 @@ def main() -> None:
         ee_site_id=ee_site_id,
         arm_joint_ids=arm_joint_ids,
         seed_joints=home_joints[:5],
-        standoff=0.04,
-        z_lift=0.08,
         table_z=scene.table_z,
-        pos_tol=0.03,
+        best_effort=True,
     )
     print(
         f"\nSelected grasp: face={best.grasp.face_label} yaw={best.grasp.yaw_variant}"

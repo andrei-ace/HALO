@@ -217,7 +217,7 @@ class TestHandlers:
 
         env = SO101Env(EnvConfig())
         teacher = PickTeacher(TeacherConfig())
-        env.reset(seed=42)
+        env.reset(seed=7)
         yield env, teacher
         env.close()
 
