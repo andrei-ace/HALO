@@ -98,10 +98,17 @@ def _print_summary(results: list, output_dir: str, save_video: bool) -> None:
     print(f"  Total:      {total}")
     print(f"  Succeeded:  {len(succeeded)}")
     if incomplete:
-        print(f"  Incomplete: {len(incomplete)}  (did not reach DONE phase)")
+        no_done = [r for r in incomplete if r.final_phase != 9]
+        no_lift = [r for r in incomplete if r.final_phase == 9]
+        label_parts = []
+        if no_done:
+            label_parts.append(f"{len(no_done)} incomplete")
+        if no_lift:
+            label_parts.append(f"{len(no_lift)} lift failed")
+        print(f"  Not OK:     {len(incomplete)}  ({', '.join(label_parts)})")
     if failed:
         print(f"  Failed:     {len(failed)}")
-    if total > 0 and not failed:
+    if total > 0:
         rate = len(succeeded) / total * 100
         print(f"  Success:    {rate:.0f}%")
     print("-" * 60)
@@ -134,7 +141,7 @@ def _print_summary(results: list, output_dir: str, save_video: bool) -> None:
     if written:
         print(f"  Output: {output_dir}/")
         for r in written:
-            tag = "ok" if r.success else "inc"
+            tag = "ok" if r.success else ("lift-fail" if r.final_phase == 9 else "inc")
             print(f"    {r.path.name}  [{tag}, {r.num_steps} steps, phase={r.final_phase}]")
 
     print("=" * 60)

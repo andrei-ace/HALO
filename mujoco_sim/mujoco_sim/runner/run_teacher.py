@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from mujoco_sim.config import EnvConfig
-from mujoco_sim.constants import PHASE_DONE
+from mujoco_sim.constants import PHASE_DONE, PHASE_LIFT
 from mujoco_sim.dataset import EpisodeMetadata, RawEpisode, Timestep, episode_path, write_episode
 from mujoco_sim.teacher.pick_teacher import PickTeacher, TeacherConfig
 
@@ -242,7 +242,8 @@ def _run_episode_via_zmq(
             break
 
     final_phase = phase_id
-    success = final_phase == PHASE_DONE
+    reached_done = final_phase == PHASE_DONE
+    success = reached_done and _verify_lift(episode)
 
     path = episode_path(output_dir, ep_idx)
     write_episode(episode, path)
@@ -331,7 +332,8 @@ def _run_single_episode(
             break
 
     final_phase = teacher.phase
-    success = final_phase == PHASE_DONE
+    reached_done = final_phase == PHASE_DONE
+    success = reached_done and _verify_lift(episode)
 
     path = episode_path(output_dir, ep_idx)
     write_episode(episode, path)
@@ -348,6 +350,31 @@ def _run_single_episode(
         num_steps=len(episode),
         final_phase=final_phase,
     )
+
+
+# ---------------------------------------------------------------------------
+# Lift verification
+# ---------------------------------------------------------------------------
+
+# Minimum cube Z rise during LIFT phase to count as a successful grasp (metres).
+_LIFT_THRESHOLD_M = 0.005
+
+
+def _verify_lift(episode: RawEpisode) -> bool:
+    """Check that the cube actually rose during the LIFT phase."""
+    phase_ids = episode.phase_ids
+    obj_poses = episode.object_poses
+    if phase_ids is None or obj_poses is None:
+        return False
+    lift_mask = phase_ids == PHASE_LIFT
+    if not lift_mask.any():
+        return False
+    lift_z = obj_poses[lift_mask, 2]
+    delta_z = float(lift_z[-1] - lift_z[0])
+    if delta_z < _LIFT_THRESHOLD_M:
+        logger.warning("Lift check FAILED: cube Δz=%.4f m (threshold=%.4f m)", delta_z, _LIFT_THRESHOLD_M)
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------
