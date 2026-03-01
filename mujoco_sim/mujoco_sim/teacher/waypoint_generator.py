@@ -56,7 +56,7 @@ def generate_joint_waypoints(
         model: MuJoCo model.
         data: MuJoCo data (will NOT be mutated).
         ee_site_id: MuJoCo site id for gripperframe.
-        arm_joint_ids: List of 5 arm joint qpos indices.
+        arm_joint_ids: List of 5 arm joint IDs.
         seed_joints: (5,) initial arm joint configuration.
         pos_weight: Position weight for IK.
         ori_weight: Orientation weight for IK.
@@ -152,6 +152,9 @@ def _solve_with_retries(
     position_only: bool = False,
 ) -> np.ndarray:
     """Solve IK with yaw-rotation fallbacks on failure."""
+    # Map joint IDs → qpos indices (correct for any MJCF layout)
+    qpos_idx = [int(model.jnt_qposadr[jid]) for jid in arm_joint_ids]
+
     # Try original orientation first
     yaw_offsets = [0.0, np.pi / 2, -np.pi / 2, np.pi]
 
@@ -168,7 +171,7 @@ def _solve_with_retries(
         d_seed = mujoco.MjData(model)
         d_seed.qpos[:] = data.qpos[:]
         for i, jid in enumerate(arm_joint_ids):
-            d_seed.qpos[jid] = seed_joints[i]
+            d_seed.qpos[qpos_idx[i]] = seed_joints[i]
         mujoco.mj_forward(model, d_seed)
 
         if position_only:
@@ -200,7 +203,7 @@ def _solve_with_retries(
         # Check position error via FK
         d_check.qpos[:] = data.qpos[:]
         for i, jid in enumerate(arm_joint_ids):
-            d_check.qpos[jid] = joints[i]
+            d_check.qpos[qpos_idx[i]] = joints[i]
         mujoco.mj_forward(model, d_check)
         ee_pos = d_check.site_xpos[ee_site_id]
         pos_err = float(np.linalg.norm(target_pos - ee_pos))

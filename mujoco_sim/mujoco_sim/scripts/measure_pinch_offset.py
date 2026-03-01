@@ -42,7 +42,7 @@ def main() -> None:
 
     # Close the gripper
     gripper_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "gripper")
-    data.qpos[gripper_joint_id] = -0.17  # GRIPPER_CLOSE
+    data.qpos[model.jnt_qposadr[gripper_joint_id]] = -0.17  # GRIPPER_CLOSE
     mujoco.mj_forward(model, data)
 
     # --- Resolve IDs ---

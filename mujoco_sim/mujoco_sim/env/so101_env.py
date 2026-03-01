@@ -103,7 +103,7 @@ class SO101Env:
             "rgb_wrist": rgb_wrist,
             "qpos": np.array(self._data.qpos, copy=True),
             "qvel": np.array(self._data.qvel, copy=True),
-            "gripper": float(self._data.qpos[self._gripper_joint_id]),
+            "gripper": float(self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]]),
             "ee_pose": ee_pose,
             "object_pose": object_pose,
             "joint_pos": joint_pos,

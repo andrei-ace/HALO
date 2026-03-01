@@ -265,7 +265,7 @@ class TestWaypointGenerator:
         for kf, wp in zip(keyframes, waypoints):
             d_check.qpos[:] = mj_data.qpos[:]
             for i, jid in enumerate(arm_joint_ids):
-                d_check.qpos[jid] = wp.arm_joints[i]
+                d_check.qpos[mj_model.jnt_qposadr[jid]] = wp.arm_joints[i]
             mujoco.mj_forward(mj_model, d_check)
             ee_pos = d_check.site_xpos[ee_site_id]
             err = float(np.linalg.norm(kf.position - ee_pos))

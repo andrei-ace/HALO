@@ -133,11 +133,11 @@ def main() -> None:
     print("-" * 140)
 
     for kf, wp in zip(keyframes, waypoints):
-        # Set arm joints
+        # Set arm joints (use jnt_qposadr for correct MJCF-independent indexing)
         for i, jid in enumerate(arm_joint_ids):
-            data.qpos[jid] = wp.arm_joints[i]
+            data.qpos[model.jnt_qposadr[jid]] = wp.arm_joints[i]
         # Set gripper
-        data.qpos[gripper_joint_id] = wp.gripper
+        data.qpos[model.jnt_qposadr[gripper_joint_id]] = wp.gripper
         # FK (no physics)
         mujoco.mj_forward(model, data)
 

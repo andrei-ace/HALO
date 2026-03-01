@@ -384,7 +384,7 @@ def score_grasp(
         model: MuJoCo model.
         data: MuJoCo data (not mutated).
         ee_site_id: MuJoCo site id for gripperframe.
-        arm_joint_ids: List of 5 arm joint qpos indices.
+        arm_joint_ids: List of 5 arm joint IDs.
         seed_joints: (5,) seed joint configuration for IK.
         standoff: Distance along approach_dir for pregrasp offset.
         z_lift: Vertical lift height above grasp for lift-reachability check.
@@ -397,6 +397,10 @@ def score_grasp(
     """
     if tcp_offset is None:
         tcp_offset = TCP_PINCH_OFFSET_LOCAL
+
+    # Map joint IDs → qpos / Jacobian-column indices (correct for any MJCF layout)
+    qpos_idx = [int(model.jnt_qposadr[jid]) for jid in arm_joint_ids]
+    dof_idx = [int(model.jnt_dofadr[jid]) for jid in arm_joint_ids]
 
     # Compute IK targets (site position = contact - rot @ tcp_offset)
     grasp_site_target = grasp.contact_point - grasp.orientation @ tcp_offset
@@ -422,7 +426,7 @@ def score_grasp(
     d_check = mujoco.MjData(model)
     d_check.qpos[:] = data.qpos[:]
     for i, jid in enumerate(arm_joint_ids):
-        d_check.qpos[jid] = grasp_joints[i]
+        d_check.qpos[qpos_idx[i]] = grasp_joints[i]
     mujoco.mj_forward(model, d_check)
 
     ee_pos = d_check.site_xpos[ee_site_id].copy()
@@ -458,7 +462,7 @@ def score_grasp(
     d_seed = mujoco.MjData(model)
     d_seed.qpos[:] = data.qpos[:]
     for i, jid in enumerate(arm_joint_ids):
-        d_seed.qpos[jid] = grasp_joints[i]
+        d_seed.qpos[qpos_idx[i]] = grasp_joints[i]
     mujoco.mj_forward(model, d_seed)
 
     pregrasp_joints = solve_ik_with_orientation(
@@ -477,7 +481,7 @@ def score_grasp(
 
     # FK-verify pregrasp position
     for i, jid in enumerate(arm_joint_ids):
-        d_check.qpos[jid] = pregrasp_joints[i]
+        d_check.qpos[qpos_idx[i]] = pregrasp_joints[i]
     mujoco.mj_forward(model, d_check)
     pregrasp_pos_err = float(np.linalg.norm(pregrasp_site_target - d_check.site_xpos[ee_site_id]))
     if pregrasp_pos_err > pos_tol:
@@ -495,7 +499,7 @@ def score_grasp(
     lift_contact = grasp.contact_point + np.array([0.0, 0.0, z_lift])
     lift_site_target = lift_contact - grasp.orientation @ tcp_offset
     for i, jid in enumerate(arm_joint_ids):
-        d_seed.qpos[jid] = grasp_joints[i]
+        d_seed.qpos[qpos_idx[i]] = grasp_joints[i]
     mujoco.mj_forward(model, d_seed)
 
     lift_joints = solve_ik(
@@ -510,7 +514,7 @@ def score_grasp(
 
     # FK-verify lift position
     for i, jid in enumerate(arm_joint_ids):
-        d_check.qpos[jid] = lift_joints[i]
+        d_check.qpos[qpos_idx[i]] = lift_joints[i]
     mujoco.mj_forward(model, d_check)
     lift_pos_err = float(np.linalg.norm(lift_site_target - d_check.site_xpos[ee_site_id]))
     lift_pos_tol = max(pos_tol, 0.03)  # relaxed for lift (object already grasped)
@@ -540,12 +544,12 @@ def score_grasp(
     # Compute manipulability: sqrt(det(J @ J.T)) on 3×5 position Jacobian
     # (reuse d_check which has grasp_joints loaded)
     for i, jid in enumerate(arm_joint_ids):
-        d_check.qpos[jid] = grasp_joints[i]
+        d_check.qpos[qpos_idx[i]] = grasp_joints[i]
     mujoco.mj_forward(model, d_check)
 
     jac_pos = np.zeros((3, model.nv))
     mujoco.mj_jacSite(model, d_check, jac_pos, None, ee_site_id)
-    J = jac_pos[:, arm_joint_ids]  # (3, 5)
+    J = jac_pos[:, dof_idx]  # (3, 5)
     manip_raw = float(np.sqrt(max(0.0, np.linalg.det(J @ J.T))))
 
     # Normalize manipulability to 0–1 range (typical range ~0 to ~0.01 for this arm)
@@ -602,7 +606,7 @@ def evaluate_grasps(
         model: MuJoCo model.
         data: MuJoCo data (not mutated).
         ee_site_id: MuJoCo site id for gripperframe.
-        arm_joint_ids: List of 5 arm joint qpos indices.
+        arm_joint_ids: List of 5 arm joint IDs.
         seed_joints: (5,) seed joint configuration for IK.
         standoff: Pregrasp standoff distance along approach direction.
         z_lift: Vertical lift height for lift-reachability check.
