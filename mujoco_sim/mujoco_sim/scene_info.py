@@ -28,9 +28,10 @@ EE_SITE_NAME = "gripperframe"
 # ---------------------------------------------------------------------------
 # Offset from gripperframe site to jaw contact-surface centroid,
 # expressed in gripperframe-local coordinates.
-# Measured via mujoco_sim.scripts.measure_pinch_offset (vertex proximity method,
-# centroid of jaw mesh vertices within 3 mm when gripper closed).
-TCP_PINCH_OFFSET_LOCAL = np.array([-0.003, 0.0, 0.010])
+# Set to zero: the gripperframe site is close enough to the jaw contact
+# centroid that compensating for the offset hurts more than it helps
+# (IK error + approach-angle projection dominate the small 3-4 mm offset).
+TCP_PINCH_OFFSET_LOCAL = np.array([0.0, 0.0, 0.0])
 
 
 # ---------------------------------------------------------------------------

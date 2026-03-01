@@ -3,9 +3,13 @@
 Two solvers:
 - ``solve_ik``: position-only (3D target, 3×5 Jacobian).
 - ``solve_ik_with_orientation``: position + orientation (6D weighted cost, 6×5 Jacobian).
-  Orientation cost penalises the gripperframe Z-axis deviating from a target Z-axis
-  (typically world -Z for "gripper down"). Since the arm has only 5 DOF, full 6D
-  control is impossible; the orientation term is weighted lower so position dominates.
+  Single-phase coupled solver: position and orientation are optimised simultaneously
+  from iteration 1 using a combined ``[pos_weight * Jp; ori_weight * Jr]`` Jacobian.
+  Position weight dominates so position converges first naturally, while orientation
+  biases the solver toward better joint configurations from the start — avoiding
+  the local-minimum trap of a two-phase approach where position locks in first.
+  Since the arm has only 5 DOF, full 6D control is impossible; the orientation
+  term is weighted lower so position dominates.
 """
 
 from __future__ import annotations
@@ -103,20 +107,24 @@ def solve_ik_with_orientation(
     arm_joint_ids: list[int],
     *,
     pos_weight: float = 1.0,
-    ori_weight: float = 0.1,
+    ori_weight: float = 0.3,
     max_iters: int = 200,
     tol: float = 1e-3,
     damping: float = 1e-2,
 ) -> np.ndarray:
-    """Solve position + orientation IK using a two-phase approach.
+    """Solve position + orientation IK using a single-phase coupled solver.
 
-    Phase 1: Position-only convergence (same as ``solve_ik``).
-    Phase 2: Joint-space orientation refinement — nudge the null-space of the
-    position Jacobian to improve orientation without degrading position.
+    Position and orientation are optimised simultaneously from iteration 1
+    using a combined ``[pos_weight * Jp; ori_weight * Jr]`` 6×5 Jacobian.
+    Position weight dominates, so position converges first naturally, while
+    the orientation term biases the solver toward joint configurations that
+    also satisfy the target Z-axis alignment — avoiding the local-minimum
+    trap of a sequential approach.
 
-    The 5-DOF SO-101 cannot fully control 6D pose, so orientation is best-effort.
-    This two-phase approach guarantees position convergence first, then improves
-    orientation as much as the kinematic chain allows.
+    The 5-DOF SO-101 cannot fully control 6D pose, so orientation is
+    best-effort.  The full iteration budget is available to the coupled
+    solver (vs. the old two-phase split that gave orientation only 1/3 of
+    the iterations).
 
     Operates on a *copy* of ``data`` to avoid mutating live sim state.
 
@@ -128,53 +136,35 @@ def solve_ik_with_orientation(
         ee_site_id: MuJoCo site id for the end-effector (gripperframe).
         arm_joint_ids: List of 5 arm joint IDs.
         pos_weight: Weight for position error term.
-        ori_weight: Weight for orientation error term (used in phase 2).
-        max_iters: Maximum solver iterations (split between phases).
+        ori_weight: Weight for orientation error term.
+        max_iters: Maximum solver iterations.
         tol: Position error tolerance (metres).
         damping: Damping coefficient λ.
 
     Returns:
         (5,) arm joint angles.
     """
-    # Phase 1: position-only convergence
-    pos_iters = max(max_iters * 2 // 3, 50)
-    joints = solve_ik(
-        model,
-        data,
-        target_pos,
-        ee_site_id,
-        arm_joint_ids,
-        max_iters=pos_iters,
-        tol=tol,
-        damping=damping,
-    )
-
-    # Phase 2: orientation refinement with position maintenance
     d = mujoco.MjData(model)
     d.qpos[:] = data.qpos[:]
     d.qvel[:] = data.qvel[:]
+    mujoco.mj_forward(model, d)
 
-    # Map joint IDs → qpos / Jacobian-column indices
     qpos_idx = [int(model.jnt_qposadr[jid]) for jid in arm_joint_ids]
     dof_idx = [int(model.jnt_dofadr[jid]) for jid in arm_joint_ids]
 
-    for i, jid in enumerate(arm_joint_ids):
-        d.qpos[qpos_idx[i]] = joints[i]
-    mujoco.mj_forward(model, d)
-
     jac_pos = np.zeros((3, model.nv))
     jac_rot = np.zeros((3, model.nv))
-    refine_iters = max_iters - pos_iters
+    step_limit = 0.1
 
-    for _ in range(refine_iters):
+    for _ in range(max_iters):
         ee_pos = d.site_xpos[ee_site_id].copy()
         pos_err = target_pos - ee_pos
         ori_err = _orientation_error(d.site_xmat[ee_site_id], target_rot)
 
-        # Combined error with strong position weight to prevent drift
-        err = np.concatenate([pos_err * pos_weight, ori_err * ori_weight])
-        if np.linalg.norm(err) < tol * 0.1:
+        if np.linalg.norm(pos_err) < tol and np.linalg.norm(ori_err) < 0.01:
             break
+
+        err = np.concatenate([pos_err * pos_weight, ori_err * ori_weight])
 
         mujoco.mj_jacSite(model, d, jac_pos, jac_rot, ee_site_id)
 
@@ -185,10 +175,9 @@ def solve_ik_with_orientation(
         JJT = J @ J.T + damping**2 * np.eye(6)
         dq = J.T @ np.linalg.solve(JJT, err)
 
-        # Limit step size to avoid overshooting
         dq_norm = np.linalg.norm(dq)
-        if dq_norm > 0.05:
-            dq = dq * 0.05 / dq_norm
+        if dq_norm > step_limit:
+            dq = dq * step_limit / dq_norm
 
         for i, jid in enumerate(arm_joint_ids):
             d.qpos[qpos_idx[i]] += dq[i]
@@ -196,11 +185,5 @@ def solve_ik_with_orientation(
             d.qpos[qpos_idx[i]] = np.clip(d.qpos[qpos_idx[i]], lo, hi)
 
         mujoco.mj_forward(model, d)
-
-        # Abort refinement if position drifted too much
-        new_pos_err = np.linalg.norm(target_pos - d.site_xpos[ee_site_id])
-        if new_pos_err > tol * 5:
-            # Revert to position-only solution
-            return joints
 
     return np.array([d.qpos[qpos_idx[i]] for i in range(len(arm_joint_ids))], dtype=np.float64)

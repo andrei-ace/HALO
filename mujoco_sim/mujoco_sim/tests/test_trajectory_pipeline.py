@@ -179,7 +179,7 @@ class TestKeyframePlanner:
             np.testing.assert_allclose(kf.orientation, grasp_pose.orientation, atol=1e-10)
 
     def test_tcp_offset_applied(self, scene_info, mj_model, mj_data, ee_site_id):
-        """Grasp keyframe position differs from contact_point by the TCP pinch offset."""
+        """Grasp keyframe position accounts for TCP pinch offset from contact_point."""
         home_joints = mj_data.qpos[:6].copy()
         grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
 
@@ -189,8 +189,6 @@ class TestKeyframePlanner:
         grasp_rot = grasp.orientation
         jaw_midpoint = grasp.position + grasp_rot @ TCP_PINCH_OFFSET_LOCAL
         np.testing.assert_allclose(jaw_midpoint, grasp_pose.contact_point, atol=1e-10)
-        diff = grasp.position - grasp_pose.contact_point
-        assert np.linalg.norm(diff) > 1e-6, "Grasp keyframe should be offset from contact point"
 
     def test_lift_is_vertical(self, scene_info, mj_model, mj_data, ee_site_id):
         """Lift should be vertically above the grasp contact, regardless of approach direction."""
