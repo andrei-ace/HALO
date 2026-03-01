@@ -10,7 +10,7 @@ class EnvConfig:
     robot: str = "SO101"
     scene_xml: str = "pick_scene.xml"
     scene_camera: str = "scene_cam"
-    wrist_camera: str = "wrist_cam"  # TODO: add wrist_cam to MJCF when hardware mount is finalized
+    wrist_camera: str = "wrist_cam"
     scene_resolution: tuple[int, int] = (480, 640)  # (H, W)
     wrist_resolution: tuple[int, int] = (240, 320)  # (H, W)
     control_freq: int = 20
