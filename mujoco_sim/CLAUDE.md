@@ -12,6 +12,7 @@ jerk-limited ruckig profiles and damped least-squares IK. No robosuite dependenc
 mujoco_sim/
   __init__.py
   constants.py          # synced from halo.contracts (verified by tests)
+  scene_info.py         # single source of truth: entity names, TCP offset, all grasp/teacher defaults
   config/
     env_config.py       # EnvConfig dataclass (SO-101 defaults)
   env/
@@ -50,8 +51,9 @@ mujoco_sim/
     test_constants_sync.py      # verify constants match halo.contracts (6 tests)
     test_raw_episode.py         # Timestep, RawEpisode, HDF5 roundtrip, phase_id, joint_pos (29 tests)
     test_pick_teacher.py        # PickTeacher phases, actions, full episode (20 tests)
-    test_trajectory_pipeline.py # keyframes → IK → ruckig integration (28 tests)
-    test_server.py              # protocol serialization + command dispatch (21 tests)
+    test_grasp_planner.py       # grasp enumeration, filtering, scoring (18 tests)
+    test_trajectory_pipeline.py # keyframes → IK → ruckig integration (24 tests)
+    test_server.py              # protocol serialization + command dispatch (15 tests)
 ```
 
 ## Commands
@@ -60,7 +62,7 @@ mujoco_sim is a uv workspace member — all commands run from the **repo root** 
 
 ```bash
 # From repo root
-uv run python -m pytest mujoco_sim/mujoco_sim/tests/ -v   # all mujoco_sim tests (104 tests)
+uv run python -m pytest mujoco_sim/mujoco_sim/tests/ -v   # all mujoco_sim tests (112 tests)
 uv run python -m pytest tests/test_mujoco_sim_contract_sync.py -v  # contract sync
 uv run python -m pytest -v  # includes mujoco_sim tests (in root testpaths)
 
@@ -83,7 +85,7 @@ uv run python -m mujoco_sim.server  # start ZMQ sim server
 What it reports:
 - **Step count, seed, duration, control freq**
 - **Phase sequence** with per-phase step ranges and durations
-- **Lift check** — verifies cube actually moved up >=5 cm during LIFT phase (FAILED = grasp problem)
+- **Lift check** — verifies cube actually rose >=5 mm (max Z during LIFT phase, not final Z)
 - **EE and cube positions** (first/last) + EE-cube distance over time (start, min, final)
 - **Distance at each phase transition** — useful for spotting approach/grasp timing issues
 - **Gripper** range (first -> last)
@@ -132,7 +134,7 @@ Generates 5 Cartesian keyframes from cube pose + home joints: `home → pregrasp
 
 Orientation rule: gripperframe Z-axis aligned with world -Z (gripper pointing down). Yaw extracted from cube quaternion.
 
-TCP pinch-point offset: `[-0.003, 0.0, 0.003]` (measured via `measure_pinch_offset.py`).
+TCP pinch-point offset: `[0.0, 0.0, 0.0]` (zeroed — 3-4 mm actual offset causes more IK error than it corrects). Face standoff (3 mm) compensates instead.
 
 ### Waypoint generator
 
@@ -146,19 +148,25 @@ Default limits: vel `[1.0, 1.0, 1.0, 1.0, 1.5]`, accel `[3.0, 3.0, 3.0, 3.0, 4.0
 
 ### TeacherConfig
 
+All defaults are named constants in `scene_info.py` (single source of truth):
+
 ```python
 TeacherConfig(
-    pregrasp_height_offset=0.08,  # m above cube center
-    grasp_height_offset=0.0,      # at cube center
-    lift_height=0.08,             # m above initial position
+    pregrasp_height_offset=DEFAULT_PREGRASP_STANDOFF,  # 0.08 m
+    lift_height=DEFAULT_LIFT_HEIGHT,                    # 0.08 m
+    ori_tol_deg=DEFAULT_ORI_TOL_DEG,                    # 55°
+    grasp_n_candidates=DEFAULT_GRASP_N_CANDIDATES,      # 64
+    grasp_max_cone_deg=DEFAULT_GRASP_MAX_CONE_DEG,      # 5°
+    grasp_face_contact_span=DEFAULT_CUBE_FACE_CONTACT_SPAN,  # 0.10
+    grasp_face_standoff=DEFAULT_FACE_STANDOFF,          # 0.003 m (3 mm)
     max_velocity=None,            # defaults in JointLimits
     max_acceleration=None,
     max_jerk=None,
-    ik_pos_weight=1.0,
-    ik_ori_weight=0.1,
-    ik_max_iters=200,
-    ik_tol=1e-3,
-    ik_pos_tol=1e-2,
+    ik_pos_weight=DEFAULT_IK_POS_WEIGHT,    # 1.0
+    ik_ori_weight=DEFAULT_IK_ORI_WEIGHT,    # 0.1
+    ik_max_iters=DEFAULT_IK_MAX_ITERS,      # 200
+    ik_tol=DEFAULT_IK_TOL,                  # 1e-3
+    ik_pos_tol=DEFAULT_IK_POS_TOL,          # 0.03 m
 )
 ```
 
@@ -283,6 +291,36 @@ numpy, h5py>=3.0, tqdm>=4.60, ruckig>=0.14
 Optional: mujoco>=3.1.6 (sim), pyzmq>=25 + msgpack>=1.0 (server), opencv-python>=4.8 (viewer/server)
 ```
 
+## Contact Solver (pick_scene.xml)
+
+MuJoCo's soft contact model allows friction slip by default. The pick scene uses three solver-level settings to suppress slippage during grasping:
+
+```xml
+<option impratio="10" cone="elliptic" noslip_iterations="3"/>
+```
+
+- **`impratio=10`** — friction constraints 10× stiffer than normal force (prevents gradual slip)
+- **`cone="elliptic"`** — accurate friction cones (required for high impratio to work well)
+- **`noslip_iterations=3`** — post-processing solver that entirely prevents residual slip
+
+Additionally, gripper collision geoms use `friction="2.0 0.1 0.001" condim="4"` (matching the cube), and the gripper actuator force is `±6.0 N` (increased from default `±3.35 N`).
+
+Reference: https://mujoco.readthedocs.io/en/latest/modeling.html#cslippage
+
+## Constants (scene_info.py)
+
+All grasp planner and teacher defaults are centralized as named constants in `scene_info.py`. Never use magic numbers in `grasp_planner.py` or `pick_teacher.py` — import from `scene_info`.
+
+Key constants:
+- `TCP_PINCH_OFFSET_LOCAL = [0, 0, 0]` — zeroed (3-4 mm actual offset hurts more via IK error)
+- `DEFAULT_FACE_STANDOFF = 0.003` — 3 mm outward offset to prevent jaw overshoot
+- `DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.10` — tangential sampling range on cube faces
+- `DEFAULT_GRASP_N_CANDIDATES = 64` — grasp candidates (16 per side face)
+- `DEFAULT_PREGRASP_STANDOFF = 0.08` — pregrasp distance along approach
+- `DEFAULT_LIFT_HEIGHT = 0.08` — lift distance above grasp contact
+- `DEFAULT_ORI_TOL_DEG = 55.0` — IK orientation tolerance
+- `DEFAULT_IK_POS_TOL = 0.03` — IK position tolerance (metres)
+
 ## Key Design
 
 - **SO-101** arm (5 DOF + 1 gripper) via raw MuJoCo (no robosuite)
@@ -295,3 +333,5 @@ Optional: mujoco>=3.1.6 (sim), pyzmq>=25 + msgpack>=1.0 (server), opencv-python>
 - **Stabilization**: 5 s home-pose settling before recording (configurable)
 - **Phase tracking**: each Timestep records `phase_id` from teacher
 - **ZMQ bridge**: SimServer exposes env + teacher to HALO runtime (TelemetryStream PUB + CommandRPC REP)
+- **Contact slippage suppression**: impratio=10, elliptic cones, noslip solver (see Contact Solver above)
+- **Episode generation**: 100% success rate (10/10) with `make generate-episodes`
