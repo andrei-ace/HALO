@@ -25,14 +25,22 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from mujoco_sim.scene_info import TCP_PINCH_OFFSET_LOCAL
+from mujoco_sim.scene_info import (
+    DEFAULT_CUBE_FACE_CONTACT_SPAN,
+    DEFAULT_FACE_STANDOFF,
+    DEFAULT_GRASP_MAX_CONE_DEG,
+    DEFAULT_GRASP_N_CANDIDATES,
+    DEFAULT_GRIPPER_DEPTH,
+    DEFAULT_IK_POS_TOL,
+    DEFAULT_LIFT_HEIGHT,
+    DEFAULT_ORI_TOL_DEG,
+    DEFAULT_PREGRASP_STANDOFF,
+    DEFAULT_TABLE_MARGIN,
+    TCP_PINCH_OFFSET_LOCAL,
+)
 from mujoco_sim.teacher.ik_helper import solve_ik, solve_ik_with_orientation
 
 logger = logging.getLogger(__name__)
-
-# Default tangential contact span on cube side faces.
-# 0.0 = exact face center only, 1.0 = anywhere on the face.
-DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.35
 
 
 @dataclass
@@ -188,9 +196,10 @@ def enumerate_face_grasps(
     cube_quat: np.ndarray,
     cube_half_sizes: np.ndarray,
     *,
-    n_candidates: int = 64,
-    max_cone_deg: float = 5.0,
+    n_candidates: int = DEFAULT_GRASP_N_CANDIDATES,
+    max_cone_deg: float = DEFAULT_GRASP_MAX_CONE_DEG,
     face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN,
+    face_standoff: float = DEFAULT_FACE_STANDOFF,
     seed: int | None = None,
 ) -> list[GraspPose]:
     """Enumerate random side-face grasp candidates for a cube.
@@ -209,6 +218,9 @@ def enumerate_face_grasps(
         max_cone_deg: Maximum angular deviation from face normal (degrees).
         face_contact_span: Fraction of tangential half-extent used for contact
             sampling on each face (0=center only, 1=full face).
+        face_standoff: Distance to offset the contact point outward along the
+            face normal (metres). Compensates for jaw midpoint being ahead of
+            the gripperframe site, preventing jaw overshoot.
         seed: Random seed for reproducibility (None = random).
 
     Returns:
@@ -236,7 +248,8 @@ def enumerate_face_grasps(
         for i in range(n_per_face):
             approach_dir = _random_cone_vector(approach_centre, max_cone_rad, rng)
             contact_offset_local = _sample_face_contact_offset(axis_idx, cube_half_sizes, face_contact_span, rng)
-            contact_point = cube_pos + R_cube @ (face_center_local + contact_offset_local)
+            face_point = cube_pos + R_cube @ (face_center_local + contact_offset_local)
+            contact_point = face_point + normal_world * face_standoff
             yaw_idx = i % n_yaw
             yaw_angle = float(yaw_angles[yaw_idx])
 
@@ -308,9 +321,9 @@ def filter_grasps(
     candidates: list[GraspPose],
     *,
     table_z: float,
-    standoff: float = 0.04,
-    gripper_depth: float = 0.10,
-    margin: float = 0.01,
+    standoff: float = DEFAULT_PREGRASP_STANDOFF,
+    gripper_depth: float = DEFAULT_GRIPPER_DEPTH,
+    margin: float = DEFAULT_TABLE_MARGIN,
 ) -> list[GraspPose]:
     """Filter out geometrically infeasible grasp candidates.
 
@@ -369,11 +382,11 @@ def score_grasp(
     arm_joint_ids: list[int],
     seed_joints: np.ndarray,
     *,
-    standoff: float = 0.04,
-    z_lift: float = 0.08,
+    standoff: float = DEFAULT_PREGRASP_STANDOFF,
+    z_lift: float = DEFAULT_LIFT_HEIGHT,
     tcp_offset: np.ndarray | None = None,
-    pos_tol: float = 0.01,
-    ori_tol_deg: float = 55.0,
+    pos_tol: float = DEFAULT_IK_POS_TOL,
+    ori_tol_deg: float = DEFAULT_ORI_TOL_DEG,
 ) -> ScoredGrasp | None:
     """Score a single grasp candidate by solving IK and evaluating quality.
 
@@ -586,15 +599,16 @@ def evaluate_grasps(
     arm_joint_ids: list[int],
     seed_joints: np.ndarray,
     *,
-    standoff: float = 0.04,
-    z_lift: float = 0.08,
+    standoff: float = DEFAULT_PREGRASP_STANDOFF,
+    z_lift: float = DEFAULT_LIFT_HEIGHT,
     table_z: float,
-    n_candidates: int = 64,
-    max_cone_deg: float = 5.0,
+    n_candidates: int = DEFAULT_GRASP_N_CANDIDATES,
+    max_cone_deg: float = DEFAULT_GRASP_MAX_CONE_DEG,
     face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN,
+    face_standoff: float = DEFAULT_FACE_STANDOFF,
     tcp_offset: np.ndarray | None = None,
-    pos_tol: float = 0.01,
-    ori_tol_deg: float = 55.0,
+    pos_tol: float = DEFAULT_IK_POS_TOL,
+    ori_tol_deg: float = DEFAULT_ORI_TOL_DEG,
     best_effort: bool = False,
 ) -> ScoredGrasp:
     """Enumerate, filter, score, and select the best grasp candidate.
@@ -615,6 +629,8 @@ def evaluate_grasps(
         max_cone_deg: Max approach tilt away from the face normal.
         face_contact_span: Fraction of tangential face half-extent used to
             sample contact points (0=center only, 1=full face).
+        face_standoff: Distance to offset contact point outward along face
+            normal (metres). Compensates for jaw midpoint overshoot.
         tcp_offset: (3,) local-frame TCP offset.
         pos_tol: IK position tolerance (metres).
         ori_tol_deg: Orientation tolerance (degrees).
@@ -633,6 +649,7 @@ def evaluate_grasps(
         n_candidates=n_candidates,
         max_cone_deg=max_cone_deg,
         face_contact_span=face_contact_span,
+        face_standoff=face_standoff,
     )
     logger.info("Enumerated %d grasp candidates", len(candidates))
 
@@ -672,6 +689,7 @@ def evaluate_grasps(
             n_candidates=expanded_n,
             max_cone_deg=expanded_cone,
             face_contact_span=face_contact_span,
+            face_standoff=face_standoff,
         )
         retry_feasible = filter_grasps(retry_candidates, table_z=table_z, standoff=standoff)
         logger.info("Expanded search feasible candidates: %d", len(retry_feasible))

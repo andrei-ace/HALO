@@ -163,6 +163,7 @@ class TestEnumerateFaceGrasps:
             _DEFAULT_CUBE_QUAT,
             scene_info.cube_half_sizes,
             face_contact_span=0.0,
+            face_standoff=0.0,
             seed=123,
         )
         for c in center_only:
@@ -175,6 +176,7 @@ class TestEnumerateFaceGrasps:
             _DEFAULT_CUBE_QUAT,
             scene_info.cube_half_sizes,
             face_contact_span=0.35,
+            face_standoff=0.0,
             seed=123,
         )
         assert any(np.linalg.norm(a.contact_point - b.contact_point) > 1e-8 for a, b in zip(center_only, offcenter)), (

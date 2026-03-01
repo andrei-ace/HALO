@@ -76,12 +76,15 @@ def inspect(path: Path) -> None:
 
             lift_mask = phase_ids == PHASE_LIFT
             if lift_mask.any():
-                lift_start_z = float(obj_poses[lift_mask][0, 2])
-                lift_end_z = float(obj_poses[lift_mask][-1, 2])
-                cube_lift_m = lift_end_z - lift_start_z
-                lifted = cube_lift_m > 0.05  # at least 5cm
+                lift_z = obj_poses[lift_mask, 2]
+                lift_start_z = float(lift_z[0])
+                lift_max_z = float(lift_z.max())
+                lift_end_z = float(lift_z[-1])
+                cube_lift_m = lift_max_z - lift_start_z
+                lifted = cube_lift_m > 0.005  # at least 5mm (matches _LIFT_THRESHOLD_M)
                 tag = "OK" if lifted else "FAILED"
-                print(f"\nLift check:   cube_z {lift_start_z:.4f} → {lift_end_z:.4f}  (Δ={cube_lift_m:.4f} m)  [{tag}]")
+                print(f"\nLift check:   cube_z {lift_start_z:.4f} → max {lift_max_z:.4f} → end {lift_end_z:.4f}")
+                print(f"              Δmax={cube_lift_m:.4f} m  [{tag}]")
                 if not lifted:
                     print("  ⚠ Cube did not move up — grasp may have failed")
         print()

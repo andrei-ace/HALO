@@ -134,7 +134,7 @@ def plan_trajectory(
             # Pure gripper segment — use a fixed duration for gripper close/open
             gripper_delta = abs(wp_end.gripper - wp_start.gripper)
             # ~0.5s for full gripper travel, scale proportionally
-            duration = max(0.5 * gripper_delta / 2.0, 0.1)  # at least 100ms
+            duration = max(0.5 * gripper_delta / 1.5, 0.5)  # at least 500ms
 
             # Create a trivial ruckig trajectory (zero motion)
             otg = Ruckig(n_dof)

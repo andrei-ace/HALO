@@ -24,8 +24,23 @@ from mujoco_sim.constants import (
     PHASE_DONE,
     PHASE_IDLE,
 )
-from mujoco_sim.scene_info import EE_SITE_NAME, SceneInfo
-from mujoco_sim.teacher.grasp_planner import DEFAULT_CUBE_FACE_CONTACT_SPAN, evaluate_grasps
+from mujoco_sim.scene_info import (
+    DEFAULT_CUBE_FACE_CONTACT_SPAN,
+    DEFAULT_FACE_STANDOFF,
+    DEFAULT_GRASP_MAX_CONE_DEG,
+    DEFAULT_GRASP_N_CANDIDATES,
+    DEFAULT_IK_MAX_ITERS,
+    DEFAULT_IK_ORI_WEIGHT,
+    DEFAULT_IK_POS_TOL,
+    DEFAULT_IK_POS_WEIGHT,
+    DEFAULT_IK_TOL,
+    DEFAULT_LIFT_HEIGHT,
+    DEFAULT_ORI_TOL_DEG,
+    DEFAULT_PREGRASP_STANDOFF,
+    EE_SITE_NAME,
+    SceneInfo,
+)
+from mujoco_sim.teacher.grasp_planner import evaluate_grasps
 from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, TrajectoryPlan, plan_trajectory
 from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
@@ -38,18 +53,19 @@ class TeacherConfig:
     """Configuration for the trajectory-planned pick teacher."""
 
     # Standoff distance along approach direction for pregrasp
-    pregrasp_height_offset: float = 0.08  # m along approach direction
+    pregrasp_height_offset: float = DEFAULT_PREGRASP_STANDOFF
 
     # Lift target height above grasp contact point
-    lift_height: float = 0.08  # m
+    lift_height: float = DEFAULT_LIFT_HEIGHT
 
     # Grasp planner orientation tolerance
-    ori_tol_deg: float = 55.0
+    ori_tol_deg: float = DEFAULT_ORI_TOL_DEG
 
     # Grasp sampling (random candidates on cube side faces)
-    grasp_n_candidates: int = 64
-    grasp_max_cone_deg: float = 5.0
+    grasp_n_candidates: int = DEFAULT_GRASP_N_CANDIDATES
+    grasp_max_cone_deg: float = DEFAULT_GRASP_MAX_CONE_DEG
     grasp_face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN
+    grasp_face_standoff: float = DEFAULT_FACE_STANDOFF
 
     # Trajectory limits (per-joint)
     max_velocity: list[float] | None = None  # defaults in JointLimits
@@ -57,11 +73,11 @@ class TeacherConfig:
     max_jerk: list[float] | None = None
 
     # IK parameters
-    ik_pos_weight: float = 1.0
-    ik_ori_weight: float = 0.1
-    ik_max_iters: int = 200
-    ik_tol: float = 1e-3
-    ik_pos_tol: float = 0.03
+    ik_pos_weight: float = DEFAULT_IK_POS_WEIGHT
+    ik_ori_weight: float = DEFAULT_IK_ORI_WEIGHT
+    ik_max_iters: int = DEFAULT_IK_MAX_ITERS
+    ik_tol: float = DEFAULT_IK_TOL
+    ik_pos_tol: float = DEFAULT_IK_POS_TOL
 
 
 class PickTeacher:
@@ -191,6 +207,7 @@ class PickTeacher:
             n_candidates=cfg.grasp_n_candidates,
             max_cone_deg=cfg.grasp_max_cone_deg,
             face_contact_span=cfg.grasp_face_contact_span,
+            face_standoff=cfg.grasp_face_standoff,
             pos_tol=cfg.ik_pos_tol,
             ori_tol_deg=cfg.ori_tol_deg,
         )

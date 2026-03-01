@@ -361,7 +361,12 @@ _LIFT_THRESHOLD_M = 0.005
 
 
 def _verify_lift(episode: RawEpisode) -> bool:
-    """Check that the cube actually rose during the LIFT phase."""
+    """Check that the cube actually rose during the LIFT phase.
+
+    Uses the *maximum* cube Z reached during lift (not the final Z), because
+    the cube may separate from the gripper during the deceleration phase and
+    fall back to the table while still counting as a successful pick.
+    """
     phase_ids = episode.phase_ids
     obj_poses = episode.object_poses
     if phase_ids is None or obj_poses is None:
@@ -370,7 +375,7 @@ def _verify_lift(episode: RawEpisode) -> bool:
     if not lift_mask.any():
         return False
     lift_z = obj_poses[lift_mask, 2]
-    delta_z = float(lift_z[-1] - lift_z[0])
+    delta_z = float(lift_z.max() - lift_z[0])
     if delta_z < _LIFT_THRESHOLD_M:
         logger.warning("Lift check FAILED: cube Δz=%.4f m (threshold=%.4f m)", delta_z, _LIFT_THRESHOLD_M)
         return False

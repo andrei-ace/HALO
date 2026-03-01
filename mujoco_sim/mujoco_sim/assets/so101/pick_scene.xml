@@ -1,6 +1,9 @@
 <mujoco model="pick_scene">
   <include file="so101_new_calib.xml"/>
 
+  <!-- Suppress contact slippage: elliptic cones + high impratio + noslip post-processing -->
+  <option impratio="10" cone="elliptic" noslip_iterations="3"/>
+
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
     <rgba haze="0.15 0.25 0.35 1"/>
