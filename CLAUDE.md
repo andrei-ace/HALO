@@ -47,19 +47,19 @@ All v0 backbone services are implemented and tested:
 | TUI (`halo/tui/app.py`) | ✅ done |
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
-| Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ 4-channel: SimClient, SimSource, transforms) |
-| MuJoCo sim (`mujoco_sim/`) | 🚧 in progress — SO-101 + raw MuJoCo (env, dataset, teacher, IK); PR4-6 pending (phase FSM, VCR, annotation) |
+| Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ 2-channel: SimClient, SimSource, transforms) |
+| MuJoCo sim (`mujoco_sim/`) | ✅ done — SO-101 + raw MuJoCo (env, dataset, teacher, IK, autonomous SimServer); PR4-6 pending (phase FSM, VCR, annotation) |
 | Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
 The TUI supports two modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
-- **Live mode** (`make tui-live-videoloop` or `make tui-live-mujoco`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` (via `halo/tui/run_logger.py`).
+- **Live mode** (`make tui-live-videoloop` or `make tui-live-mujoco`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
 
 To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot runs/halo_tui.svg`
 
 ## Project Overview
 
-HALO is a robotic manipulation system with a **three-phase sim strategy**: (1) **MuJoCo + robosuite** (current) for initial teacher demos, ACT training, and closed-loop eval; (2) **Isaac Lab** (future) for GPU-accelerated parallel envs and domain randomization at scale; (3) **Real SO-ARM101 hardware** (later). The core design principle is **continuous control decoupled from LLM reasoning**: the robot never pauses motion waiting for the planner. Perception and control are machine-to-machine; numeric control hints never flow through LLM context.
+HALO is a robotic manipulation system with a **three-phase sim strategy**: (1) **MuJoCo + SO-101** (current) for teacher demos, ACT training, and closed-loop eval; (2) **Isaac Lab** (future) for GPU-accelerated parallel envs and domain randomization at scale; (3) **Real SO-ARM101 hardware** (later). The core design principle is **continuous control decoupled from LLM reasoning**: the robot never pauses motion waiting for the planner. Perception and control are machine-to-machine; numeric control hints never flow through LLM context.
 
 ## Repository Structure
 
@@ -68,14 +68,15 @@ halo/
   contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
                     # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
-  bridge/            # ZMQ 4-channel bridge to MuJoCo sim server
+  bridge/            # ZMQ 2-channel bridge to MuJoCo sim server
                       # __init__.py (BridgeTransportError), config.py (SimBridgeConfig),
-                      # sim_client.py (SimClient), sim_source.py (SimSource), transforms.py
+                      # sim_client.py (SimClient), sim_source.py (SimSource), transforms.py,
+                      # sim_tracker_service.py
   services/                    # each service has its own CLAUDE.md with detailed docs
     control_service/           # config.py, action_buffer.py, te_buffer.py, safety_guard.py, service.py
     skill_runner_service/      # config.py, fsm.py, service.py
     planner_service/           # config.py, snapshot_serializer.py, tools.py, agent.py, service.py
-    target_perception_service/ # config.py, service.py, vlm_parser.py, ollama_vlm_fn.py, mock_fns.py
+    target_perception_service/ # config.py, service.py, vlm_parser.py, ollama_vlm_fn.py, mock_fns.py, handle_match.py, tracker_fn.py, frame_buffer.py
   tui/
     app.py          # Textual TUI — mock + live modes
     run_logger.py   # RunLogger: writes JSONL session logs to runs/
@@ -88,7 +89,7 @@ halo/
     safety/         # (planned)
   tools/            # (planned) ollama_clients/, zed_capture/, uvc_capture/
   eval/             # (planned) sim/, real/
-mujoco_sim/         # MuJoCo + robosuite sim (PR1-3 done: env, dataset, teacher; see mujoco_sim/ROADMAP.md)
+mujoco_sim/         # MuJoCo + SO-101 sim (env, dataset, teacher, autonomous SimServer; see mujoco_sim/CLAUDE.md)
 sim/                # Isaac Lab extension (planned — see sim/README.md)
 docs/
   halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
@@ -109,7 +110,7 @@ integration/        # LLM integration tests (require Ollama)
 |---|---|---|
 | **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, high-level recovery. LLM: `gpt-oss:20b` via Ollama. Tick fires on urgent events (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE, SCENE_DESCRIBED, TARGET_ACQUIRED, COMMAND_REJECTED); watchdog ensures a tick every 30 s even if no events arrive. Ticks are serialized — decide_fn is awaited before the next event is processed. |
 | **TargetPerceptionService** | 10–30 Hz (fast loop), async (VLM) | Target discovery/tracking, fused target hints, validity/confidence, failure codes. VLM: `qwen2.5vl` via Ollama (scene camera only, async reacquire). Includes VLM parser (`vlm_parser.py`), Ollama VLM client (`ollama_vlm_fn.py`), mock fns (`mock_fns.py`). SAM/SAM2 for segmentation, fast tracker for steady-state, ZED X depth fusion (planned). |
-| **SkillRunnerService** | 10–20 Hz (ACT inference) | Pick FSM, phase transitions, ACT chunk buffering, buffer trimming on phase switch, fast success/failure checks. |
+| **SkillRunnerService** | 10–20 Hz (ACT inference) | Pick FSM, phase transitions, ACT chunk buffering, buffer trimming on phase switch, fast success/failure checks. Dual-mode: ACT (chunk_fn/push_fn) or Sim (start_pick_fn/sim_phase_fn). |
 | **ControlService** | 50–100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping, safety interlocks. Never waits on LLM or VLM. |
 | **SafetyGuard / ReflexLayer** | Hard real-time | v0: per-timestep linear/angular delta limits + hint freshness gating. Planned: workspace AABB, vel/accel/jerk, collision checks. LLM cannot bypass. |
 
@@ -153,17 +154,17 @@ Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`,
 **MuJoCo sim (`mujoco_sim/`):** `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets for SO-101 (5 arm DOF + 1 gripper DOF). Written directly to `data.ctrl[:]`.
 
 ### Planner snapshot fields (compact; no raw telemetry)
-`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8).
+`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh — all normalised 0..1), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle` (str|None — which object is in the gripper after a successful pick).
 
 ### Stable enums (define in `contracts/enums`)
 - Perception failure codes: `OK`, `OCCLUDED`, `OUT_OF_VIEW`, `DEPTH_INVALID`, `MULTIPLE_CANDIDATES`, `CALIB_INVALID`, `TRACK_JUMP_REJECTED`, `REACQUIRE_FAILED`
-- Skill failure codes: `TIMEOUT`, `NO_PROGRESS`, `NO_GRASP`, `DROP_DETECTED`, `PLACE_MISS`, `UNSAFE_ABORT`
+- Skill failure codes: `TIMEOUT`, `NO_PROGRESS`, `NO_GRASP`, `DROP_DETECTED`, `PLACE_MISS`, `PERCEPTION_LOST`, `UNSAFE_ABORT`
 - Safety reflex reasons: `JOINT_LIMIT`, `WORKSPACE_LIMIT`, `COLLISION_RISK`, `OVERCURRENT`, `ESTOP`
 - Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 VERIFY_GRASP`, `8 LIFT`, `9 DONE`, `30-33 PLACE_*`, `50-52 RECOVER_*`
 
 ## Hardware (real SO-ARM101 phase — phase 3)
 
-Current sim work uses MuJoCo + robosuite (phase 1), then Isaac Lab (phase 2). The real hardware target is SO-ARM101 with:
+Current sim work uses MuJoCo + SO-101 (phase 1), then Isaac Lab (phase 2). The real hardware target is SO-ARM101 with:
 - **Scene camera**: ZED X (VLM grounding, global target discovery, depth-based 3D, `T_base<-scene_cam`)
 - **Wrist camera**: 1080p USB2 UVC (ACT observation, local visual servoing, `T_ee<-wrist_cam`)
 - **LLM/VLM**: local via Ollama — planner uses `gpt-oss:20b`, perception uses `qwen2.5vl:3b`
@@ -177,7 +178,7 @@ Current sim work uses MuJoCo + robosuite (phase 1), then Isaac Lab (phase 2). Th
 
 ## Sim strategy (three phases)
 
-**Phase 1 — MuJoCo + SO-101 (current):** Single-env teacher demos with raw MuJoCo (no robosuite), 6D joint-position actions, damped least-squares IK. ACT training pipeline, closed-loop eval. SO-101 env, HDF5 episodes, scripted teacher with 5 s stabilization + phase tracking. See `mujoco_sim/ROADMAP.md`.
+**Phase 1 — MuJoCo + SO-101 (current):** Single-env teacher demos with raw MuJoCo, 6D joint-position actions, damped least-squares IK. Autonomous SimServer runs physics and trajectories; HALO runtime triggers via `start_pick` and monitors progress via telemetry. ACT training pipeline, closed-loop eval. SO-101 env, HDF5 episodes, trajectory-planned teacher with 5 s stabilization + phase tracking. See `mujoco_sim/CLAUDE.md`.
 
 **Phase 2 — Isaac Lab (future):** GPU-accelerated parallel envs (64 envs on A6000), domain randomization at scale, sim-to-real transfer. See `sim/README.md`.
 

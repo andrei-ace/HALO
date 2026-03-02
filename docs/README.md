@@ -14,7 +14,7 @@ Five services with strict role separation, coordinated through a shared runtime:
 |---|---|---|
 | **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery |
 | **TargetPerceptionService** | 10–30 Hz + async VLM | Target discovery/tracking, fused hints, failure codes |
-| **SkillRunnerService** | 10–20 Hz | Pick FSM, phase transitions, ACT chunk buffering |
+| **SkillRunnerService** | 10–20 Hz | Pick FSM, phase transitions, ACT chunk buffering; dual-mode (ACT + sim) |
 | **ControlService** | 50–100 Hz (target); 10 Hz in v0 sim | Real-time action streaming, temporal ensembling, safety |
 | **SafetyGuard** | Hard real-time | Delta limits, hint freshness gating, reflexes |
 
@@ -28,7 +28,7 @@ graph TB
 
     PS["PlannerService\n(LLM: gpt-oss:20b)"]
     TPS["TargetPerceptionService\n(VLM: qwen2.5vl:3b)"]
-    SRS["SkillRunnerService\n(Pick FSM + ACT)"]
+    SRS["SkillRunnerService\n(Pick FSM + ACT/Sim)"]
     CS["ControlService\n(50-100 Hz)"]
     SG["SafetyGuard\n(Reflex Layer)"]
 
@@ -165,6 +165,25 @@ stateDiagram-v2
 
 **Key invariant:** `CLOSE_GRIPPER` is triggered deterministically when `distance < grasp_distance_threshold_m` held for `grasp_persistence_ms`. The planner never commands "close gripper now". Wrist camera is active in `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, and `VERIFY_GRASP`.
 
+### Dual-Mode SkillRunner (ACT vs Sim)
+
+The SkillRunnerService operates in two modes:
+
+- **ACT mode** (default): uses `chunk_fn` (ACT inference) + `push_fn` (ControlService) for end-effector delta control.
+- **Sim mode**: uses `start_pick_fn` (triggers autonomous trajectory on SimServer) + `sim_phase_fn` (polls phase/done from telemetry). No joint chunk pushing needed — the server runs physics autonomously.
+
+```python
+# Sim mode callables
+StartPickFn = Callable[[str, str], Awaitable[dict]]   # (arm_id, target_body) → server response
+SimPhaseFn  = Callable[[], tuple[int, bool]]           # () → (phase_id, done)
+```
+
+In sim mode, `start_skill()` calls `start_pick_fn`; a `start_pick_error` response triggers `SKILL_FAILED` with `NO_GRASP`. The `_tick_sim()` method reads phase from `sim_phase_fn` and syncs the FSM via `sync_phase()` (forward-only transitions). On `SKILL_SUCCEEDED`, the `held_object_handle` in the state store is set to the target; on failure/abort it is cleared.
+
+### Held-Object State
+
+`PlannerSnapshot.held_object_handle` tracks which object is in the gripper after a successful pick. The planner system prompt enforces: if `held_object_handle` is not null, never start another PICK — ask for a place target first.
+
 ---
 
 ## TargetPerceptionService
@@ -190,6 +209,14 @@ flowchart TB
     CAM["Scene Camera"] --> VLM
     CAM2["Cameras + Robot State"] --> OBS
 ```
+
+### VLM Handle Deduplication
+
+VLM may return multiple detections with the same handle. After parsing, `dedupe_detection_handles()` renames duplicates to `{handle}_dup2`, `{handle}_dup3`, etc., guaranteeing unique handles downstream. The scene prompt also detects the robot hand/gripper (`robot_hand_NN` handle, `is_graspable: false`).
+
+### Normalised Coordinates
+
+All perception coordinates are **normalised to 0..1** throughout the system. `TargetInfo.center_px`, `TargetInfo.bbox_xywh`, `VlmDetection.bbox`, and `VlmDetection.centroid` carry normalised values. Denormalisation to pixels happens only at OpenCV/drawing boundaries (`feed_viewer.py`, `tracker_fn.py`). `parse_vlm_response()` accepts `img_w`/`img_h` for normalisation.
 
 ### Perception Failure Codes
 
@@ -265,6 +292,7 @@ graph LR
         SAF["safety: state, reflex_active"]
         CMD["command_acks"]
         EVT["recent_events (ring of 8)"]
+        HLD["held_object_handle"]
     end
 
     style Snapshot fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
@@ -356,7 +384,7 @@ MJCF: `so101_new_calib.xml` (from SO-ARM100 repo) + `pick_scene.xml` (robot + fl
 Raw MuJoCo wrapper with dual cameras, seeded resets, 6D joint-position control.
 
 - **Action space:** 6D joint-position targets `[shoulder_pan, ..., gripper]`
-- **Observations:** `rgb_scene` (480,640,3), `rgb_wrist` (240,320,3), `qpos` (13,), `qvel` (12,), `gripper` (float), `ee_pose` (7,), `object_pose` (7,), `joint_pos` (6,)
+- **Observations:** `rgb_scene` (480,640,3), `rgb_wrist` (480,640,3), `qpos` (13,), `qvel` (12,), `gripper` (float), `ee_pose` (7,), `object_pose` (7,), `joint_pos` (6,)
 - **Physics:** `dt=0.005`, control_freq=20 Hz → 10 substeps per `step()`
 - **State dims:** nq=13 (6 robot + 7 cube freejoint), nv=12 (6+6), nu=6
 - **Seeded resets:** cube position randomized within workspace bounds
@@ -472,7 +500,7 @@ Phase IDs, gripper semantics, wrist-active phases defined in both `halo/contract
 
 Action space intentionally diverged (sim: 6D joint-position, core: 7D EE-delta) — verified but not synchronized by design.
 
-### Test Coverage (112 tests)
+### Test Coverage (116 mujoco_sim tests + 413 HALO tests)
 
 | Test file | Count | Coverage |
 |-----------|-------|----------|
@@ -481,7 +509,7 @@ Action space intentionally diverged (sim: 6D joint-position, core: 7D EE-delta) 
 | `test_pick_teacher.py` | 20 | Teacher phases, transitions, actions, full episode |
 | `test_grasp_planner.py` | 18 | Grasp enumeration, filtering, scoring |
 | `test_trajectory_pipeline.py` | 24 | Keyframes → IK → ruckig integration |
-| `test_server.py` | 15 | Protocol serialization, command dispatch |
+| `test_server.py` | 19 | Protocol serialization, command dispatch, start_pick |
 
 ### Development Roadmap
 
@@ -512,7 +540,7 @@ Connects the HALO runtime to the MuJoCo simulation server via a 2-channel ZMQ pr
 | Channel | ZMQ Pattern | Default Port | Direction | Purpose |
 |---------|-------------|--------------|-----------|---------|
 | **TelemetryStream** | PUB/SUB | 5560 | Sim → HALO | Frames + state at render_fps (10 Hz default) |
-| **CommandRPC** | REQ/REP | 5561 | HALO → Sim | step, reset, teacher_step, configure, set_hint, shutdown |
+| **CommandRPC** | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, set_hint, shutdown |
 
 Single-threaded sim server (required for macOS OpenGL rendering). Protocol: msgpack for structured data, raw bytes for numpy arrays, JPEG for camera frames (quality 85).
 
@@ -521,28 +549,28 @@ Single-threaded sim server (required for macOS OpenGL rendering). Protocol: msgp
 ```
 MuJoCo SimServer (mujoco_sim.server)
 ├── SO101Env (raw MuJoCo, SO-101 robot)
-├── PickTeacher (trajectory-planned policy)
+├── Autonomous physics loop (20 Hz) — plans + executes trajectories
 └── ZMQ Sockets
     ├── PUB (TelemetryStream @ 5560)
     │   └── publishes: frames, qpos, qvel, phase_id, done — every 100ms (10 Hz)
     └── REP (CommandRPC @ 5561)
-        └── handles: step, reset, teacher_step, configure, shutdown
+        └── handles: step, reset, start_pick, configure, shutdown
 
 HALO Runtime (halo/)
 ├── SimClient (halo/bridge/sim_client.py)
 │   ├── Background telemetry thread (SUB, receives frames @ 10 Hz)
 │   └── Main thread (REQ, sends commands, thread-safe via _cmd_lock)
 ├── SimSource (halo/bridge/sim_source.py)
-│   └── Wraps SimClient → capture_fn + frame queue for TargetPerceptionService
-└── ControlService
-    └── apply_fn(arm_id, action) → SimClient.step(action)
+│   └── Wraps SimClient → capture_fn + frame queue + latest_phase_id/latest_done
+└── SkillRunnerService (sim mode)
+    └── start_pick_fn(arm_id, target_body) → SimClient.start_pick(target_body)
 ```
 
 ### SimClient (`halo/bridge/sim_client.py`)
 
 HALO-side ZMQ client with background telemetry receiver thread.
 
-**Key methods:** `start(timeout)`, `stop()`, `step(action)`, `reset(seed)`, `teacher_step()`, `configure(**kwargs)`, `get_state()`, `set_state(qpos, qvel)`, `shutdown()`.
+**Key methods:** `start(timeout)`, `stop()`, `step(action)`, `reset(seed)`, `start_pick(target_body)`, `configure(**kwargs)`, `get_state()`, `set_state(qpos, qvel)`, `set_hint(...)`, `shutdown()`.
 
 **Thread architecture:**
 - Main thread sends commands on CommandRPC REQ socket (thread-safe via `_cmd_lock`)
@@ -559,7 +587,7 @@ Drop-in replacement for `MuJocoVideoSource`. Wraps SimClient internally.
 - Frame queue — buffers frames in a deque for sequential consumption
 - Polling thread — monitors telemetry, converts RGB→BGR, appends to queue
 - `capture_fn` — async function returning `CapturedFrame` (image + ts_ms + arm_id)
-- Properties: `latest_frame` (BGR HWC), `latest_qpos` (13,), `latest_qvel` (12,), `client`
+- Properties: `latest_frame` (BGR HWC), `latest_qpos` (20,), `latest_qvel` (18,), `latest_phase_id` (int), `latest_done` (bool), `client`
 
 ### SimBridgeConfig (`halo/bridge/config.py`)
 
@@ -581,12 +609,12 @@ SimBridgeConfig(
 
 ### SimServer (`mujoco_sim/server/`)
 
-Single-threaded main loop owning SO101Env + PickTeacher.
+Autonomous physics server owning SO101Env. Runs physics loop at `physics_hz` (20 Hz), samples active trajectory, publishes telemetry at `render_fps` (10 Hz).
 
-- Polling with 10ms timeout on CommandRPC REP socket
-- 10 Hz telemetry publishing (configurable via `render_fps`)
-- Commands: `step(action)`, `reset(seed)`, `teacher_step()`, `configure(teacher_mode)`, `get_state()`, `set_state(qpos, qvel)`, `set_hint(...)`, `shutdown()`
-- Telemetry payload: `ts_ms`, `step_count`, `phase_id`, `done`, `qpos`, `qvel`, `ee_pose`, `object_pose`, `joint_pos`, `gripper`, `action`, `rgb_scene` (JPEG), `rgb_wrist` (JPEG)
+- `start_pick(target_body)` triggers grasp planning from current arm state (same pipeline: evaluate_grasps → keyframes → waypoints → trajectory), then executes autonomously
+- No env resets between skills — arm stays at final position, sim runs continuously
+- Commands: `step(action)`, `reset(seed)`, `start_pick(target_body)`, `configure(...)`, `get_state()`, `set_state(qpos, qvel)`, `set_hint(...)`, `shutdown()`
+- Telemetry payload: `ts_ms`, `step_count`, `phase_id`, `done`, `qpos`, `qvel`, `ee_pose`, `object_pose`, `red_object_pose`, `joint_pos`, `gripper`, `action`, `rgb_scene` (JPEG), `rgb_wrist` (JPEG)
 
 ### E2E Tests (`tests/e2e/test_mujoco_source.py`)
 

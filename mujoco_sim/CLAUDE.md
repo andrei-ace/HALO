@@ -53,7 +53,7 @@ mujoco_sim/
     test_pick_teacher.py        # PickTeacher phases, actions, full episode (20 tests)
     test_grasp_planner.py       # grasp enumeration, filtering, scoring (18 tests)
     test_trajectory_pipeline.py # keyframes → IK → ruckig integration (24 tests)
-    test_server.py              # protocol serialization + command dispatch (15 tests)
+    test_server.py              # protocol serialization + command dispatch (19 tests)
 ```
 
 ## Commands
@@ -62,7 +62,7 @@ mujoco_sim is a uv workspace member — all commands run from the **repo root** 
 
 ```bash
 # From repo root
-uv run python -m pytest mujoco_sim/mujoco_sim/tests/ -v   # all mujoco_sim tests (112 tests)
+uv run python -m pytest mujoco_sim/mujoco_sim/tests/ -v   # all mujoco_sim tests (116 tests)
 uv run python -m pytest tests/test_mujoco_sim_contract_sync.py -v  # contract sync
 uv run python -m pytest -v  # includes mujoco_sim tests (in root testpaths)
 
@@ -179,7 +179,7 @@ Standalone process owning SO101Env + PickTeacher, bridged to HALO runtime via ZM
 | Channel | ZMQ Pattern | Default Port | Purpose |
 |---------|-------------|--------------|---------|
 | TelemetryStream | PUB | 5560 | Frames + state at render_fps (10 Hz) |
-| CommandRPC | REP | 5561 | step, reset, teacher_step, configure, set_hint, shutdown |
+| CommandRPC | REP | 5561 | step, reset, start_pick, configure, set_hint, shutdown |
 
 Single-threaded main loop (required for macOS OpenGL rendering). Protocol uses msgpack + raw bytes for numpy arrays, JPEG for camera frames.
 
@@ -208,7 +208,7 @@ import numpy as np
 
 env = SO101Env(EnvConfig())
 obs = env.reset(seed=42)
-# obs keys: rgb_scene (480,640,3), rgb_wrist (240,320,3),
+# obs keys: rgb_scene (480,640,3), rgb_wrist (480,640,3),
 #           qpos (13,), qvel (12,), gripper (float),
 #           ee_pose (7,), object_pose (7,), joint_pos (6,)
 
