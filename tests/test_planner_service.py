@@ -310,6 +310,7 @@ def _make_snapshot(
     skill: SkillInfo | None = None,
     target: TargetInfo | None = None,
     events: tuple = (),
+    held_object_handle: str | None = None,
 ) -> PlannerSnapshot:
     return PlannerSnapshot(
         snapshot_id="snap-1",
@@ -329,6 +330,7 @@ def _make_snapshot(
         safety=SafetyInfo(state=SafetyState.OK, reflex_active=False, reason_codes=()),
         command_acks=(),
         recent_events=events,
+        held_object_handle=held_object_handle,
     )
 
 
@@ -342,6 +344,7 @@ def test_snapshot_to_dict_has_required_keys():
         "arm_id",
         "skill",
         "target",
+        "held_object_handle",
         "perception",
         "act",
         "progress",
@@ -359,6 +362,7 @@ def test_snapshot_to_dict_null_skill_and_target():
 
     assert d["skill"] is None
     assert d["target"] is None
+    assert d["held_object_handle"] is None
 
 
 def test_snapshot_to_dict_with_active_skill():
@@ -375,6 +379,12 @@ def test_snapshot_to_dict_with_active_skill():
         "skill_run_id": "run-42",
         "phase": "SELECT_GRASP",
     }
+
+
+def test_snapshot_to_dict_with_held_object():
+    snap = _make_snapshot(held_object_handle="cube-red-1")
+    d = snapshot_to_dict(snap)
+    assert d["held_object_handle"] == "cube-red-1"
 
 
 def test_snapshot_to_dict_recent_events_included():

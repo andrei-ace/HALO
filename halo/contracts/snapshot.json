@@ -142,7 +142,7 @@
     "PlannerSnapshot": {
       "description": "The single planner-facing read payload returned by get_latest_runtime_snapshot(). Built from current RuntimeStateStore state plus the EventBus recent-events ring. Replaces (never appends) the previous snapshot in the planner context.",
       "type": "object",
-      "required": ["snapshot_id", "ts_ms", "arm_id", "perception", "act", "progress", "outcome", "safety", "command_acks", "recent_events"],
+      "required": ["snapshot_id", "ts_ms", "arm_id", "held_object_handle", "perception", "act", "progress", "outcome", "safety", "command_acks", "recent_events"],
       "additionalProperties": false,
       "properties": {
         "snapshot_id": {
@@ -166,6 +166,13 @@
           "description": "Current tracking target. Null when no target is set.",
           "oneOf": [
             { "$ref": "#/$defs/TargetInfo" },
+            { "type": "null" }
+          ]
+        },
+        "held_object_handle": {
+          "description": "Object currently held by the gripper. Null when the arm is not holding anything.",
+          "oneOf": [
+            { "type": "string" },
             { "type": "null" }
           ]
         },

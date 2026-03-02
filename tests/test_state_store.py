@@ -77,6 +77,17 @@ async def test_update_target(store: RuntimeStateStore):
     assert snap.target == target
 
 
+async def test_update_held_object_handle(store: RuntimeStateStore):
+    await store.update_held_object_handle(ARM, "cube-1")
+    snap = await store.build_and_cache_snapshot(ARM, [])
+    assert snap.held_object_handle == "cube-1"
+
+
+async def test_held_object_handle_defaults_to_none(store: RuntimeStateStore):
+    snap = await store.build_and_cache_snapshot(ARM, [])
+    assert snap.held_object_handle is None
+
+
 async def test_update_perception(store: RuntimeStateStore):
     perc = PerceptionInfo(
         tracking_status=TrackingStatus.TRACKING,

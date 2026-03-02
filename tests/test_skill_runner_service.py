@@ -375,6 +375,26 @@ async def test_outcome_info_updated_in_store_on_success(rt: HALORuntime):
     assert snap.outcome.reason_code is None
 
 
+async def test_pick_success_sets_held_object_handle(rt: HALORuntime):
+    svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=_happy_cfg())
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    await _seed_store(rt, distance_m=0.5)
+    await svc.tick()  # SELECT_GRASP -> PLAN_APPROACH
+    await svc.tick()  # PLAN_APPROACH -> MOVE_PREGRASP
+    await _seed_store(rt, distance_m=0.10)
+    await svc.tick()  # -> VISUAL_ALIGN
+    await _seed_store(rt, distance_m=0.03)
+    await svc.tick()  # -> EXECUTE_APPROACH
+    await _seed_store(rt, distance_m=0.01)
+    await svc.tick()  # -> CLOSE_GRIPPER
+    await svc.tick()  # -> LIFT
+    await svc.tick()  # -> DONE
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.held_object_handle == "obj-1"
+
+
 async def test_outcome_info_updated_in_store_on_failure(rt: HALORuntime):
     cfg = _cfg(select_grasp_timeout_ms=0, no_target_tolerance_ms=99999)
     svc, _ = _make_svc(rt, chunk_fn=_null_chunk_fn, cfg=cfg)
@@ -386,6 +406,7 @@ async def test_outcome_info_updated_in_store_on_failure(rt: HALORuntime):
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.outcome.state == SkillOutcomeState.FAILURE
     assert snap.outcome.reason_code == SkillFailureCode.NO_PROGRESS
+    assert snap.held_object_handle is None
 
 
 async def test_progress_info_updated_in_store(rt: HALORuntime):

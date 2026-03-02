@@ -93,3 +93,4 @@ class PlannerSnapshot:
     safety: SafetyInfo
     command_acks: tuple[CommandAck, ...]
     recent_events: tuple[EventEnvelope, ...]
+    held_object_handle: str | None = None

@@ -238,3 +238,4 @@ def test_snapshot_asdict():
     assert d["skill"]["phase"] == PhaseId.SELECT_GRASP
     assert d["target"]["delta_xyz_ee"] == (0.01, -0.02, 0.05)
     assert d["safety"]["reason_codes"] == ()
+    assert d["held_object_handle"] is None

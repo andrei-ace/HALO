@@ -92,6 +92,7 @@ class SkillRunnerService:
         self._fsm: PickFSM = PickFSM(config)
         self._skill_name: SkillName | None = None
         self._skill_run_id: str | None = None
+        self._active_target_handle: str | None = None
         self._skill_start_ms: int = 0
         self._last_distance_m: float | None = None
 
@@ -147,6 +148,7 @@ class SkillRunnerService:
                     needs_verify=False,
                 ),
             )
+            self._active_target_handle = None
             return
         now_ms = int(time.monotonic() * 1000)
 
@@ -155,6 +157,7 @@ class SkillRunnerService:
 
         self._skill_name = skill_name
         self._skill_run_id = skill_run_id
+        self._active_target_handle = target_handle
         self._skill_start_ms = now_ms
         self._last_distance_m = None
 
@@ -240,6 +243,7 @@ class SkillRunnerService:
                 "failure_code": "UNSAFE_ABORT",
             },
         )
+        self._active_target_handle = None
 
     async def tick(self) -> PhaseId | None:
         """One runner tick. Dispatches to ACT or sim mode."""
@@ -303,6 +307,7 @@ class SkillRunnerService:
 
         if self._fsm.phase == PhaseId.DONE:
             if self._fsm.outcome == SkillOutcomeState.SUCCESS:
+                await store.update_held_object_handle(self._arm_id, self._active_target_handle)
                 await store.update_outcome(
                     self._arm_id,
                     OutcomeInfo(
@@ -331,6 +336,7 @@ class SkillRunnerService:
                         "failure_code": self._fsm.failure_code.value if self._fsm.failure_code else None,
                     },
                 )
+            self._active_target_handle = None
 
     async def _tick_act(self) -> PhaseId | None:
         """ACT-mode tick: FSM advance + chunk scheduling."""

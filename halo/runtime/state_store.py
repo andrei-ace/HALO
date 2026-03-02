@@ -65,6 +65,7 @@ class RuntimeStateStore:
     def __init__(self) -> None:
         self._skill: dict[str, SkillInfo | None] = {}
         self._target: dict[str, TargetInfo | None] = {}
+        self._held_object_handle: dict[str, str | None] = {}
         self._perception: dict[str, PerceptionInfo] = {}
         self._act: dict[str, ActInfo] = {}
         self._progress: dict[str, ProgressInfo] = {}
@@ -81,6 +82,7 @@ class RuntimeStateStore:
             return
         self._skill[arm_id] = None
         self._target[arm_id] = None
+        self._held_object_handle[arm_id] = None
         self._perception[arm_id] = _default_perception()
         self._act[arm_id] = _default_act()
         self._progress[arm_id] = _default_progress()
@@ -107,6 +109,11 @@ class RuntimeStateStore:
         async with self._lock:
             self._require_arm(arm_id)
             self._target[arm_id] = target
+
+    async def update_held_object_handle(self, arm_id: str, handle: str | None) -> None:
+        async with self._lock:
+            self._require_arm(arm_id)
+            self._held_object_handle[arm_id] = handle
 
     async def update_perception(self, arm_id: str, perception: PerceptionInfo) -> None:
         async with self._lock:
@@ -176,6 +183,7 @@ class RuntimeStateStore:
                 safety=self._safety[arm_id],
                 command_acks=tuple(self._acks[arm_id]),
                 recent_events=tuple(recent_events[-8:]),
+                held_object_handle=self._held_object_handle[arm_id],
             )
             self._latest_snapshot[arm_id] = snapshot
         return snapshot

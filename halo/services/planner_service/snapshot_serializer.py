@@ -80,6 +80,7 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
         "arm_id": snap.arm_id,
         "skill": skill_dict,
         "target": target_dict,
+        "held_object_handle": snap.held_object_handle,
         "perception": perception_dict,
         "act": act_dict,
         "progress": progress_dict,
