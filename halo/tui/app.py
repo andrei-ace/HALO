@@ -1643,6 +1643,7 @@ def _run_live(args: list[str]) -> None:
         from halo.services.skill_runner_service.service import SkillRunnerService
 
         sim_client = video_source.client
+        sim_client.configure(teacher_mode=True)
         teacher_step_fn = make_teacher_step_fn(sim_client)
 
         joint_control_svc = JointPositionControlService(
