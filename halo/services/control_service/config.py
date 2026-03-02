@@ -17,3 +17,12 @@ class ControlServiceConfig:
     max_obs_age_ms: int = 200
 
     ensembling_temp: float = 0.01  # temporal ensembling decay (0.0 = uniform weight)
+
+
+@dataclass
+class JointControlConfig:
+    control_rate_hz: float = 20.0  # Match teacher control freq
+    buffer_low_threshold_ms: int = 100
+    # SO-101 joint limits (radians)
+    joint_limits_lower: tuple[float, ...] = (-1.92, -1.75, -1.69, -1.66, -2.74, -0.17)
+    joint_limits_upper: tuple[float, ...] = (1.92, 1.75, 1.69, 1.66, 2.84, 1.75)

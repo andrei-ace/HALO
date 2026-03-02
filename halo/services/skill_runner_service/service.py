@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from halo.contracts.actions import ActionChunk
-from halo.contracts.enums import PhaseId, SkillFailureCode, SkillName, SkillOutcomeState
+from halo.bridge import BridgeTransportError
+from halo.contracts.actions import ActionChunk, JointPositionAction, JointPositionChunk
+from halo.contracts.enums import WRIST_ACTIVE_PHASES, ActStatus, PhaseId, SkillFailureCode, SkillName, SkillOutcomeState
 from halo.contracts.events import EventEnvelope, EventType
-from halo.contracts.snapshots import OutcomeInfo, ProgressInfo, SkillInfo
+from halo.contracts.snapshots import ActInfo, OutcomeInfo, ProgressInfo, SkillInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.fsm import PickFSM
+
+logger = logging.getLogger(__name__)
 
 # Injected callables — decoupled from ACT model and ControlService instance
 ChunkFn = Callable[
@@ -20,10 +25,30 @@ ChunkFn = Callable[
 PushFn = Callable[[ActionChunk], Awaitable[None]]
 
 
+# --- Teacher mode types ---
+
+
+@dataclass(frozen=True)
+class TeacherStepResult:
+    """Result from a single teacher step (server-side)."""
+
+    phase_id: int
+    done: bool
+    action: tuple[float, ...]  # 6D joint-position that was applied on server
+
+
+TeacherStepFn = Callable[[str], Awaitable[TeacherStepResult]]  # (arm_id,) → result
+JointPushFn = Callable[[JointPositionChunk], Awaitable[None]]
+
+
 class SkillRunnerService:
     """
     10–20 Hz asyncio loop owning the Pick-skill FSM, ACT chunk scheduling,
     and PHASE_ENTER/EXIT/SKILL_* event publishing.
+
+    Supports two modes:
+        - ACT mode (default): chunk_fn + push_fn drive actions
+        - Teacher mode: teacher_step_fn + joint_push_fn drive actions
 
     Lifecycle:
         svc = SkillRunnerService(arm_id, runtime, chunk_fn, push_fn)
@@ -36,15 +61,37 @@ class SkillRunnerService:
         self,
         arm_id: str,
         runtime: HALORuntime,
-        chunk_fn: ChunkFn,
-        push_fn: PushFn,
+        chunk_fn: ChunkFn | None = None,
+        push_fn: PushFn | None = None,
         config: SkillRunnerConfig = SkillRunnerConfig(),
+        *,
+        teacher_step_fn: TeacherStepFn | None = None,
+        joint_push_fn: JointPushFn | None = None,
     ) -> None:
+        act_mode = chunk_fn is not None or push_fn is not None
+        teacher_mode = teacher_step_fn is not None
+
+        if act_mode and teacher_mode:
+            raise ValueError("Cannot provide both ACT (chunk_fn/push_fn) and teacher (teacher_step_fn) callables")
+        if not act_mode and not teacher_mode:
+            raise ValueError("Must provide either ACT (chunk_fn + push_fn) or teacher (teacher_step_fn) callables")
+
+        if act_mode:
+            if chunk_fn is None or push_fn is None:
+                raise ValueError("ACT mode requires both chunk_fn and push_fn")
+
         self._arm_id = arm_id
         self._runtime = runtime
+        self._config = config
+        self._teacher_mode = teacher_mode
+
+        # ACT mode callables
         self._chunk_fn = chunk_fn
         self._push_fn = push_fn
-        self._config = config
+
+        # Teacher mode callables
+        self._teacher_step_fn = teacher_step_fn
+        self._joint_push_fn = joint_push_fn
 
         self._fsm: PickFSM = PickFSM(config)
         self._skill_name: SkillName | None = None
@@ -184,14 +231,115 @@ class SkillRunnerService:
         )
 
     async def tick(self) -> PhaseId | None:
-        """
-        One runner tick. Callable directly in tests.
-        Returns current FSM phase, or None if not active.
-        """
+        """One runner tick. Dispatches to ACT or teacher mode."""
+        if self._teacher_mode:
+            return await self._tick_teacher()
+        return await self._tick_act()
+
+    # --- Teacher mode tick ---
+
+    async def _tick_teacher(self) -> PhaseId | None:
+        """Teacher-mode tick: call teacher_step_fn, sync FSM phase, push joint chunk."""
         if not self._fsm.is_active:
             return None
 
-        # Use cached snapshot if available; fall back to building a new one
+        now_ms = int(time.monotonic() * 1000)
+
+        try:
+            result = await self._teacher_step_fn(self._arm_id)
+        except BridgeTransportError:
+            logger.warning("SkillRunner: teacher_step_fn bridge transport failed, aborting skill")
+            old_phase = self._fsm.phase
+            self._fsm.abort(now_ms)
+            await self._handle_transition(old_phase)
+            return self._fsm.phase
+
+        # Sync FSM phase from teacher
+        teacher_phase = PhaseId(result.phase_id) if not result.done else PhaseId.DONE
+        old_phase = self._fsm.sync_phase(now_ms, teacher_phase)
+
+        if old_phase is not None:
+            await self._handle_transition(old_phase)
+
+        # Push joint-position chunk
+        if self._joint_push_fn is not None and self._fsm.is_active:
+            chunk = JointPositionChunk(
+                chunk_id=f"teacher-{now_ms}",
+                arm_id=self._arm_id,
+                phase_id=self._fsm.phase,
+                actions=(JointPositionAction(values=result.action),),
+                ts_ms=now_ms,
+            )
+            await self._joint_push_fn(chunk)
+
+        # Update progress (no delta_distance in teacher mode)
+        elapsed_ms = now_ms - self._skill_start_ms
+        await self._runtime.store.update_progress(
+            self._arm_id,
+            ProgressInfo(elapsed_ms=elapsed_ms, no_progress_ms=0, delta_distance=0.0),
+        )
+
+        # Update ActInfo
+        wrist = self._fsm.phase in WRIST_ACTIVE_PHASES
+        await self._runtime.store.update_act(
+            self._arm_id,
+            ActInfo(status=ActStatus.RUNNING, buffer_fill_ms=0, buffer_low=False, wrist_enabled=wrist),
+        )
+
+        return self._fsm.phase
+
+    # --- Shared transition handling ---
+
+    async def _handle_transition(self, old_phase: PhaseId) -> None:
+        """Handle FSM transition: publish events, update store, emit SKILL_SUCCEEDED/FAILED."""
+        await self._publish(EventType.PHASE_EXIT, {"phase_id": int(old_phase)})
+        store = self._runtime.store
+        await store.update_skill(
+            self._arm_id,
+            SkillInfo(
+                name=self._skill_name,
+                skill_run_id=self._skill_run_id,
+                phase=self._fsm.phase,
+            ),
+        )
+        await self._publish(EventType.PHASE_ENTER, {"phase_id": int(self._fsm.phase)})
+
+        if self._fsm.phase == PhaseId.DONE:
+            if self._fsm.outcome == SkillOutcomeState.SUCCESS:
+                await store.update_outcome(
+                    self._arm_id,
+                    OutcomeInfo(
+                        state=SkillOutcomeState.SUCCESS,
+                        reason_code=None,
+                        needs_verify=False,
+                    ),
+                )
+                await self._publish(
+                    EventType.SKILL_SUCCEEDED,
+                    {"skill_run_id": self._skill_run_id},
+                )
+            else:
+                await store.update_outcome(
+                    self._arm_id,
+                    OutcomeInfo(
+                        state=SkillOutcomeState.FAILURE,
+                        reason_code=self._fsm.failure_code,
+                        needs_verify=False,
+                    ),
+                )
+                await self._publish(
+                    EventType.SKILL_FAILED,
+                    {
+                        "skill_run_id": self._skill_run_id,
+                        "failure_code": self._fsm.failure_code.value if self._fsm.failure_code else None,
+                    },
+                )
+
+    async def _tick_act(self) -> PhaseId | None:
+        """ACT-mode tick: FSM advance + chunk scheduling."""
+        if not self._fsm.is_active:
+            return None
+
         snap = await self._runtime.store.get_latest_snapshot(self._arm_id)
         if snap is None:
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
@@ -200,48 +348,7 @@ class SkillRunnerService:
         old_phase = self._fsm.advance(now_ms, snap.target, snap.perception, snap.act)
 
         if old_phase is not None:
-            await self._publish(EventType.PHASE_EXIT, {"phase_id": int(old_phase)})
-            store = self._runtime.store
-            await store.update_skill(
-                self._arm_id,
-                SkillInfo(
-                    name=self._skill_name,
-                    skill_run_id=self._skill_run_id,
-                    phase=self._fsm.phase,
-                ),
-            )
-            await self._publish(EventType.PHASE_ENTER, {"phase_id": int(self._fsm.phase)})
-
-            if self._fsm.phase == PhaseId.DONE:
-                if self._fsm.outcome == SkillOutcomeState.SUCCESS:
-                    await store.update_outcome(
-                        self._arm_id,
-                        OutcomeInfo(
-                            state=SkillOutcomeState.SUCCESS,
-                            reason_code=None,
-                            needs_verify=False,
-                        ),
-                    )
-                    await self._publish(
-                        EventType.SKILL_SUCCEEDED,
-                        {"skill_run_id": self._skill_run_id},
-                    )
-                else:
-                    await store.update_outcome(
-                        self._arm_id,
-                        OutcomeInfo(
-                            state=SkillOutcomeState.FAILURE,
-                            reason_code=self._fsm.failure_code,
-                            needs_verify=False,
-                        ),
-                    )
-                    await self._publish(
-                        EventType.SKILL_FAILED,
-                        {
-                            "skill_run_id": self._skill_run_id,
-                            "failure_code": self._fsm.failure_code.value if self._fsm.failure_code else None,
-                        },
-                    )
+            await self._handle_transition(old_phase)
 
         # Update progress every tick
         elapsed_ms = now_ms - self._skill_start_ms

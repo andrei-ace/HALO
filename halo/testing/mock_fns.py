@@ -303,6 +303,49 @@ def make_scripted_decide_fn(
     return decide_fn
 
 
+# -- teacher_step_fn (teacher mode) ----------------------------------------
+
+
+def make_mock_teacher_step_fn(
+    latency: LatencyProfile = LatencyProfile.instant(),
+    phase_sequence: list[tuple[int, bool]] | None = None,
+):
+    """Return a ``teacher_step_fn`` compatible with SkillRunnerService teacher mode.
+
+    *phase_sequence*: list of ``(phase_id, done)`` tuples. Each call returns the
+    next entry. After exhausting the list, keeps returning the last entry.
+
+    Default sequence: ``MOVE_PREGRASP(x3) → EXECUTE_APPROACH(x2) → CLOSE_GRIPPER(x2) → LIFT(x2) → DONE``
+    """
+    from halo.services.skill_runner_service.service import TeacherStepResult
+
+    if phase_sequence is None:
+        phase_sequence = [
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.EXECUTE_APPROACH), False),
+            (int(PhaseId.EXECUTE_APPROACH), False),
+            (int(PhaseId.CLOSE_GRIPPER), False),
+            (int(PhaseId.CLOSE_GRIPPER), False),
+            (int(PhaseId.LIFT), False),
+            (int(PhaseId.LIFT), False),
+            (int(PhaseId.DONE), True),
+        ]
+
+    idx = 0
+    zero_action = (0.0,) * 6
+
+    async def teacher_step_fn(arm_id: str) -> TeacherStepResult:
+        nonlocal idx
+        await _delay(latency.decide_s)
+        phase_id, done = phase_sequence[min(idx, len(phase_sequence) - 1)]
+        idx += 1
+        return TeacherStepResult(phase_id=phase_id, done=done, action=zero_action)
+
+    return teacher_step_fn
+
+
 def make_command(
     arm_id: str,
     cmd_type: CommandType,

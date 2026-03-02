@@ -4,6 +4,7 @@ Each run creates a directory under ``runs/``::
 
     runs/YYYYMMDD_HHMMSS_arm0/
         run.jsonl          # planner + VLM log entries
+        events.jsonl       # all EventBus events (state transitions, phases, errors, …)
         vlm_001.jpg        # image sent to VLM
         vlm_002.jpg
         scene_001.txt      # SCENE_DESCRIBED text
@@ -29,6 +30,7 @@ class RunLogger:
 
     Artifacts:
     - ``run.jsonl`` — planner interactions and VLM inference entries
+    - ``events.jsonl`` — all EventBus events (phases, skills, safety, commands, …)
     - ``vlm_NNN.jpg`` — image sent to VLM for each inference call
     - ``scene_NNN.txt`` — SCENE_DESCRIBED scene text
     """
@@ -40,6 +42,8 @@ class RunLogger:
 
         self._jsonl_path = self._run_dir / "run.jsonl"
         self._file = self._jsonl_path.open("w", encoding="utf-8")
+        self._events_path = self._run_dir / "events.jsonl"
+        self._events_file = self._events_path.open("w", encoding="utf-8")
         self._vlm_counter = 0
         print(f"Run log: {self._run_dir}")
 
@@ -173,8 +177,22 @@ class RunLogger:
         self._file.write(json.dumps(entry, default=str) + "\n")
         self._file.flush()
 
+    def log_event(self, event: object) -> None:
+        """Log an EventBus EventEnvelope to ``events.jsonl``."""
+        entry: dict[str, Any] = {
+            "event_id": getattr(event, "event_id", ""),
+            "type": str(getattr(event, "type", "")),
+            "ts_ms": getattr(event, "ts_ms", 0),
+            "arm_id": getattr(event, "arm_id", ""),
+            "data": getattr(event, "data", {}),
+            "ts": datetime.now(timezone.utc).isoformat(),
+        }
+        self._events_file.write(json.dumps(entry, default=str) + "\n")
+        self._events_file.flush()
+
     def close(self) -> None:
         self._file.close()
+        self._events_file.close()
 
     @property
     def path(self) -> Path:

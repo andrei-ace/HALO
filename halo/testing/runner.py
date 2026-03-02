@@ -18,12 +18,13 @@ from halo.contracts.enums import CommandType, PhaseId
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.runtime.runtime import HALORuntime
-from halo.services.control_service.config import ControlServiceConfig
+from halo.services.control_service.config import ControlServiceConfig, JointControlConfig
+from halo.services.control_service.joint_service import JointPositionControlService
 from halo.services.control_service.service import ControlService
 from halo.services.planner_service.config import PlannerServiceConfig
 from halo.services.planner_service.service import PlannerService
 from halo.services.skill_runner_service.config import SkillRunnerConfig
-from halo.services.skill_runner_service.service import SkillRunnerService
+from halo.services.skill_runner_service.service import JointPushFn, SkillRunnerService, TeacherStepFn
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 from halo.services.target_perception_service.service import TargetPerceptionService
 from halo.testing.event_recorder import EventRecorder
@@ -59,6 +60,7 @@ class RunnerConfig:
     perception_config: TargetPerceptionServiceConfig = field(default_factory=TargetPerceptionServiceConfig)
     skill_runner_config: SkillRunnerConfig = field(default_factory=SkillRunnerConfig)
     control_config: ControlServiceConfig = field(default_factory=ControlServiceConfig)
+    joint_control_config: JointControlConfig = field(default_factory=JointControlConfig)
 
 
 class HeadlessRunner:
@@ -86,9 +88,11 @@ class HeadlessRunner:
         vlm_fn: VlmFn | None = None,
         capture_fn: CaptureFn | None = None,
         tracker_factory_fn: TrackerFactoryFn | None = None,
-        # SkillRunner
+        # SkillRunner (ACT mode)
         chunk_fn: ChunkFn | None = None,
         push_fn: PushFn | None = None,
+        # SkillRunner (Teacher mode)
+        teacher_step_fn: TeacherStepFn | None = None,
         # Control
         apply_fn: ApplyFn | None = None,
     ) -> None:
@@ -104,12 +108,23 @@ class HeadlessRunner:
 
         # Build services based on enable flags
         self.control_svc: ControlService | None = None
+        self.joint_control_svc: JointPositionControlService | None = None
         self.skill_runner_svc: SkillRunnerService | None = None
         self.perception_svc: TargetPerceptionService | None = None
         self.planner_svc: PlannerService | None = None
 
+        # Detect teacher mode
+        _teacher_mode = teacher_step_fn is not None
+
         # Control service (build first so push_fn can reference it)
-        if config.enable_control:
+        if _teacher_mode and config.enable_control:
+            # Teacher mode: use JointPositionControlService instead
+            self.joint_control_svc = JointPositionControlService(
+                arm_id=arm_id,
+                runtime=self.runtime,
+                config=config.joint_control_config,
+            )
+        elif config.enable_control:
             if apply_fn is None:
                 raise ValueError("apply_fn is required when enable_control=True")
             self.control_svc = ControlService(
@@ -119,22 +134,34 @@ class HeadlessRunner:
                 config=config.control_config,
             )
 
-        # SkillRunner — auto-wire push_fn if control is enabled
+        # SkillRunner — ACT or teacher mode
         if config.enable_skill_runner:
-            if chunk_fn is None:
-                raise ValueError("chunk_fn is required when enable_skill_runner=True")
-            effective_push_fn = push_fn
-            if effective_push_fn is None and self.control_svc is not None:
-                effective_push_fn = self.control_svc.push_chunk
-            if effective_push_fn is None:
-                raise ValueError("push_fn is required when enable_skill_runner=True and enable_control=False")
-            self.skill_runner_svc = SkillRunnerService(
-                arm_id=arm_id,
-                runtime=self.runtime,
-                chunk_fn=chunk_fn,
-                push_fn=effective_push_fn,
-                config=config.skill_runner_config,
-            )
+            if _teacher_mode:
+                joint_push: JointPushFn | None = None
+                if self.joint_control_svc is not None:
+                    joint_push = self.joint_control_svc.push_chunk
+                self.skill_runner_svc = SkillRunnerService(
+                    arm_id=arm_id,
+                    runtime=self.runtime,
+                    config=config.skill_runner_config,
+                    teacher_step_fn=teacher_step_fn,
+                    joint_push_fn=joint_push,
+                )
+            else:
+                if chunk_fn is None:
+                    raise ValueError("chunk_fn is required when enable_skill_runner=True (ACT mode)")
+                effective_push_fn = push_fn
+                if effective_push_fn is None and self.control_svc is not None:
+                    effective_push_fn = self.control_svc.push_chunk
+                if effective_push_fn is None:
+                    raise ValueError("push_fn is required when enable_skill_runner=True and enable_control=False")
+                self.skill_runner_svc = SkillRunnerService(
+                    arm_id=arm_id,
+                    runtime=self.runtime,
+                    chunk_fn=chunk_fn,
+                    push_fn=effective_push_fn,
+                    config=config.skill_runner_config,
+                )
 
         # Perception
         if config.enable_perception:
@@ -235,6 +262,8 @@ class HeadlessRunner:
 
         await self.recorder.start()
 
+        if self.joint_control_svc is not None:
+            await self.joint_control_svc.start()
         if self.control_svc is not None:
             await self.control_svc.start()
         if self.skill_runner_svc is not None:
@@ -285,6 +314,8 @@ class HeadlessRunner:
             await self.skill_runner_svc.stop()
         if self.control_svc is not None:
             await self.control_svc.stop()
+        if self.joint_control_svc is not None:
+            await self.joint_control_svc.stop()
 
         await self.recorder.stop()
         logger.info("HeadlessRunner stopped (arm=%s)", self._config.arm_id)

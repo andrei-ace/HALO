@@ -1063,6 +1063,9 @@ class HALOApp(App):
         agent: object | None = None,
         arm_id: str = "arm0",
         perception_svc: object | None = None,
+        skill_runner_svc: object | None = None,
+        joint_control_svc: object | None = None,
+        sim_reset_fn: object | None = None,
         run_logger: RunLogger | None = None,
         tracker_name: str = "",
         video_source: object | None = None,
@@ -1072,6 +1075,9 @@ class HALOApp(App):
         self._agent = agent
         self._arm_id = arm_id
         self._perception_svc = perception_svc
+        self._skill_runner_svc = skill_runner_svc
+        self._joint_control_svc = joint_control_svc
+        self._sim_reset_fn = sim_reset_fn  # optional: reset sim env before skill start
         self._tracker_name = tracker_name
         self._video_source = video_source
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
@@ -1084,6 +1090,8 @@ class HALOApp(App):
         self._last_operator_msg: str | None = None
         self._agent_queue: asyncio.Queue[str] | None = None
         self._feed_viewer: object | None = None  # FeedViewer instance (lazy import)
+        self._cmd_route_queue: object | None = None  # for command routing
+        self._pending_commands: dict[str, object] = {}  # intercepted commands by id
 
     async def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
@@ -1094,6 +1102,17 @@ class HALOApp(App):
         if self._runtime and self._agent:
             self._agent_queue = asyncio.Queue()
             self.run_worker(self._agent_processor_loop(), name="agent_processor")
+        # Start teacher-mode services (joint control before skill runner)
+        if self._joint_control_svc is not None:
+            await self._joint_control_svc.start()  # type: ignore[union-attr]
+        if self._skill_runner_svc is not None:
+            await self._skill_runner_svc.start()  # type: ignore[union-attr]
+            # Intercept submit_command to capture commands for routing
+            self._orig_submit = self._runtime.submit_command  # type: ignore[union-attr]
+            self._runtime.submit_command = self._intercepted_submit  # type: ignore[union-attr,assignment]
+            # Start command routing worker
+            self._cmd_route_queue = self._runtime.bus.subscribe(self._arm_id, maxsize=0)  # type: ignore[union-attr]
+            self.run_worker(self._route_commands(), name="cmd_router")
         if self._perception_svc is not None:
             # Start the service so it listens for planner commands,
             # but don't set a tracking target — the planner decides when.
@@ -1107,6 +1126,14 @@ class HALOApp(App):
             self._feed_viewer = None
         if self._perception_svc is not None:
             await self._perception_svc.stop()  # type: ignore[union-attr]
+        if self._skill_runner_svc is not None:
+            await self._skill_runner_svc.stop()  # type: ignore[union-attr]
+        if self._joint_control_svc is not None:
+            await self._joint_control_svc.stop()  # type: ignore[union-attr]
+        if self._cmd_route_queue is not None and self._runtime:
+            self._runtime.bus.unsubscribe(self._arm_id, self._cmd_route_queue)  # type: ignore[union-attr]
+            self._cmd_route_queue = None
+        self._pending_commands.clear()
         if self._run_logger:
             self._run_logger.close()
         if self._runtime and self._event_queue is not None:
@@ -1301,7 +1328,7 @@ class HALOApp(App):
     )
 
     async def _listen_events(self) -> None:
-        """Forward EventBus events to EventsPanel and wake agent on urgent events.
+        """Forward EventBus events to EventsPanel, log to events.jsonl, and wake agent on urgent events.
 
         The agent reads actual event data from the snapshot's recent_events,
         not from the TUI. The TUI only sends a wake signal.
@@ -1310,6 +1337,12 @@ class HALOApp(App):
         try:
             while True:
                 evt = await self._event_queue.get()  # type: ignore[union-attr]
+                # Persist to events.jsonl
+                if self._run_logger:
+                    try:
+                        self._run_logger.log_event(evt)
+                    except Exception:
+                        pass
                 try:
                     await events_panel.append_event(evt)
                 except Exception:
@@ -1374,9 +1407,13 @@ class HALOApp(App):
             reasoning = getattr(self._agent, "last_reasoning", "") or ""
             self._last_reasoning = reasoning
 
-            # Submit commands
+            # Submit commands — clear stale precondition_snapshot_id because
+            # concurrent service ticks create new snapshots during LLM inference.
+            from dataclasses import replace as _dc_replace
+
             acks = []
             for cmd in commands:
+                cmd = _dc_replace(cmd, precondition_snapshot_id=None)
                 ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
                 acks.append((cmd, ack))
 
@@ -1426,6 +1463,63 @@ class HALOApp(App):
             thinking_widget.update(err_text)
             history.scroll_end(animate=False)
             self.notify(str(exc), severity="error", title="Agent error")
+
+    # ── Command routing (teacher mode) ──
+
+    async def _intercepted_submit(self, cmd) -> object:
+        """Intercept submit_command to capture commands for routing to SkillRunner."""
+        self._pending_commands[cmd.command_id] = cmd
+        return await self._orig_submit(cmd)  # type: ignore[union-attr]
+
+    async def _route_commands(self) -> None:
+        """Route accepted START_SKILL/ABORT_SKILL commands to SkillRunnerService.
+
+        Mirrors HeadlessRunner._route_commands() logic.
+        """
+        from halo.contracts.commands import StartSkillPayload
+        from halo.contracts.enums import CommandType
+        from halo.contracts.events import EventType
+
+        try:
+            while True:
+                event = await self._cmd_route_queue.get()  # type: ignore[union-attr]
+
+                if event.type == EventType.COMMAND_REJECTED:
+                    cmd_id = event.data.get("command_id")
+                    if cmd_id:
+                        self._pending_commands.pop(cmd_id, None)
+                    continue
+
+                if event.type != EventType.COMMAND_ACCEPTED:
+                    continue
+
+                cmd_id = event.data.get("command_id")
+                if not cmd_id:
+                    continue
+                cmd = self._pending_commands.pop(cmd_id, None)
+                if cmd is None:
+                    continue
+
+                if cmd.type == CommandType.START_SKILL:
+                    payload = cmd.payload
+                    assert isinstance(payload, StartSkillPayload)
+                    # Reset sim env before starting a new skill
+                    if self._sim_reset_fn is not None:
+                        try:
+                            await self._sim_reset_fn()
+                        except Exception as exc:
+                            import logging
+
+                            logging.getLogger(__name__).warning("Sim reset failed: %s", exc)
+                    await self._skill_runner_svc.start_skill(  # type: ignore[union-attr]
+                        skill_name=payload.skill_name,
+                        skill_run_id=f"run-{cmd.command_id[:8]}",
+                        target_handle=payload.target_handle,
+                    )
+                elif cmd.type == CommandType.ABORT_SKILL:
+                    await self._skill_runner_svc.abort_skill()  # type: ignore[union-attr]
+        except asyncio.CancelledError:
+            pass
 
     async def _do_abort(self) -> None:
         import time
@@ -1535,11 +1629,49 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
     )
 
+    # Teacher-mode services (only when MuJoCo source is active)
+    skill_runner_svc = None
+    joint_control_svc = None
+    sim_reset_fn = None
+    if source_type == "mujoco":
+        import asyncio as _asyncio
+
+        from halo.bridge.teacher_adapter import make_teacher_step_fn
+        from halo.services.control_service.config import JointControlConfig
+        from halo.services.control_service.joint_service import JointPositionControlService
+        from halo.services.skill_runner_service.config import SkillRunnerConfig
+        from halo.services.skill_runner_service.service import SkillRunnerService
+
+        sim_client = video_source.client
+        teacher_step_fn = make_teacher_step_fn(sim_client)
+
+        joint_control_svc = JointPositionControlService(
+            arm_id=arm_id,
+            runtime=runtime,
+            config=JointControlConfig(),
+        )
+
+        skill_runner_svc = SkillRunnerService(
+            arm_id=arm_id,
+            runtime=runtime,
+            config=SkillRunnerConfig(),
+            teacher_step_fn=teacher_step_fn,
+            joint_push_fn=joint_control_svc.push_chunk,
+        )
+
+        # Reset function: reset the sim env before each skill run
+        async def sim_reset_fn():
+            loop = _asyncio.get_running_loop()
+            await loop.run_in_executor(None, lambda: sim_client.reset(seed=None))
+
     HALOApp(
         runtime=runtime,
         agent=agent,
         arm_id=arm_id,
         perception_svc=perception_svc,
+        skill_runner_svc=skill_runner_svc,
+        joint_control_svc=joint_control_svc,
+        sim_reset_fn=sim_reset_fn,
         run_logger=run_logger,
         tracker_name=get_tracker_name(),
         video_source=video_source,

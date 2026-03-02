@@ -173,6 +173,14 @@ class PickFSM:
 
         return None
 
+    def sync_phase(self, now_ms: int, phase_id: PhaseId) -> PhaseId | None:
+        """Accept external phase from teacher. Returns old phase on transition, None if no change."""
+        if not self.is_active or phase_id == self._phase:
+            return None
+        if phase_id == PhaseId.DONE:
+            return self._transition_success(now_ms)
+        return self._transition(now_ms, phase_id)
+
     def needs_chunk(self, act: ActInfo) -> bool:
         return act.buffer_fill_ms < self._config.buffer_target_ms
 

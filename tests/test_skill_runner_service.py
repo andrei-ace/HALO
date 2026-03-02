@@ -16,7 +16,7 @@ from halo.contracts.events import EventType
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
-from halo.services.skill_runner_service.service import SkillRunnerService
+from halo.services.skill_runner_service.service import SkillRunnerService, TeacherStepResult
 
 ARM = "arm0"
 RUN_ID = "run-test-1"
@@ -397,3 +397,122 @@ async def test_progress_info_updated_in_store(rt: HALORuntime):
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.progress.elapsed_ms >= 0
+
+
+# --- Teacher mode ---
+
+
+def _make_teacher_step_fn(phase_sequence: list[tuple[int, bool]]):
+    """Create a simple teacher_step_fn that plays through a fixed phase sequence."""
+    idx = 0
+    zero_action = (0.0,) * 6
+
+    async def teacher_step_fn(arm_id: str) -> TeacherStepResult:
+        nonlocal idx
+        phase_id, done = phase_sequence[min(idx, len(phase_sequence) - 1)]
+        idx += 1
+        return TeacherStepResult(phase_id=phase_id, done=done, action=zero_action)
+
+    return teacher_step_fn
+
+
+def _make_teacher_svc(
+    rt: HALORuntime,
+    phase_sequence: list[tuple[int, bool]] | None = None,
+) -> tuple[SkillRunnerService, list]:
+    if phase_sequence is None:
+        phase_sequence = [
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.EXECUTE_APPROACH), False),
+            (int(PhaseId.CLOSE_GRIPPER), False),
+            (int(PhaseId.LIFT), False),
+            (int(PhaseId.DONE), True),
+        ]
+
+    chunks_pushed = []
+
+    async def joint_push_fn(chunk):
+        chunks_pushed.append(chunk)
+
+    svc = SkillRunnerService(
+        arm_id=ARM,
+        runtime=rt,
+        config=_cfg(),
+        teacher_step_fn=_make_teacher_step_fn(phase_sequence),
+        joint_push_fn=joint_push_fn,
+    )
+    return svc, chunks_pushed
+
+
+async def test_teacher_mode_phase_transitions(rt: HALORuntime):
+    """Teacher mode syncs phases from teacher_step_fn."""
+    svc, _ = _make_teacher_svc(rt)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    # Tick through all teacher phases
+    for _ in range(5):
+        await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_SUCCEEDED for e in events)
+
+
+async def test_teacher_mode_publishes_phase_events(rt: HALORuntime):
+    """Teacher mode publishes PHASE_EXIT/PHASE_ENTER on transitions."""
+    svc, _ = _make_teacher_svc(
+        rt,
+        phase_sequence=[
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.EXECUTE_APPROACH), False),
+        ],
+    )
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    await svc.tick()  # MOVE_PREGRASP (transition from SELECT_GRASP)
+    await svc.tick()  # EXECUTE_APPROACH (transition from MOVE_PREGRASP)
+
+    events = rt.bus.get_recent_events(ARM)
+    exits = [e for e in events if e.type == EventType.PHASE_EXIT]
+    enters = [e for e in events if e.type == EventType.PHASE_ENTER]
+    assert len(exits) >= 2
+    assert len(enters) >= 3  # SELECT_GRASP enter + 2 transitions
+
+
+async def test_teacher_mode_updates_act_info(rt: HALORuntime):
+    """Teacher mode updates ActInfo in store."""
+    svc, _ = _make_teacher_svc(
+        rt,
+        phase_sequence=[(int(PhaseId.MOVE_PREGRASP), False)],
+    )
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+    await svc.tick()
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.act.status == ActStatus.RUNNING
+
+
+async def test_teacher_mode_rejects_both_modes(rt: HALORuntime):
+    """Cannot provide both ACT and teacher callables."""
+    with pytest.raises(ValueError, match="Cannot provide both"):
+        SkillRunnerService(
+            arm_id=ARM,
+            runtime=rt,
+            chunk_fn=_null_chunk_fn,
+            push_fn=_null_chunk_fn,
+            teacher_step_fn=_make_teacher_step_fn([(3, False)]),
+        )
+
+
+async def test_teacher_mode_pushes_joint_chunks(rt: HALORuntime):
+    """Teacher mode pushes JointPositionChunks via joint_push_fn."""
+    svc, chunks = _make_teacher_svc(
+        rt,
+        phase_sequence=[(int(PhaseId.MOVE_PREGRASP), False)] * 3,
+    )
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    for _ in range(3):
+        await svc.tick()
+
+    # Chunks pushed for active ticks (the first tick transitions phase, still active)
+    assert len(chunks) >= 2

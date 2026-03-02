@@ -489,6 +489,71 @@ def test_no_chunk_needed_when_buffer_full():
 # --- Wrist camera ---
 
 
+# --- sync_phase (teacher mode) ---
+
+
+def test_sync_phase_transitions_on_new_phase():
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+    old = fsm.sync_phase(t + 1, PhaseId.EXECUTE_APPROACH)
+    assert old == PhaseId.MOVE_PREGRASP
+    assert fsm.phase == PhaseId.EXECUTE_APPROACH
+
+
+def test_sync_phase_returns_none_on_same_phase():
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+    old = fsm.sync_phase(t + 1, PhaseId.MOVE_PREGRASP)
+    assert old is None
+    assert fsm.phase == PhaseId.MOVE_PREGRASP
+
+
+def test_sync_phase_done_sets_success():
+    fsm = _started_fsm()
+    _advance_to_move_pregrasp(fsm, T0 + 1)
+    old = fsm.sync_phase(T0 + 100, PhaseId.DONE)
+    assert old == PhaseId.MOVE_PREGRASP
+    assert fsm.phase == PhaseId.DONE
+    assert fsm.outcome == SkillOutcomeState.SUCCESS
+
+
+def test_sync_phase_noop_when_inactive():
+    fsm = PickFSM(_cfg())  # IDLE, not started
+    old = fsm.sync_phase(T0, PhaseId.EXECUTE_APPROACH)
+    assert old is None
+    assert fsm.phase == PhaseId.IDLE
+
+
+def test_sync_phase_full_sequence():
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+    phases = [
+        PhaseId.EXECUTE_APPROACH,
+        PhaseId.CLOSE_GRIPPER,
+        PhaseId.LIFT,
+        PhaseId.DONE,
+    ]
+    for phase in phases:
+        t += 1
+        old = fsm.sync_phase(t, phase)
+        assert old is not None
+    assert fsm.phase == PhaseId.DONE
+    assert fsm.outcome == SkillOutcomeState.SUCCESS
+
+
+def test_sync_phase_repeated_phase_returns_none():
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+    fsm.sync_phase(t + 1, PhaseId.EXECUTE_APPROACH)
+    # Same phase again
+    old = fsm.sync_phase(t + 2, PhaseId.EXECUTE_APPROACH)
+    assert old is None
+    assert fsm.phase == PhaseId.EXECUTE_APPROACH
+
+
+# --- Wrist camera ---
+
+
 def test_wrist_camera_active_in_correct_phases():
     fsm = PickFSM(_cfg())
     assert not fsm.wrist_camera_active  # IDLE
