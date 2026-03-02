@@ -1,7 +1,7 @@
 # HALO Architecture Specification (Planner + Perception + ACT Skill Runner)
 
-Date: 2026-02-23
-Scope: HALO — three-phase sim strategy: (1) MuJoCo + robosuite (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, ACT for continuous control.
+Date: 2026-03-02
+Scope: HALO — three-phase sim strategy: (1) MuJoCo + SO-101 (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, ACT for continuous control.
 
 This document is the **architecture reference** that complements the plan summary. It focuses on **module boundaries, runtime contracts, dataflows, timing**, and **code-facing interfaces**.
 
@@ -72,6 +72,7 @@ This document is the **architecture reference** that complements the plan summar
 - `target_perception_service` (VLM + SAM/Tracker + depth fusion)
 - `skill_runner_service` (FSM + ACT inference + chunk planner)
 - `control_service` (realtime executor + safety + reflex)
+- `mujoco_sim.server` (sim-only: ZMQ server owning SO101Env + PickTeacher; single-threaded for macOS OpenGL)
 - (optional) `logger_service` (episode capture + dataset writer)
 
 ### 2.2 Threading expectations
@@ -114,7 +115,7 @@ Planner issues commands **asynchronously**. Results appear in:
 ## 4) Timing, rates, and budgets
 
 ### 4.1 Typical rates (v0 defaults)
-- ControlService: **50–100 Hz**
+- ControlService: **50–100 Hz** (target); **20 Hz** in v0 MuJoCo sim
 - ACT inference: **10–20 Hz** (producing short action chunks)
 - Wrist camera for ACT: as needed, ideally aligned to ACT rate
 - TargetPerceptionService fusion publish: **10–30 Hz** (tracking; fast loop budget ≤80–120ms, excludes VLM reacquire)
@@ -233,17 +234,22 @@ Structured prompt for Qwen2.5-VL:
 - Optional verification hooks (e.g., VLM verify after grasp)
 
 ### 7.2 Pick skill FSM (implemented states)
-- `RESET` (0) — initial state
-- `APPROACH_PREGRASP` (1) — move to pregrasp pose
-- `ALIGN` (2) — fine alignment
-- `DESCEND_GRASP` (3) — descend to grasp pose; grasp persistence timer starts when distance < threshold
-- `CLOSE` (4) — gripper close + dwell
-- `VERIFY_GRASP` (6) — optional (configurable via `skip_verify_grasp`)
-- `LIFT` (5) — lift after grasp
-- `DONE` (11) — terminal state (outcome: SUCCESS or FAILURE with reason code)
-- Recovery: `RECOVER_RETRY_APPROACH` (20), `RECOVER_RETRY_DESCEND` (21), `RECOVER_REGRASP` (22)
+- `IDLE` (0) — initial state
+- `SELECT_GRASP` (1) — v0 pass-through (immediate transition)
+- `PLAN_APPROACH` (2) — v0 pass-through (immediate transition)
+- `MOVE_PREGRASP` (3) — move to pregrasp pose
+- `VISUAL_ALIGN` (4) — fine alignment (wrist camera active)
+- `EXECUTE_APPROACH` (5) — descend to grasp pose; grasp persistence timer starts when distance < threshold (wrist camera active)
+- `CLOSE_GRIPPER` (6) — gripper close + dwell (wrist camera active)
+- `VERIFY_GRASP` (7) — optional (configurable via `skip_verify_grasp`) (wrist camera active)
+- `LIFT` (8) — lift after grasp (wrist camera active)
+- `DONE` (9) — terminal state (outcome: SUCCESS or FAILURE with reason code)
+- Place reserved: `PLACE_*` (30–33)
+- Recovery: `RECOVER_RETRY_APPROACH` (50), `RECOVER_REGRASP` (51), `RECOVER_ABORT` (52)
 
-**Critical:** `CLOSE` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, not by the planner.
+**Critical:** `CLOSE_GRIPPER` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, not by the planner.
+
+Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP`, `LIFT` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
 
 ### 7.3 Outcome monitoring
 A `SkillOutcomeMonitor` computes:
@@ -269,8 +275,10 @@ Signals:
 
 ### 8.2 Outputs from ACT
 - Action chunks in a fixed action space (define explicitly; v0 example):
-  - `Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd`
+  - **HALO core (runtime/bridge):** `Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd` — 7D EE-frame deltas
+  - **MuJoCo sim (`mujoco_sim/`):** `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` — 6D joint-position targets written to `data.ctrl[:]`
 - Chunk timestamps + ids for traceability.
+- Action space is **intentionally different** between core and sim (EE-delta vs joint-position); conversion is the responsibility of the `apply_fn` factory.
 
 **Delta semantics (v0 default, to avoid drift):**
 - Each `Δ*` is a **per-timestep incremental command in the EE frame**, applied relative to the **current measured** EE pose (receding-horizon servo), with the low-level controller closing the loop.
@@ -446,7 +454,7 @@ Keep it **off** the steady-state planner loop.
 halo/
   contracts/
     enums.py            # all enums (PhaseId, SafetyReflexReason, ActStatus, etc.)
-    snapshots.py        # PlannerSnapshot, TargetInfo, ActInfo, SafetyInfo, etc.
+    snapshots.py        # PlannerSnapshot, TargetInfo, ActInfo(wrist_enabled), SafetyInfo, etc.
     commands.py         # CommandEnvelope, CommandAck, payload types
     events.py           # EventEnvelope, EventType
     actions.py          # Action, ActionChunk, ZERO_ACTION
@@ -459,6 +467,12 @@ halo/
     state_store.py      # RuntimeStateStore (per-arm state, snapshot caching)
     event_bus.py        # EventBus (subscribe/unsubscribe/publish/get_recent_events)
     command_router.py   # CommandRouter (idempotency + precondition + skill-run validation)
+  bridge/                          # ZMQ bridge to MuJoCo sim server
+    __init__.py                    # BridgeTransportError exception
+    config.py                      # SimBridgeConfig (2-channel URLs, managed flag, timeouts)
+    sim_client.py                  # SimClient (ZMQ client: TelemetryStream SUB + CommandRPC REQ)
+    sim_source.py                  # SimSource (drop-in MuJocoVideoSource replacement via ZMQ)
+    transforms.py                  # world_to_ee_frame() quaternion math
   services/                        # each service has its own CLAUDE.md with detailed docs
     planner_service/
       CLAUDE.md                 # tools, one-tool-per-tick, loop detection, snapshot middleware
@@ -488,6 +502,12 @@ halo/
       te_buffer.py          # TemporalEnsemblingBuffer (production blending)
       safety_guard.py       # SafetyGuard (check, clamp, hint_freshness)
       service.py            # ControlService (50–100 Hz loop)
+  testing/                         # multi-tier test framework
+    event_recorder.py              # EventRecorder (subscribe, wait_for, query by type)
+    state_seeder.py                # make_target(), make_perception(), seed_store()
+    mock_fns.py                    # LatencyProfile, mock factories for all callables
+    runner.py                      # HeadlessRunner (orchestrate services without TUI)
+    metrics.py                     # RunReport, compute_run_report()
   tui/
     app.py              # Textual TUI — mock + live modes
     run_logger.py       # RunLogger: writes JSONL session logs to runs/
@@ -504,17 +524,48 @@ halo/
     safety/                   # (planned)
   tools/                      # (planned) ollama_clients/, zed_capture/, uvc_capture/
   eval/                       # (planned) sim/, real/
+mujoco_sim/                     # MuJoCo + SO-101 sim (see section 15)
+  mujoco_sim/
+    constants.py                # phase IDs, action fields, gripper semantics (synced from halo.contracts)
+    scene_info.py               # SceneInfo: runtime geometry extraction + all grasp/teacher constants
+    config/
+      env_config.py             # EnvConfig (SO-101, dual cameras, 20 Hz)
+    env/
+      so101_env.py              # SO101Env: raw MuJoCo wrapper, dual cameras, joint-position control
+    dataset/
+      raw_episode.py            # Timestep (with phase_id, joint_pos), RawEpisode, EpisodeMetadata
+      writer_hdf5.py            # write_episode() — HDF5 serialization with gzip images
+      reader_hdf5.py            # read_episode() — HDF5 → RawEpisode
+    teacher/
+      pick_teacher.py           # PickTeacher: trajectory-planned policy (pre-computed on first step)
+      ik_helper.py              # Damped least-squares IK (position-only + coupled 6D)
+      keyframe_planner.py       # SE(3) keyframes from GraspPose
+      waypoint_generator.py     # Keyframes → joint waypoints via IK (yaw-retry fallbacks)
+      trajectory.py             # Jerk-limited ruckig trajectory planning
+      grasp_planner.py          # 64-candidate grasp enumeration, filtering, scoring
+    runner/
+      run_teacher.py            # run_teacher(): episode generation loop + verification
+    server/
+      __init__.py               # SimServer: ZMQ server owning SO101Env + PickTeacher
+      __main__.py               # CLI: python -m mujoco_sim.server
+      config.py                 # SimServerConfig (host, ports, render FPS, JPEG quality)
+      handlers.py               # dispatch_command(): route ZMQ messages
+      protocol.py               # Message types, msgpack/JPEG serialization
+    scripts/                    # test_env, generate_episodes, inspect_episode, visualize_ik_pose
+    assets/
+      so101/                    # MJCF (so101_new_calib.xml) + pick_scene.xml + 13 STL meshes
+    tests/                      # 112 tests (constants, dataset, teacher, grasp, trajectory, server)
 docs/
-  halo_architecture.md        # this file
-  halo_plan_summary.md        # project plan + Isaac Lab strategy
-  data/                       # gitignored; video.mp4 for video capture simulation
-mujoco_sim/                     # MuJoCo + robosuite sim (current)
+  halo_architecture.md          # this file
+  halo_plan_summary.md          # project plan + Isaac Lab strategy
+  data/                         # gitignored; video.mp4 for video capture simulation
 sim/                            # Isaac Lab extension (planned — see sim/README.md)
-tests/                          # unit tests
-integration/                  # LLM integration tests (require Ollama)
-  conftest.py                 # Ollama health-check; auto-skip if model unavailable
-  runs/                       # timestamped result folders
-runs/                         # live TUI session logs (JSONL, git-ignored)
+tests/                          # unit + component + system tests
+  e2e/                          # end-to-end tests (MuJoCo source + VLM, auto-skip if unavailable)
+integration/                    # LLM integration tests (require Ollama)
+  conftest.py                   # Ollama health-check; auto-skip if model unavailable
+  runs/                         # timestamped result folders
+runs/                           # live TUI session logs (JSONL, git-ignored)
 ```
 
 ---
@@ -526,6 +577,71 @@ runs/                         # live TUI session logs (JSONL, git-ignored)
 - **SkillRunner** owns: phase timing, success predicates, ACT chunking, micro-retries.
 - **ControlService** owns: real-time streaming, smoothing, clamps, enforcing safety gates.
 - **Safety/Reflex** owns: immediate overrides; LLM cannot bypass.
+
+---
+
+## 15) MuJoCo simulation module (`mujoco_sim/`)
+
+Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (no robosuite). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
+
+### 15.1 SO-101 robot
+
+5-DOF arm + 1-DOF gripper = 6 actuated joints (position-controlled STS3215 servos). EE site: `gripperframe`. Position actuators (`kp=998.22`) track targets written to `data.ctrl[:]`. Physics: `dt=0.005`, 20 Hz control, 10 substeps per step.
+
+MJCF: `so101_new_calib.xml` + `pick_scene.xml` (robot + floor + cube + dual cameras). Contact solver tuned for zero slip: `impratio=10`, `cone="elliptic"`, `noslip_iterations=3`, gripper friction=2.0, actuator force=±6.0 N.
+
+### 15.2 SO101Env
+
+Raw MuJoCo wrapper. Action: 6D joint-position targets. Observations: `rgb_scene` (480,640,3), `rgb_wrist` (240,320,3), `qpos` (13,), `qvel` (12,), `gripper`, `ee_pose` (7,), `object_pose` (7,), `joint_pos` (6,). Seeded resets with cube position randomization.
+
+### 15.3 Trajectory planning pipeline
+
+PickTeacher pre-computes a full trajectory on first `step()`, then samples in real time:
+
+```
+grasp_planner (64 candidates, geometric filter, IK scoring)
+  → keyframe_planner (5 SE(3) keyframes: home → pregrasp → grasp → close → lift)
+    → waypoint_generator (IK with yaw-retry fallbacks)
+      → trajectory (jerk-limited ruckig segments, start/end at rest)
+        → pick_teacher.step() samples at elapsed time → (action, phase_id, done)
+```
+
+Teacher phase sequence: `IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation.
+
+### 15.4 Scene constants (`scene_info.py`)
+
+Single source of truth for all grasp/teacher defaults. `SceneInfo.from_model()` extracts runtime geometry (cube sizes, table height) from MuJoCo model. Key constants: `TCP_PINCH_OFFSET_LOCAL=[0,0,0]`, face standoff 3 mm, 64 grasp candidates (16/face, 5° cone), pregrasp standoff 0.08 m, lift height 0.08 m, IK ori tolerance 55°.
+
+### 15.5 Dataset format (HDF5)
+
+One file per episode. Observations (rgb gzipped), actions (6D), phase_id, metadata as attrs. In-memory: `Timestep` → `RawEpisode` buffer. Episode generation: reset → 5 s stabilization → teacher loop → write HDF5 → verify lift. **100% success rate** with current tuning.
+
+### 15.6 Constants sync
+
+Phase IDs, gripper semantics, wrist-active phases synced between `halo/contracts/enums.py` and `mujoco_sim/constants.py`, verified by cross-module tests. Action space intentionally different (sim: 6D joint-position, core: 7D EE-delta).
+
+### 15.7 Status
+
+112 tests (constants, dataset, teacher, grasp planner, trajectory pipeline, server). PR1-3 done (env, dataset, teacher). PR4-6 pending (phase FSM, VCR replay, annotation).
+
+---
+
+## 16) ZMQ bridge (`halo/bridge/`)
+
+Connects HALO runtime to MuJoCo sim server via 2-channel ZMQ.
+
+| Channel | ZMQ Pattern | Port | Direction | Purpose |
+|---------|-------------|------|-----------|---------|
+| TelemetryStream | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
+| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, teacher_step, configure, shutdown |
+
+**SimServer** (`mujoco_sim.server`): single-threaded main loop (macOS OpenGL), owns SO101Env + PickTeacher. Protocol: msgpack + JPEG.
+
+**SimClient** (`halo/bridge/sim_client.py`): background telemetry thread (SUB), main thread for commands (REQ, thread-safe). Managed mode spawns server subprocess. `BridgeTransportError` on timeout (ControlService catches → `ActStatus.STALE`).
+
+**SimSource** (`halo/bridge/sim_source.py`): drop-in video source replacement, wraps SimClient. Provides `capture_fn` returning `CapturedFrame` for TargetPerceptionService.
+
+**Transforms** (`halo/bridge/transforms.py`): `world_to_ee_frame()` quaternion rotation for ACT command conversion.
 
 ---
 
