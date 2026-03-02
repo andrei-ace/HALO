@@ -114,19 +114,24 @@ def _draw_annotations(
         color = (128, 128, 128)
 
     if target is not None:
+        fh, fw = frame.shape[:2]
         bbox = target.bbox_xywh
         if bbox is not None:
-            x, y, w, h = bbox
-            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            # Denormalise 0..1 → pixel coords
+            bx = int(bbox[0] * fw)
+            by = int(bbox[1] * fh)
+            bw = int(bbox[2] * fw)
+            bh = int(bbox[3] * fh)
+            cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), color, 2)
 
             # Label above bbox
             conf_pct = int(target.confidence * 100)
             text = f"{target.handle} {conf_pct}%"
-            text_y = max(y - 8, 15)
-            cv2.putText(frame, text, (x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            text_y = max(by - 8, 15)
+            cv2.putText(frame, text, (bx, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
         elif target.center_px is not None:
-            # Fallback crosshair
-            cx, cy = int(target.center_px[0]), int(target.center_px[1])
+            # Fallback crosshair — denormalise 0..1 → pixel
+            cx, cy = int(target.center_px[0] * fw), int(target.center_px[1] * fh)
             size = 15
             cv2.line(frame, (cx - size, cy), (cx + size, cy), color, 2)
             cv2.line(frame, (cx, cy - size), (cx, cy + size), color, 2)

@@ -16,7 +16,7 @@ from halo.contracts.events import EventType
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
-from halo.services.skill_runner_service.service import SkillRunnerService, TeacherStepResult
+from halo.services.skill_runner_service.service import SkillRunnerService
 
 ARM = "arm0"
 RUN_ID = "run-test-1"
@@ -399,27 +399,38 @@ async def test_progress_info_updated_in_store(rt: HALORuntime):
     assert snap.progress.elapsed_ms >= 0
 
 
-# --- Teacher mode ---
+# --- Sim mode ---
 
 
-def _make_teacher_step_fn(phase_sequence: list[tuple[int, bool]]):
-    """Create a simple teacher_step_fn that plays through a fixed phase sequence."""
+def _make_sim_phase_fn(phase_sequence: list[tuple[int, bool]]):
+    """Create a sim_phase_fn that plays through a fixed phase sequence."""
     idx = 0
-    zero_action = (0.0,) * 6
 
-    async def teacher_step_fn(arm_id: str) -> TeacherStepResult:
+    def sim_phase_fn() -> tuple[int, bool]:
         nonlocal idx
         phase_id, done = phase_sequence[min(idx, len(phase_sequence) - 1)]
         idx += 1
-        return TeacherStepResult(phase_id=phase_id, done=done, action=zero_action)
+        return phase_id, done
 
-    return teacher_step_fn
+    return sim_phase_fn
 
 
-def _make_teacher_svc(
+def _make_mock_start_pick_fn(success: bool = True):
+    """Create a start_pick_fn that immediately returns success or error."""
+
+    async def start_pick_fn(arm_id: str, target_body: str) -> dict:
+        if success:
+            return {"type": "start_pick_ok", "duration": 3.0}
+        return {"type": "start_pick_error", "message": "mock failure"}
+
+    return start_pick_fn
+
+
+def _make_sim_svc(
     rt: HALORuntime,
     phase_sequence: list[tuple[int, bool]] | None = None,
-) -> tuple[SkillRunnerService, list]:
+    start_pick_success: bool = True,
+) -> SkillRunnerService:
     if phase_sequence is None:
         phase_sequence = [
             (int(PhaseId.MOVE_PREGRASP), False),
@@ -429,27 +440,22 @@ def _make_teacher_svc(
             (int(PhaseId.DONE), True),
         ]
 
-    chunks_pushed = []
-
-    async def joint_push_fn(chunk):
-        chunks_pushed.append(chunk)
-
     svc = SkillRunnerService(
         arm_id=ARM,
         runtime=rt,
         config=_cfg(),
-        teacher_step_fn=_make_teacher_step_fn(phase_sequence),
-        joint_push_fn=joint_push_fn,
+        start_pick_fn=_make_mock_start_pick_fn(start_pick_success),
+        sim_phase_fn=_make_sim_phase_fn(phase_sequence),
     )
-    return svc, chunks_pushed
+    return svc
 
 
-async def test_teacher_mode_phase_transitions(rt: HALORuntime):
-    """Teacher mode syncs phases from teacher_step_fn."""
-    svc, _ = _make_teacher_svc(rt)
+async def test_sim_mode_phase_transitions(rt: HALORuntime):
+    """Sim mode syncs phases from sim_phase_fn."""
+    svc = _make_sim_svc(rt)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
-    # Tick through all teacher phases
+    # Tick through all sim phases
     for _ in range(5):
         await svc.tick()
 
@@ -457,9 +463,9 @@ async def test_teacher_mode_phase_transitions(rt: HALORuntime):
     assert any(e.type == EventType.SKILL_SUCCEEDED for e in events)
 
 
-async def test_teacher_mode_publishes_phase_events(rt: HALORuntime):
-    """Teacher mode publishes PHASE_EXIT/PHASE_ENTER on transitions."""
-    svc, _ = _make_teacher_svc(
+async def test_sim_mode_publishes_phase_events(rt: HALORuntime):
+    """Sim mode publishes PHASE_EXIT/PHASE_ENTER on transitions."""
+    svc = _make_sim_svc(
         rt,
         phase_sequence=[
             (int(PhaseId.MOVE_PREGRASP), False),
@@ -478,9 +484,9 @@ async def test_teacher_mode_publishes_phase_events(rt: HALORuntime):
     assert len(enters) >= 3  # SELECT_GRASP enter + 2 transitions
 
 
-async def test_teacher_mode_updates_act_info(rt: HALORuntime):
-    """Teacher mode updates ActInfo in store."""
-    svc, _ = _make_teacher_svc(
+async def test_sim_mode_updates_act_info(rt: HALORuntime):
+    """Sim mode updates ActInfo in store."""
+    svc = _make_sim_svc(
         rt,
         phase_sequence=[(int(PhaseId.MOVE_PREGRASP), False)],
     )
@@ -491,28 +497,23 @@ async def test_teacher_mode_updates_act_info(rt: HALORuntime):
     assert snap.act.status == ActStatus.RUNNING
 
 
-async def test_teacher_mode_rejects_both_modes(rt: HALORuntime):
-    """Cannot provide both ACT and teacher callables."""
+async def test_sim_mode_rejects_both_modes(rt: HALORuntime):
+    """Cannot provide both ACT and sim callables."""
     with pytest.raises(ValueError, match="Cannot provide both"):
         SkillRunnerService(
             arm_id=ARM,
             runtime=rt,
             chunk_fn=_null_chunk_fn,
             push_fn=_null_chunk_fn,
-            teacher_step_fn=_make_teacher_step_fn([(3, False)]),
+            start_pick_fn=_make_mock_start_pick_fn(),
         )
 
 
-async def test_teacher_mode_pushes_joint_chunks(rt: HALORuntime):
-    """Teacher mode pushes JointPositionChunks via joint_push_fn."""
-    svc, chunks = _make_teacher_svc(
-        rt,
-        phase_sequence=[(int(PhaseId.MOVE_PREGRASP), False)] * 3,
-    )
+async def test_sim_mode_start_pick_error_fails_skill(rt: HALORuntime):
+    """Sim mode: start_pick_fn returning error emits SKILL_FAILED."""
+    svc = _make_sim_svc(rt, start_pick_success=False)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
-    for _ in range(3):
-        await svc.tick()
-
-    # Chunks pushed for active ticks (the first tick transitions phase, still active)
-    assert len(chunks) >= 2
+    # start_skill should have failed due to start_pick_error
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_FAILED for e in events)

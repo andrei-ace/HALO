@@ -17,8 +17,10 @@ import numpy as np
 # MuJoCo entity names (match pick_scene.xml)
 # ---------------------------------------------------------------------------
 
-CUBE_GEOM_NAME = "cube_geom"
-CUBE_BODY_NAME = "cube"
+GREEN_CUBE_GEOM_NAME = "green_cube_geom"
+GREEN_CUBE_BODY_NAME = "green_cube"
+RED_CUBE_GEOM_NAME = "red_cube_geom"
+RED_CUBE_BODY_NAME = "red_cube"
 TABLE_BODY_NAME = "table"
 TABLE_GEOM_NAME = "table_top"
 EE_SITE_NAME = "gripperframe"
@@ -90,9 +92,25 @@ class SceneInfo:
     Use ``SceneInfo.from_model(model)`` to construct.
     """
 
-    cube_half_sizes: np.ndarray  # (3,) from model.geom_size[cube_geom_id]
-    cube_default_pos: np.ndarray  # (3,) from model.body_pos[cube_body_id]
+    green_cube_half_sizes: np.ndarray  # (3,) from model.geom_size[green_cube_geom_id]
+    green_cube_default_pos: np.ndarray  # (3,) from model.body_pos[green_cube_body_id]
+    red_cube_half_sizes: np.ndarray  # (3,) from model.geom_size[red_cube_geom_id]
+    red_cube_default_pos: np.ndarray  # (3,) from model.body_pos[red_cube_body_id]
     table_z: float  # table body Z + table_top geom half-height
+
+    def half_sizes_for_body(self, body_name: str) -> np.ndarray:
+        """Look up cube half-sizes by body name.
+
+        Raises:
+            KeyError: If *body_name* is not a known cube body.
+        """
+        mapping = {
+            GREEN_CUBE_BODY_NAME: self.green_cube_half_sizes,
+            RED_CUBE_BODY_NAME: self.red_cube_half_sizes,
+        }
+        if body_name not in mapping:
+            raise KeyError(f"Unknown cube body: {body_name!r}. Known: {list(mapping)}")
+        return mapping[body_name]
 
     @classmethod
     def from_model(cls, model: mujoco.MjModel) -> SceneInfo:
@@ -104,19 +122,25 @@ class SceneInfo:
         Returns:
             Frozen SceneInfo with cube geometry, default position, and table height.
         """
-        cube_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, CUBE_GEOM_NAME)
-        cube_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, CUBE_BODY_NAME)
+        green_cube_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, GREEN_CUBE_GEOM_NAME)
+        green_cube_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, GREEN_CUBE_BODY_NAME)
+        red_cube_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, RED_CUBE_GEOM_NAME)
+        red_cube_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, RED_CUBE_BODY_NAME)
         table_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, TABLE_BODY_NAME)
         table_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, TABLE_GEOM_NAME)
 
-        cube_half_sizes = model.geom_size[cube_geom_id].copy()
-        cube_default_pos = model.body_pos[cube_body_id].copy()
+        green_cube_half_sizes = model.geom_size[green_cube_geom_id].copy()
+        green_cube_default_pos = model.body_pos[green_cube_body_id].copy()
+        red_cube_half_sizes = model.geom_size[red_cube_geom_id].copy()
+        red_cube_default_pos = model.body_pos[red_cube_body_id].copy()
 
         # Table surface = table body Z + table_top geom half-height (Z component of box size)
         table_z = float(model.body_pos[table_body_id][2] + model.geom_size[table_geom_id][2])
 
         return cls(
-            cube_half_sizes=cube_half_sizes,
-            cube_default_pos=cube_default_pos,
+            green_cube_half_sizes=green_cube_half_sizes,
+            green_cube_default_pos=green_cube_default_pos,
+            red_cube_half_sizes=red_cube_half_sizes,
+            red_cube_default_pos=red_cube_default_pos,
             table_z=table_z,
         )

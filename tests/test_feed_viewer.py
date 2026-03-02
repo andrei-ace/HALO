@@ -61,7 +61,7 @@ def test_draw_annotations_none_snapshot():
 
 
 def _make_target(
-    bbox: tuple[int, int, int, int] | None = None,
+    bbox: tuple[float, float, float, float] | None = None,
     center_px: tuple[float, float] | None = None,
 ) -> TargetInfo:
     return TargetInfo(
@@ -92,7 +92,7 @@ def _make_perception(
 def test_draw_annotations_with_bbox():
     """When bbox is available, annotations should be drawn (non-zero pixels)."""
     frame = _blank_frame()
-    target = _make_target(bbox=(100, 100, 80, 60))
+    target = _make_target(bbox=(0.15, 0.2, 0.12, 0.12))
     perception = _make_perception()
 
     result = _draw_annotations(frame, target, perception)
@@ -104,7 +104,7 @@ def test_draw_annotations_with_bbox():
 def test_draw_annotations_with_center_px_fallback():
     """When only center_px is available (no bbox), crosshair should be drawn."""
     frame = _blank_frame()
-    target = _make_target(center_px=(320.0, 240.0))
+    target = _make_target(center_px=(0.5, 0.5))
     perception = _make_perception()
 
     result = _draw_annotations(frame, target, perception)
@@ -115,7 +115,7 @@ def test_draw_annotations_with_center_px_fallback():
 def test_draw_annotations_with_failure_code():
     """Failure code should be rendered when not OK."""
     frame = _blank_frame()
-    target = _make_target(bbox=(50, 50, 40, 40))
+    target = _make_target(bbox=(0.08, 0.1, 0.06, 0.08))
     perception = _make_perception(
         status=TrackingStatus.LOST,
         failure=PerceptionFailureCode.OCCLUDED,

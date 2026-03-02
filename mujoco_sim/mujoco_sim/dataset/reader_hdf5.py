@@ -55,6 +55,9 @@ def read_episode(path: str | Path) -> RawEpisode:
         has_object = "object_pose" in obs
         object_poses = obs["object_pose"][:] if has_object else None
 
+        has_red_object = "red_object_pose" in obs
+        red_object_poses = obs["red_object_pose"][:] if has_red_object else None
+
         has_joint_pos = "joint_pos" in obs
         joint_pos_arr = obs["joint_pos"][:] if has_joint_pos else None
 
@@ -70,6 +73,7 @@ def read_episode(path: str | Path) -> RawEpisode:
         num_steps = rgb_scenes.shape[0]
         for i in range(num_steps):
             obj_pose = object_poses[i] if object_poses is not None else None
+            red_obj_pose = red_object_poses[i] if red_object_poses is not None else None
             j_pos = joint_pos_arr[i] if joint_pos_arr is not None else None
 
             contacts = None
@@ -93,6 +97,7 @@ def read_episode(path: str | Path) -> RawEpisode:
                 action=actions[i],
                 phase_id=phase_id,
                 object_pose=obj_pose,
+                red_object_pose=red_obj_pose,
                 joint_pos=j_pos,
                 contacts=contacts,
                 bbox_xywh=bbox_xywh,

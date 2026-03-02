@@ -5,9 +5,10 @@
   <option impratio="10" cone="elliptic" noslip_iterations="3"/>
 
   <visual>
+    <quality shadowsize="0"/>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
     <rgba haze="0.15 0.25 0.35 1"/>
-    <global azimuth="160" elevation="-20"/>
+    <global azimuth="160" elevation="-20" offwidth="1280" offheight="720"/>
   </visual>
 
   <asset>
@@ -21,7 +22,8 @@
     <texture type="2d" name="table_tex" builtin="flat"
              rgb1="0.35 0.22 0.12" width="64" height="64"/>
     <material name="table_material" texture="table_tex" rgba="0.45 0.32 0.2 1"/>
-    <material name="cube_material" rgba="0.2 0.85 0.3 1"/>
+    <material name="green_cube_material" rgba="0.2 0.85 0.3 1"/>
+    <material name="red_cube_material" rgba="0.85 0.2 0.2 1"/>
   </asset>
 
   <worldbody>
@@ -42,11 +44,20 @@
     <!-- Overhead scene camera for VLM / observation — angled top-down like a real workbench camera -->
     <camera name="scene_cam" pos="0.18 -0.55 0.95" xyaxes="1 0 0 0 0.55 0.84" mode="fixed"/>
 
-    <!-- Pick target: cube with freejoint, sits on table top (table top at z=0.37) -->
-    <body name="cube" pos="0.225 0 0.3825">
-      <freejoint name="cube_joint"/>
-      <geom type="box" name="cube_geom" size="0.01 0.01 0.0125"
-            mass="0.05" material="cube_material"
+    <!-- Pick target: green cube with freejoint, sits on table top (table top at z=0.37) -->
+    <body name="green_cube" pos="0.225 0 0.3825">
+      <freejoint name="green_cube_joint"/>
+      <geom type="box" name="green_cube_geom" size="0.01 0.01 0.0125"
+            mass="0.05" material="green_cube_material"
+            friction="2.0 0.1 0.001"
+            condim="4" priority="1"/>
+    </body>
+
+    <!-- Distractor: red cube with freejoint, offset in Y to avoid overlap -->
+    <body name="red_cube" pos="0.225 0.05 0.3825">
+      <freejoint name="red_cube_joint"/>
+      <geom type="box" name="red_cube_geom" size="0.01 0.01 0.0125"
+            mass="0.05" material="red_cube_material"
             friction="2.0 0.1 0.001"
             condim="4" priority="1"/>
     </body>

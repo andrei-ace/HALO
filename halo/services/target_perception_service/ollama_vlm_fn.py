@@ -54,8 +54,14 @@ def _extract_json(text: str) -> dict:
     return {}
 
 
-def _image_to_b64(image: object) -> str:
-    """Convert an image (numpy BGR HWC, PIL Image, or bytes) to base64 PNG."""
+def _image_to_b64(image: object) -> tuple[str, int, int]:
+    """Convert an image (numpy BGR HWC, PIL Image, or bytes) to base64 PNG.
+
+    Returns:
+        (base64_str, sent_width, sent_height) — the pixel dimensions of the
+        image actually sent to the VLM.  Needed to normalise VLM bbox
+        coordinates to 0..1 range.
+    """
     if isinstance(image, np.ndarray):
         # OpenCV BGR → RGB → PIL
         import cv2
@@ -70,17 +76,16 @@ def _image_to_b64(image: object) -> str:
         raise TypeError(f"Unsupported image type: {type(image)}")
 
     # Only resize if the image is wider than the VLM input width.
-    # Smaller images (e.g. 640px MuJoCo frames) are sent at native resolution
-    # so that bbox coordinates match the capture frame directly.
     if pil.width > _VLM_INPUT_WIDTH:
         aspect = pil.height / pil.width
         new_w = _VLM_INPUT_WIDTH
         new_h = int(new_w * aspect)
         pil = pil.resize((new_w, new_h), Image.LANCZOS)
 
+    sent_w, sent_h = pil.width, pil.height
     buf = io.BytesIO()
     pil.save(buf, format="PNG")
-    return base64.b64encode(buf.getvalue()).decode()
+    return base64.b64encode(buf.getvalue()).decode(), sent_w, sent_h
 
 
 def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) -> dict:
@@ -130,7 +135,7 @@ def make_ollama_vlm_fn(
         if image is None:
             return VlmScene(scene="", detections=[])
 
-        image_b64 = _image_to_b64(image)
+        image_b64, sent_w, sent_h = _image_to_b64(image)
 
         effective_prompt = prompt
         if known_handles:
@@ -160,7 +165,7 @@ def make_ollama_vlm_fn(
             return VlmScene(scene="", detections=[])
 
         raw = _extract_json(result.get("response", ""))
-        vlm_scene = parse_vlm_response(raw)
+        vlm_scene = parse_vlm_response(raw, img_w=sent_w, img_h=sent_h)
 
         if run_logger is not None:
             loggable = {k: v for k, v in result.items() if k != "context"}

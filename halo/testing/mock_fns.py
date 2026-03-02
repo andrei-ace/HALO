@@ -118,8 +118,8 @@ def make_mock_vlm_fn(
                 VlmDetection(
                     handle="red_cube",
                     label="red cube",
-                    bbox=(280.0, 200.0, 360.0, 280.0),
-                    centroid=(320.0, 240.0),
+                    bbox=(0.4375, 0.4167, 0.5625, 0.5833),
+                    centroid=(0.5, 0.5),
                     is_graspable=True,
                 ),
             ],
@@ -303,22 +303,37 @@ def make_scripted_decide_fn(
     return decide_fn
 
 
-# -- teacher_step_fn (teacher mode) ----------------------------------------
+# -- sim mode (start_pick_fn + sim_phase_fn) --------------------------------
 
 
-def make_mock_teacher_step_fn(
+def make_mock_start_pick_fn(
     latency: LatencyProfile = LatencyProfile.instant(),
+    success: bool = True,
+):
+    """Return a ``start_pick_fn`` compatible with SkillRunnerService sim mode.
+
+    *success*: if False, returns a ``start_pick_error`` response (simulating grasp planning failure).
+    """
+
+    async def start_pick_fn(arm_id: str, target_body: str) -> dict:
+        await _delay(latency.decide_s)
+        if success:
+            return {"type": "start_pick_ok", "duration": 3.0}
+        return {"type": "start_pick_error", "message": "mock grasp planning failure"}
+
+    return start_pick_fn
+
+
+def make_mock_sim_phase_fn(
     phase_sequence: list[tuple[int, bool]] | None = None,
 ):
-    """Return a ``teacher_step_fn`` compatible with SkillRunnerService teacher mode.
+    """Return a ``sim_phase_fn`` compatible with SkillRunnerService sim mode.
 
     *phase_sequence*: list of ``(phase_id, done)`` tuples. Each call returns the
     next entry. After exhausting the list, keeps returning the last entry.
 
     Default sequence: ``MOVE_PREGRASP(x3) → EXECUTE_APPROACH(x2) → CLOSE_GRIPPER(x2) → LIFT(x2) → DONE``
     """
-    from halo.services.skill_runner_service.service import TeacherStepResult
-
     if phase_sequence is None:
         phase_sequence = [
             (int(PhaseId.MOVE_PREGRASP), False),
@@ -334,16 +349,14 @@ def make_mock_teacher_step_fn(
         ]
 
     idx = 0
-    zero_action = (0.0,) * 6
 
-    async def teacher_step_fn(arm_id: str) -> TeacherStepResult:
+    def sim_phase_fn() -> tuple[int, bool]:
         nonlocal idx
-        await _delay(latency.decide_s)
         phase_id, done = phase_sequence[min(idx, len(phase_sequence) - 1)]
         idx += 1
-        return TeacherStepResult(phase_id=phase_id, done=done, action=zero_action)
+        return phase_id, done
 
-    return teacher_step_fn
+    return sim_phase_fn
 
 
 def make_command(

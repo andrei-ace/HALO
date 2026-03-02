@@ -130,10 +130,11 @@ class MockSimServer:
             step_count=0,
             phase_id=0,
             done=False,
-            qpos=np.zeros(13),
-            qvel=np.zeros(12),
+            qpos=np.zeros(20),
+            qvel=np.zeros(18),
             ee_pose=np.zeros(7),
             object_pose=np.zeros(7),
+            red_object_pose=np.zeros(7),
             joint_pos=np.zeros(6),
             gripper=0.0,
             action=np.zeros(6),
@@ -200,7 +201,7 @@ class TestSimClient:
             t = client.latest_telemetry
             assert t is not None
             assert "qpos" in t
-            assert t["qpos"].shape == (13,)
+            assert t["qpos"].shape == (20,)
             assert t["rgb_scene"].shape[2] == 3
         finally:
             client.stop()
@@ -255,7 +256,7 @@ class TestSimClient:
             with pytest.warns(DeprecationWarning, match="publish_hint"):
                 client.publish_hint(
                     target_handle="cube",
-                    bbox_xywh=(100, 100, 50, 50),
+                    bbox_xywh=(0.15, 0.2, 0.08, 0.1),
                     confidence=0.95,
                     tracker_ok=True,
                 )

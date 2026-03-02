@@ -2,7 +2,7 @@
 
 2-channel architecture:
     TelemetryStream (SUB): frames + state from sim
-    CommandRPC (REQ): commands to sim (step, reset, teacher_step, configure, set_hint)
+    CommandRPC (REQ): commands to sim (step, reset, start_pick, configure, set_hint)
 """
 
 from __future__ import annotations
@@ -35,8 +35,8 @@ class SimBridgeConfig:
     heartbeat_timeout_ms: int = 5000
 
     # Frame settings
-    wrist_rgb_height: int = 240
-    wrist_rgb_width: int = 320
+    wrist_rgb_height: int = 480
+    wrist_rgb_width: int = 640
 
     def __post_init__(self) -> None:
         if self.protocol_version != 2:

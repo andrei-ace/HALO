@@ -195,7 +195,7 @@ class PickTeacher:
         best = evaluate_grasps(
             cube_pos=cube_pos,
             cube_quat=cube_quat,
-            cube_half_sizes=self._scene_info.cube_half_sizes,
+            cube_half_sizes=self._scene_info.green_cube_half_sizes,
             model=model,
             data=data,
             ee_site_id=self._ee_site_id,

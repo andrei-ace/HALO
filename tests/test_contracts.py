@@ -75,7 +75,7 @@ def test_perception_failure_codes_complete():
 
 
 def test_skill_failure_codes_complete():
-    expected = {"TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "UNSAFE_ABORT"}
+    expected = {"TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "PERCEPTION_LOST", "UNSAFE_ABORT"}
     assert {c.value for c in SkillFailureCode} == expected
 
 

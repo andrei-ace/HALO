@@ -489,7 +489,7 @@ def test_no_chunk_needed_when_buffer_full():
 # --- Wrist camera ---
 
 
-# --- sync_phase (teacher mode) ---
+# --- sync_phase (sim mode) ---
 
 
 def test_sync_phase_transitions_on_new_phase():
@@ -551,7 +551,62 @@ def test_sync_phase_repeated_phase_returns_none():
     assert fsm.phase == PhaseId.EXECUTE_APPROACH
 
 
+def test_sync_phase_ignores_backward_transition():
+    """Backward phase (e.g. IDLE while in SELECT_GRASP) must be ignored."""
+    fsm = _started_fsm()
+    assert fsm.phase == PhaseId.SELECT_GRASP
+    old = fsm.sync_phase(T0 + 10, PhaseId.IDLE)
+    assert old is None
+    assert fsm.phase == PhaseId.SELECT_GRASP
+    assert fsm.is_active
+
+
+def test_sync_phase_ignores_backward_from_later_phase():
+    """When FSM is in EXECUTE_APPROACH, MOVE_PREGRASP must be ignored."""
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+    fsm.sync_phase(t + 1, PhaseId.EXECUTE_APPROACH)
+    assert fsm.phase == PhaseId.EXECUTE_APPROACH
+    old = fsm.sync_phase(t + 2, PhaseId.MOVE_PREGRASP)
+    assert old is None
+    assert fsm.phase == PhaseId.EXECUTE_APPROACH
+
+
 # --- Wrist camera ---
+
+
+def test_advance_fails_on_reacquire_failed():
+    """REACQUIRE_FAILED perception failure immediately aborts the skill."""
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+
+    failed_perception = PerceptionInfo(
+        tracking_status=TrackingStatus.REACQUIRING,
+        failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
+        reacquire_fail_count=3,
+        vlm_job_pending=False,
+    )
+    old = fsm.advance(t + 1, _target(), failed_perception, _act())
+    assert old == PhaseId.MOVE_PREGRASP
+    assert fsm.phase == PhaseId.DONE
+    assert fsm.outcome == SkillOutcomeState.FAILURE
+    assert fsm.failure_code == SkillFailureCode.PERCEPTION_LOST
+
+
+def test_advance_ok_on_non_fatal_perception_failure():
+    """Non-REACQUIRE_FAILED perception codes do not abort."""
+    fsm = _started_fsm()
+    t = _advance_to_move_pregrasp(fsm, T0 + 1)
+
+    occluded = PerceptionInfo(
+        tracking_status=TrackingStatus.TRACKING,
+        failure_code=PerceptionFailureCode.OCCLUDED,
+        reacquire_fail_count=0,
+        vlm_job_pending=False,
+    )
+    fsm.advance(t + 1, _target(), occluded, _act())
+    # Should NOT abort — still in a normal phase
+    assert fsm.phase != PhaseId.DONE
 
 
 def test_wrist_camera_active_in_correct_phases():

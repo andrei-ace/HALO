@@ -4,10 +4,8 @@ Uses the best available OpenCV tracker (TrackerVit > TrackerNano >
 TrackerDaSiamRPN > TrackerMIL) to follow a target initialised from a VLM
 detection bounding box.  Returns a ``TrackerFactoryFn``-compatible callable.
 
-Since these are 2D trackers and we have no depth sensor in v0,
-``delta_xyz_ee`` and ``distance_m`` are zeroed.  Only ``center_px``
-carries real data (bbox centroid in pixels).  Real 3D will come from
-ZED X depth fusion in the hardware phase.
+All coordinates exposed to callers are **normalised to 0..1** (fraction of
+frame width/height).  Pixel conversion happens only at the OpenCV boundary.
 """
 
 from __future__ import annotations
@@ -29,9 +27,41 @@ _NANOTRACK_BACKBONE = _MODELS_DIR / "nanotrack_backbone_sim.onnx"
 _NANOTRACK_HEAD = _MODELS_DIR / "nanotrack_head_sim.onnx"
 
 
-def _bbox_xyxy_to_xywh(x1: float, y1: float, x2: float, y2: float) -> tuple[int, int, int, int]:
-    """Convert (x1, y1, x2, y2) to OpenCV (x, y, w, h) integer tuple."""
-    return int(x1), int(y1), int(x2 - x1), int(y2 - y1)
+def _bbox_norm_to_pixel_xywh(
+    bbox_xyxy_norm: tuple[float, float, float, float],
+    img_w: int,
+    img_h: int,
+) -> tuple[int, int, int, int]:
+    """Convert normalised (x1, y1, x2, y2) 0..1 → pixel (x, y, w, h)."""
+    x1, y1, x2, y2 = bbox_xyxy_norm
+    px1, py1 = int(x1 * img_w), int(y1 * img_h)
+    px2, py2 = int(x2 * img_w), int(y2 * img_h)
+    return px1, py1, px2 - px1, py2 - py1
+
+
+def _target_info_from_pixel_bbox(
+    handle: str,
+    px_xywh: tuple[int, int, int, int],
+    img_w: int,
+    img_h: int,
+    confidence: float = 0.8,
+) -> TargetInfo:
+    """Build a TargetInfo with normalised 0..1 coords from a pixel bbox."""
+    x, y, w, h = px_xywh
+    cx_norm = (x + w / 2) / img_w
+    cy_norm = (y + h / 2) / img_h
+
+    return TargetInfo(
+        handle=handle,
+        hint_valid=True,
+        confidence=confidence,
+        obs_age_ms=0,
+        time_skew_ms=0,
+        delta_xyz_ee=(0.0, 0.0, 0.0),
+        distance_m=0.0,
+        center_px=(cx_norm, cy_norm),
+        bbox_xywh=(x / img_w, y / img_h, w / img_w, h / img_h),
+    )
 
 
 def _to_bgr(image: object) -> np.ndarray:
@@ -51,34 +81,6 @@ def _to_bgr(image: object) -> np.ndarray:
         raise TypeError(f"Unsupported image type: {type(image)}")
     rgb = np.array(pil)
     return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-
-def _target_info_from_bbox(
-    handle: str,
-    bbox_xywh: tuple[int, int, int, int],
-    confidence: float = 0.8,
-) -> TargetInfo:
-    """Build a TargetInfo from a 2D bounding box (no depth).
-
-    Only ``center_px`` carries real data (bbox centroid in pixels).
-    ``delta_xyz_ee`` and ``distance_m`` are zeroed — real 3D comes
-    from ZED X depth fusion in the hardware phase.
-    """
-    x, y, w, h = bbox_xywh
-    cx = x + w / 2
-    cy = y + h / 2
-
-    return TargetInfo(
-        handle=handle,
-        hint_valid=True,
-        confidence=confidence,
-        obs_age_ms=0,
-        time_skew_ms=0,
-        delta_xyz_ee=(0.0, 0.0, 0.0),
-        distance_m=0.0,
-        center_px=(cx, cy),
-        bbox_xywh=bbox_xywh,
-    )
 
 
 # Tracker names → ``cv2`` factory function names, ordered by preference.
@@ -150,6 +152,9 @@ def get_tracker_name() -> str:
 def make_tracker_factory_fn():
     """Return a ``TrackerFactoryFn`` backed by the best available OpenCV tracker.
 
+    Bbox / centroid coordinates in the returned ``TargetInfo`` are normalised
+    to 0..1 (fraction of frame dimensions).
+
     Usage::
 
         factory = make_tracker_factory_fn()
@@ -158,26 +163,30 @@ def make_tracker_factory_fn():
 
     async def factory(frame: CapturedFrame, detection: VlmDetection) -> tuple[TargetInfo, object]:
         bgr = _to_bgr(frame.image)
+        img_h, img_w = bgr.shape[:2]
 
-        x1, y1, x2, y2 = detection.bbox
-        bbox_xywh = _bbox_xyxy_to_xywh(x1, y1, x2, y2)
+        # Denormalise 0..1 bbox → pixel xywh for OpenCV tracker init
+        px_xywh = _bbox_norm_to_pixel_xywh(detection.bbox, img_w, img_h)
 
         tracker = _create_tracker()
-        tracker.init(bgr, bbox_xywh)
+        tracker.init(bgr, px_xywh)
 
-        init_hint = _target_info_from_bbox(detection.handle, bbox_xywh, confidence=0.9)
+        init_hint = _target_info_from_pixel_bbox(detection.handle, px_xywh, img_w, img_h, confidence=0.9)
 
         async def update(f: CapturedFrame) -> TargetInfo | None:
             frame_bgr = _to_bgr(f.image)
+            fh, fw = frame_bgr.shape[:2]
 
             ok, new_bbox = tracker.update(frame_bgr)
             if not ok:
                 return None
 
             bx, by, bw, bh = [int(v) for v in new_bbox]
-            return _target_info_from_bbox(
+            return _target_info_from_pixel_bbox(
                 detection.handle,
                 (bx, by, bw, bh),
+                fw,
+                fh,
                 confidence=0.8,
             )
 

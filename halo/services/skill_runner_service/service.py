@@ -3,12 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from halo.bridge import BridgeTransportError
-from halo.contracts.actions import ActionChunk, JointPositionAction, JointPositionChunk
-from halo.contracts.enums import WRIST_ACTIVE_PHASES, ActStatus, PhaseId, SkillFailureCode, SkillName, SkillOutcomeState
+from halo.contracts.actions import ActionChunk
+from halo.contracts.enums import (
+    WRIST_ACTIVE_PHASES,
+    ActStatus,
+    PhaseId,
+    SkillFailureCode,
+    SkillName,
+    SkillOutcomeState,
+)
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import ActInfo, OutcomeInfo, ProgressInfo, SkillInfo
 from halo.runtime.runtime import HALORuntime
@@ -25,20 +31,10 @@ ChunkFn = Callable[
 PushFn = Callable[[ActionChunk], Awaitable[None]]
 
 
-# --- Teacher mode types ---
+# --- Sim mode types ---
 
-
-@dataclass(frozen=True)
-class TeacherStepResult:
-    """Result from a single teacher step (server-side)."""
-
-    phase_id: int
-    done: bool
-    action: tuple[float, ...]  # 6D joint-position that was applied on server
-
-
-TeacherStepFn = Callable[[str], Awaitable[TeacherStepResult]]  # (arm_id,) → result
-JointPushFn = Callable[[JointPositionChunk], Awaitable[None]]
+StartPickFn = Callable[[str, str], Awaitable[dict]]  # (arm_id, target_body) → server response
+SimPhaseFn = Callable[[], tuple[int, bool]]  # () → (phase_id, done)
 
 
 class SkillRunnerService:
@@ -48,7 +44,7 @@ class SkillRunnerService:
 
     Supports two modes:
         - ACT mode (default): chunk_fn + push_fn drive actions
-        - Teacher mode: teacher_step_fn + joint_push_fn drive actions
+        - Sim mode: start_pick_fn + sim_phase_fn drive actions (server-side trajectory)
 
     Lifecycle:
         svc = SkillRunnerService(arm_id, runtime, chunk_fn, push_fn)
@@ -65,16 +61,16 @@ class SkillRunnerService:
         push_fn: PushFn | None = None,
         config: SkillRunnerConfig = SkillRunnerConfig(),
         *,
-        teacher_step_fn: TeacherStepFn | None = None,
-        joint_push_fn: JointPushFn | None = None,
+        start_pick_fn: StartPickFn | None = None,
+        sim_phase_fn: SimPhaseFn | None = None,
     ) -> None:
         act_mode = chunk_fn is not None or push_fn is not None
-        teacher_mode = teacher_step_fn is not None
+        sim_mode = start_pick_fn is not None
 
-        if act_mode and teacher_mode:
-            raise ValueError("Cannot provide both ACT (chunk_fn/push_fn) and teacher (teacher_step_fn) callables")
-        if not act_mode and not teacher_mode:
-            raise ValueError("Must provide either ACT (chunk_fn + push_fn) or teacher (teacher_step_fn) callables")
+        if act_mode and sim_mode:
+            raise ValueError("Cannot provide both ACT (chunk_fn/push_fn) and sim (start_pick_fn) callables")
+        if not act_mode and not sim_mode:
+            raise ValueError("Must provide either ACT (chunk_fn + push_fn) or sim (start_pick_fn) callables")
 
         if act_mode:
             if chunk_fn is None or push_fn is None:
@@ -83,15 +79,15 @@ class SkillRunnerService:
         self._arm_id = arm_id
         self._runtime = runtime
         self._config = config
-        self._teacher_mode = teacher_mode
+        self._sim_mode = sim_mode
 
         # ACT mode callables
         self._chunk_fn = chunk_fn
         self._push_fn = push_fn
 
-        # Teacher mode callables
-        self._teacher_step_fn = teacher_step_fn
-        self._joint_push_fn = joint_push_fn
+        # Sim mode callables
+        self._start_pick_fn = start_pick_fn
+        self._sim_phase_fn = sim_phase_fn
 
         self._fsm: PickFSM = PickFSM(config)
         self._skill_name: SkillName | None = None
@@ -193,6 +189,21 @@ class SkillRunnerService:
             {"phase_id": int(PhaseId.SELECT_GRASP)},
         )
 
+        # In sim mode, trigger trajectory planning on the server
+        if self._sim_mode and self._start_pick_fn is not None:
+            try:
+                resp = await self._start_pick_fn(self._arm_id, target_handle)
+                if resp.get("type") == "start_pick_error":
+                    logger.warning("start_pick_fn returned error: %s", resp.get("message"))
+                    old_phase = self._fsm.phase
+                    self._fsm.fail(now_ms, SkillFailureCode.NO_GRASP)
+                    await self._handle_transition(old_phase)
+            except BridgeTransportError:
+                logger.warning("start_pick_fn bridge transport failed, aborting skill")
+                old_phase = self._fsm.phase
+                self._fsm.abort(now_ms)
+                await self._handle_transition(old_phase)
+
     async def abort_skill(self) -> None:
         """Abort the current skill run (idempotent if not active)."""
         if not self._fsm.is_active:
@@ -231,48 +242,34 @@ class SkillRunnerService:
         )
 
     async def tick(self) -> PhaseId | None:
-        """One runner tick. Dispatches to ACT or teacher mode."""
-        if self._teacher_mode:
-            return await self._tick_teacher()
+        """One runner tick. Dispatches to ACT or sim mode."""
+        if self._sim_mode:
+            return await self._tick_sim()
         return await self._tick_act()
 
-    # --- Teacher mode tick ---
+    # --- Sim mode tick ---
 
-    async def _tick_teacher(self) -> PhaseId | None:
-        """Teacher-mode tick: call teacher_step_fn, sync FSM phase, push joint chunk."""
+    async def _tick_sim(self) -> PhaseId | None:
+        """Sim-mode tick: read phase from sim_phase_fn, sync FSM, update progress."""
         if not self._fsm.is_active:
             return None
 
         now_ms = int(time.monotonic() * 1000)
 
-        try:
-            result = await self._teacher_step_fn(self._arm_id)
-        except BridgeTransportError:
-            logger.warning("SkillRunner: teacher_step_fn bridge transport failed, aborting skill")
-            old_phase = self._fsm.phase
-            self._fsm.abort(now_ms)
-            await self._handle_transition(old_phase)
+        # Read phase from sim server telemetry
+        if self._sim_phase_fn is not None:
+            phase_id, done = self._sim_phase_fn()
+        else:
             return self._fsm.phase
 
-        # Sync FSM phase from teacher
-        teacher_phase = PhaseId(result.phase_id) if not result.done else PhaseId.DONE
-        old_phase = self._fsm.sync_phase(now_ms, teacher_phase)
+        # Sync FSM phase from sim
+        sim_phase = PhaseId(phase_id) if not done else PhaseId.DONE
+        old_phase = self._fsm.sync_phase(now_ms, sim_phase)
 
         if old_phase is not None:
             await self._handle_transition(old_phase)
 
-        # Push joint-position chunk
-        if self._joint_push_fn is not None and self._fsm.is_active:
-            chunk = JointPositionChunk(
-                chunk_id=f"teacher-{now_ms}",
-                arm_id=self._arm_id,
-                phase_id=self._fsm.phase,
-                actions=(JointPositionAction(values=result.action),),
-                ts_ms=now_ms,
-            )
-            await self._joint_push_fn(chunk)
-
-        # Update progress (no delta_distance in teacher mode)
+        # Update progress (no delta_distance in sim mode)
         elapsed_ms = now_ms - self._skill_start_ms
         await self._runtime.store.update_progress(
             self._arm_id,

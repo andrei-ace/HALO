@@ -2,6 +2,8 @@
 
 Covers: bbox conversion, image type coercion (_to_bgr), TargetInfo construction,
 tracker discovery/fallback, get_tracker_name(), and the full factory + update cycle.
+
+All bbox/centroid coordinates are normalised to 0..1.
 """
 
 from __future__ import annotations
@@ -14,9 +16,9 @@ import pytest
 
 from halo.services.target_perception_service.frame_buffer import CapturedFrame
 from halo.services.target_perception_service.tracker_fn import (
-    _bbox_xyxy_to_xywh,
+    _bbox_norm_to_pixel_xywh,
     _create_tracker,
-    _target_info_from_bbox,
+    _target_info_from_pixel_bbox,
     _to_bgr,
     get_tracker_name,
     make_tracker_factory_fn,
@@ -24,16 +26,18 @@ from halo.services.target_perception_service.tracker_fn import (
 from halo.services.target_perception_service.vlm_parser import VlmDetection
 
 # ---------------------------------------------------------------------------
-# _bbox_xyxy_to_xywh
+# _bbox_norm_to_pixel_xywh
 # ---------------------------------------------------------------------------
 
 
-def test_bbox_xyxy_to_xywh_basic():
-    assert _bbox_xyxy_to_xywh(10, 20, 110, 220) == (10, 20, 100, 200)
+def test_bbox_norm_to_pixel_xywh_basic():
+    # (0.1, 0.2, 0.6, 0.7) on 200x100 image → (20, 20, 100, 50)
+    assert _bbox_norm_to_pixel_xywh((0.1, 0.2, 0.6, 0.7), 200, 100) == (20, 20, 100, 50)
 
 
-def test_bbox_xyxy_to_xywh_truncates_floats():
-    assert _bbox_xyxy_to_xywh(10.7, 20.3, 50.9, 80.1) == (10, 20, 40, 59)
+def test_bbox_norm_to_pixel_xywh_full_frame():
+    # Full frame → (0, 0, 640, 480)
+    assert _bbox_norm_to_pixel_xywh((0.0, 0.0, 1.0, 1.0), 640, 480) == (0, 0, 640, 480)
 
 
 # ---------------------------------------------------------------------------
@@ -92,33 +96,34 @@ def test_to_bgr_unsupported_type_raises():
 
 
 # ---------------------------------------------------------------------------
-# _target_info_from_bbox
+# _target_info_from_pixel_bbox
 # ---------------------------------------------------------------------------
 
 
-def test_target_info_from_bbox_centroid():
-    info = _target_info_from_bbox("cube-1", (100, 200, 50, 80))
-    assert info.center_px == (125.0, 240.0)
+def test_target_info_from_pixel_bbox_centroid():
+    info = _target_info_from_pixel_bbox("cube-1", (100, 200, 50, 80), 400, 400)
+    # centre = (100+25)/400, (200+40)/400 = 0.3125, 0.6
+    assert info.center_px == (0.3125, 0.6)
     assert info.handle == "cube-1"
     assert info.hint_valid is True
     assert info.confidence == 0.8
 
 
-def test_target_info_from_bbox_custom_confidence():
-    info = _target_info_from_bbox("obj", (0, 0, 10, 10), confidence=0.95)
+def test_target_info_from_pixel_bbox_custom_confidence():
+    info = _target_info_from_pixel_bbox("obj", (0, 0, 10, 10), 100, 100, confidence=0.95)
     assert info.confidence == 0.95
 
 
-def test_target_info_from_bbox_zeroed_3d():
-    info = _target_info_from_bbox("obj", (0, 0, 10, 10))
+def test_target_info_from_pixel_bbox_zeroed_3d():
+    info = _target_info_from_pixel_bbox("obj", (0, 0, 10, 10), 100, 100)
     assert info.delta_xyz_ee == (0.0, 0.0, 0.0)
     assert info.distance_m == 0.0
 
 
-def test_target_info_from_bbox_propagates_bbox_xywh():
-    bbox = (100, 200, 50, 80)
-    info = _target_info_from_bbox("cube-1", bbox)
-    assert info.bbox_xywh == bbox
+def test_target_info_from_pixel_bbox_normalised_bbox():
+    info = _target_info_from_pixel_bbox("cube-1", (100, 200, 50, 80), 400, 400)
+    # bbox_xywh = (100/400, 200/400, 50/400, 80/400) = (0.25, 0.5, 0.125, 0.2)
+    assert info.bbox_xywh == (0.25, 0.5, 0.125, 0.2)
 
 
 # ---------------------------------------------------------------------------
@@ -200,11 +205,12 @@ def _make_frame(w: int = 200, h: int = 200) -> CapturedFrame:
 
 
 def _make_detection(handle: str = "cube-1") -> VlmDetection:
+    """Detection with normalised 0..1 bbox (on a 200x200 frame → centre quarter)."""
     return VlmDetection(
         handle=handle,
         label="cube",
-        bbox=(50.0, 50.0, 100.0, 100.0),
-        centroid=(75.0, 75.0),
+        bbox=(0.25, 0.25, 0.5, 0.5),
+        centroid=(0.375, 0.375),
         is_graspable=True,
     )
 
@@ -219,7 +225,8 @@ async def test_factory_init_returns_hint_and_update():
     assert init_hint.handle == "cube-1"
     assert init_hint.confidence == 0.9  # init confidence
     assert init_hint.hint_valid is True
-    assert init_hint.center_px == (75.0, 75.0)  # centroid of (50,50,50,50) xywh
+    # On 200x200: pixel xywh=(50,50,50,50), centre=(75/200,75/200)=(0.375,0.375)
+    assert init_hint.center_px == (0.375, 0.375)
     assert init_hint.delta_xyz_ee == (0.0, 0.0, 0.0)
     assert init_hint.distance_m == 0.0
     assert callable(update_fn)
@@ -244,6 +251,9 @@ async def test_factory_update_returns_target_info():
         assert result.delta_xyz_ee == (0.0, 0.0, 0.0)
         assert result.distance_m == 0.0
         assert result.center_px is not None
+        # All coords should be normalised 0..1
+        assert 0.0 <= result.center_px[0] <= 1.0
+        assert 0.0 <= result.center_px[1] <= 1.0
 
 
 async def test_factory_update_with_pil_image():

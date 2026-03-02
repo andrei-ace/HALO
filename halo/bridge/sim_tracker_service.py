@@ -195,11 +195,17 @@ class SimTrackerService:
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         det_data = msg["detection"]
+        raw_bbox = tuple(det_data["bbox"])
+        raw_centroid = tuple(det_data["centroid"])
+        # Normalise pixel coords to 0..1 if they exceed the unit range
+        if any(v > 1.0 for v in raw_bbox):
+            raw_bbox = (raw_bbox[0] / w, raw_bbox[1] / h, raw_bbox[2] / w, raw_bbox[3] / h)
+            raw_centroid = (raw_centroid[0] / w, raw_centroid[1] / h)
         detection = VlmDetection(
             handle=det_data["handle"],
             label=det_data.get("label", ""),
-            bbox=tuple(det_data["bbox"]),
-            centroid=tuple(det_data["centroid"]),
+            bbox=raw_bbox,
+            centroid=raw_centroid,
             is_graspable=det_data.get("is_graspable", False),
         )
 

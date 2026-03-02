@@ -357,13 +357,13 @@ async def test_start_stop_lifecycle(rt: HALORuntime):
 
 
 def _scene(*handles: str) -> VlmScene:
-    """Build a VlmScene with one detection per handle."""
+    """Build a VlmScene with one detection per handle (normalised 0..1)."""
     dets = [
         VlmDetection(
             handle=h,
             label=h,
-            bbox=(0.0, 0.0, 100.0, 100.0),
-            centroid=(50.0, 50.0),
+            bbox=(0.0, 0.0, 0.2, 0.2),
+            centroid=(0.1, 0.1),
             is_graspable=True,
         )
         for h in handles
@@ -381,8 +381,8 @@ def test_stabilize_scene_for_tracked_target_remaps_when_near_anchor():
             VlmDetection(
                 handle="black_cube_02",
                 label="cube",
-                bbox=(102.0, 101.0, 201.0, 199.0),
-                centroid=(151.5, 150.0),
+                bbox=(0.1, 0.1, 0.3, 0.3),
+                centroid=(0.2, 0.2),
                 is_graspable=True,
             )
         ],
@@ -391,7 +391,7 @@ def test_stabilize_scene_for_tracked_target_remaps_when_near_anchor():
     stabilized = _stabilize_scene_for_tracked_target(
         scene,
         tracked_handle="black_cube_01",
-        tracked_center_px=(150.0, 150.0),
+        tracked_center_px=(0.2, 0.2),
     )
     assert stabilized.detections[0].handle == "black_cube_01"
 
@@ -403,8 +403,8 @@ def test_stabilize_scene_for_tracked_target_keeps_handle_when_far():
             VlmDetection(
                 handle="black_cube_02",
                 label="cube",
-                bbox=(700.0, 400.0, 760.0, 460.0),
-                centroid=(730.0, 430.0),
+                bbox=(0.7, 0.7, 0.9, 0.9),
+                centroid=(0.8, 0.8),
                 is_graspable=True,
             )
         ],
@@ -413,7 +413,7 @@ def test_stabilize_scene_for_tracked_target_keeps_handle_when_far():
     stabilized = _stabilize_scene_for_tracked_target(
         scene,
         tracked_handle="black_cube_01",
-        tracked_center_px=(20.0, 20.0),
+        tracked_center_px=(0.1, 0.1),
     )
     assert stabilized.detections[0].handle == "black_cube_02"
 

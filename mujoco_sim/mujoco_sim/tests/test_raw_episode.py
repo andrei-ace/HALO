@@ -14,8 +14,8 @@ from mujoco_sim.dataset import EpisodeMetadata, RawEpisode, Timestep, episode_pa
 # Helpers
 # ---------------------------------------------------------------------------
 
-NQ = 13  # SO-101: 6 joints + 7 cube freejoint
-NV = 12  # 6 + 6
+NQ = 20  # SO-101: 6 joints + 7 green cube freejoint + 7 red cube freejoint
+NV = 18  # 6 + 6 + 6
 SCENE_H, SCENE_W = 48, 64  # small for tests
 WRIST_H, WRIST_W = 24, 32
 
@@ -24,6 +24,7 @@ def _make_timestep(
     i: int,
     *,
     with_object: bool = True,
+    with_red_object: bool = True,
     with_contacts: bool = False,
     with_phase: bool = False,
     with_joint_pos: bool = True,
@@ -40,6 +41,7 @@ def _make_timestep(
         action=rng.randn(6).astype(np.float64),
         phase_id=i % 10 if with_phase else None,
         object_pose=rng.randn(7).astype(np.float64) if with_object else None,
+        red_object_pose=rng.randn(7).astype(np.float64) if with_red_object else None,
         joint_pos=rng.randn(6).astype(np.float64) if with_joint_pos else None,
         contacts=rng.randn(rng.randint(1, 5)).astype(np.float64) if with_contacts else None,
     )
@@ -156,6 +158,15 @@ class TestRawEpisode:
         ep = _make_episode(5, with_object=False)
         assert ep.object_poses is None
 
+    def test_bulk_red_object_poses_present(self):
+        ep = _make_episode(5, with_red_object=True)
+        assert ep.red_object_poses is not None
+        assert ep.red_object_poses.shape == (5, 7)
+
+    def test_bulk_red_object_poses_absent(self):
+        ep = _make_episode(5, with_red_object=False)
+        assert ep.red_object_poses is None
+
     def test_bulk_phase_ids_present(self):
         ep = _make_episode(5, with_phase=True)
         assert ep.phase_ids is not None
@@ -206,6 +217,7 @@ class TestHDF5Roundtrip:
             np.testing.assert_allclose(rt.ee_pose, orig.ee_pose)
             np.testing.assert_allclose(rt.action, orig.action)
             np.testing.assert_allclose(rt.object_pose, orig.object_pose)
+            np.testing.assert_allclose(rt.red_object_pose, orig.red_object_pose)
             np.testing.assert_allclose(rt.joint_pos, orig.joint_pos)
 
     def test_roundtrip_no_object_pose(self, tmp_path):
@@ -216,6 +228,15 @@ class TestHDF5Roundtrip:
 
         assert loaded[0].object_pose is None
         assert loaded.object_poses is None
+
+    def test_roundtrip_no_red_object_pose(self, tmp_path):
+        """Episodes without red_object_pose should roundtrip cleanly."""
+        ep = _make_episode(5, with_red_object=False)
+        out = write_episode(ep, tmp_path / "no_red_obj.hdf5")
+        loaded = read_episode(out)
+
+        assert loaded[0].red_object_pose is None
+        assert loaded.red_object_poses is None
 
     def test_roundtrip_no_joint_pos(self, tmp_path):
         """Episodes without joint_pos should roundtrip cleanly."""
@@ -302,6 +323,7 @@ class TestHDF5Roundtrip:
         np.testing.assert_allclose(loaded.ee_poses, ep.ee_poses)
         np.testing.assert_allclose(loaded.actions, ep.actions)
         np.testing.assert_allclose(loaded.object_poses, ep.object_poses)
+        np.testing.assert_allclose(loaded.red_object_poses, ep.red_object_poses)
         np.testing.assert_allclose(loaded.joint_pos_array, ep.joint_pos_array)
 
 

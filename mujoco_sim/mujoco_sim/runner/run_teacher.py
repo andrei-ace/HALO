@@ -4,7 +4,7 @@ Architecture: MuJoCo env + teacher run in a **SimServer** process (macOS
 requires OpenGL on the main thread). ZMQ bridges the client/server:
 
     TelemetryStream (PUB/SUB): server publishes telemetry
-    CommandRPC (REQ/REP): client sends step/reset/teacher_step/configure commands
+    CommandRPC (REQ/REP): client sends step/reset/start_pick/configure commands
 
 Standalone mode (``make sim-server`` already running) or managed mode
 (server spawned automatically) are both supported.
@@ -107,9 +107,6 @@ def run_teacher(
     client = SimClient(bridge_config)
     client.start(timeout=60.0)
 
-    # Enable teacher mode.
-    client.configure(teacher_mode=True)
-
     pbar = None
     if progress:
         try:
@@ -173,8 +170,12 @@ def _run_episode_via_zmq(
     stabilize_steps: int,
     save_video: bool,
 ) -> EpisodeResult:
-    """Run one episode via SimClient CommandRPC commands."""
-    from mujoco_sim.server.protocol import bytes_to_ndarray
+    """Run one episode via SimClient CommandRPC commands.
+
+    Uses start_pick to trigger autonomous trajectory execution on the server,
+    then polls telemetry for observations until done.
+    """
+    import time
 
     # Reset
     client.reset(seed=seed)
@@ -184,7 +185,16 @@ def _run_episode_via_zmq(
     for _ in range(stabilize_steps):
         client.step(home_action)
 
-    # Recording phase
+    # Trigger trajectory planning and autonomous execution
+    resp = client.start_pick()
+    if resp.get("type") == "start_pick_error":
+        return EpisodeResult(
+            episode_idx=ep_idx,
+            seed=seed,
+            error=f"start_pick failed: {resp.get('message', 'unknown')}",
+        )
+
+    # Recording phase — poll telemetry for observations
     meta = EpisodeMetadata(
         seed=seed,
         env_name=env_config.scene_xml,
@@ -195,27 +205,35 @@ def _run_episode_via_zmq(
     episode = RawEpisode(metadata=meta)
     video_frames: list[np.ndarray] = []
 
+    poll_interval = 1.0 / env_config.control_freq
+    last_step_count = -1
+    phase_id = 0
+
     for step_idx in range(max_steps):
-        # Teacher step — server runs teacher policy, returns obs + action
-        resp = client.teacher_step()
+        # Wait for new telemetry
+        time.sleep(poll_interval)
 
-        action = bytes_to_ndarray(resp["action"], shape=(6,))
-        phase_id = resp["phase_id"]
-        done = resp["done"]
+        telemetry = client.latest_telemetry
+        if telemetry is None:
+            continue
 
-        # Decode observation from response
-        qpos = bytes_to_ndarray(resp["qpos"], shape=(13,))
-        qvel = bytes_to_ndarray(resp["qvel"], shape=(12,))
-        ee_pose = bytes_to_ndarray(resp["ee_pose"], shape=(7,))
-        object_pose = bytes_to_ndarray(resp["object_pose"], shape=(7,))
-        joint_pos = bytes_to_ndarray(resp["joint_pos"], shape=(6,))
-        gripper = resp["gripper"]
+        # Skip duplicate telemetry frames
+        if telemetry.get("step_count", -1) == last_step_count:
+            continue
+        last_step_count = telemetry.get("step_count", -1)
 
-        # Decode images (raw numpy bytes)
-        scene_h, scene_w = env_config.scene_resolution
-        wrist_h, wrist_w = env_config.wrist_resolution
-        rgb_scene = bytes_to_ndarray(resp["rgb_scene"], dtype=np.uint8, shape=(scene_h, scene_w, 3))
-        rgb_wrist = bytes_to_ndarray(resp["rgb_wrist"], dtype=np.uint8, shape=(wrist_h, wrist_w, 3))
+        phase_id = telemetry.get("phase_id", 0)
+        done = telemetry.get("done", False)
+
+        qpos = telemetry["qpos"]
+        qvel = telemetry["qvel"]
+        ee_pose = telemetry["ee_pose"]
+        object_pose = telemetry["object_pose"]
+        joint_pos = telemetry["joint_pos"]
+        gripper = telemetry["gripper"]
+        action = telemetry["action"]
+        rgb_scene = telemetry["rgb_scene"]
+        rgb_wrist = telemetry["rgb_wrist"]
 
         # Video preview
         if save_video:
@@ -234,6 +252,7 @@ def _run_episode_via_zmq(
             action=np.array(action, copy=True),
             phase_id=phase_id,
             object_pose=object_pose,
+            red_object_pose=telemetry.get("red_object_pose"),
             joint_pos=joint_pos,
         )
         episode.append(ts)
@@ -320,6 +339,7 @@ def _run_single_episode(
             action=np.array(action, copy=True),
             phase_id=phase_id,
             object_pose=obs.get("object_pose"),
+            red_object_pose=obs.get("red_object_pose"),
             joint_pos=obs.get("joint_pos"),
         )
         episode.append(ts)

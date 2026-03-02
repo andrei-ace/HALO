@@ -73,17 +73,21 @@ def seed_joints(mj_data):
 
 class TestEnumerateFaceGrasps:
     def test_enumerate_produces_64_candidates(self, scene_info):
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         assert len(candidates) == 64  # 4 faces × 16 per face
 
     def test_enumerate_custom_count(self, scene_info):
         candidates = enumerate_face_grasps(
-            scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes, n_candidates=32
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes, n_candidates=32
         )
         assert len(candidates) == 32
 
     def test_enumerate_face_labels(self, scene_info):
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         labels = [c.face_label for c in candidates]
         for face in ["+X", "-X", "+Y", "-Y"]:
             assert labels.count(face) == 16  # 64 / 4
@@ -91,14 +95,14 @@ class TestEnumerateFaceGrasps:
     def test_enumerate_rotated_cube(self, scene_info):
         """Non-identity quaternion should shift face normals."""
         identity_candidates = enumerate_face_grasps(
-            scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes, seed=0
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes, seed=0
         )
 
         # 45-degree yaw rotation
         angle = np.pi / 4
         rotated_quat = np.array([np.cos(angle / 2), 0.0, 0.0, np.sin(angle / 2)])
         rotated_candidates = enumerate_face_grasps(
-            scene_info.cube_default_pos, rotated_quat, scene_info.cube_half_sizes, seed=0
+            scene_info.green_cube_default_pos, rotated_quat, scene_info.green_cube_half_sizes, seed=0
         )
 
         assert len(rotated_candidates) == 64
@@ -108,13 +112,17 @@ class TestEnumerateFaceGrasps:
         assert not np.allclose(id_contacts, rot_contacts, atol=1e-3)
 
     def test_approach_is_unit_vector(self, scene_info):
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         for c in candidates:
             np.testing.assert_allclose(np.linalg.norm(c.approach_dir), 1.0, atol=1e-10)
 
     def test_orientation_is_valid_rotation(self, scene_info):
         """Each orientation should be a proper rotation matrix (det=+1, orthogonal)."""
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         for c in candidates:
             assert c.orientation.shape == (3, 3)
             np.testing.assert_allclose(c.orientation.T @ c.orientation, np.eye(3), atol=1e-10)
@@ -122,7 +130,9 @@ class TestEnumerateFaceGrasps:
 
     def test_z_column_equals_approach(self, scene_info):
         """Gripperframe Z-column should equal approach_dir."""
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         for c in candidates:
             np.testing.assert_allclose(c.orientation[:, 2], c.approach_dir, atol=1e-10)
 
@@ -130,7 +140,10 @@ class TestEnumerateFaceGrasps:
         """All approach directions should be within max_cone_deg of the face normal."""
         max_cone = 5.0
         candidates = enumerate_face_grasps(
-            scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes, max_cone_deg=max_cone
+            scene_info.green_cube_default_pos,
+            _DEFAULT_CUBE_QUAT,
+            scene_info.green_cube_half_sizes,
+            max_cone_deg=max_cone,
         )
         face_normals = {"+X": [1, 0, 0], "-X": [-1, 0, 0], "+Y": [0, 1, 0], "-Y": [0, -1, 0]}
         for c in candidates:
@@ -144,8 +157,12 @@ class TestEnumerateFaceGrasps:
 
     def test_seed_reproducibility(self, scene_info):
         """Same seed should produce identical candidates."""
-        a = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes, seed=42)
-        b = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes, seed=42)
+        a = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes, seed=42
+        )
+        b = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes, seed=42
+        )
         for ca, cb in zip(a, b):
             np.testing.assert_array_equal(ca.approach_dir, cb.approach_dir)
             np.testing.assert_array_equal(ca.orientation, cb.orientation)
@@ -159,22 +176,25 @@ class TestEnumerateFaceGrasps:
         }
 
         center_only = enumerate_face_grasps(
-            scene_info.cube_default_pos,
+            scene_info.green_cube_default_pos,
             _DEFAULT_CUBE_QUAT,
-            scene_info.cube_half_sizes,
+            scene_info.green_cube_half_sizes,
             face_contact_span=0.0,
             face_standoff=0.0,
             seed=123,
         )
         for c in center_only:
             axis_idx = {"X": 0, "Y": 1, "Z": 2}[c.face_label[1]]
-            expected = scene_info.cube_default_pos + face_normals[c.face_label] * scene_info.cube_half_sizes[axis_idx]
+            expected = (
+                scene_info.green_cube_default_pos
+                + face_normals[c.face_label] * scene_info.green_cube_half_sizes[axis_idx]
+            )
             np.testing.assert_allclose(c.contact_point, expected, atol=1e-10)
 
         offcenter = enumerate_face_grasps(
-            scene_info.cube_default_pos,
+            scene_info.green_cube_default_pos,
             _DEFAULT_CUBE_QUAT,
-            scene_info.cube_half_sizes,
+            scene_info.green_cube_half_sizes,
             face_contact_span=0.35,
             face_standoff=0.0,
             seed=123,
@@ -205,7 +225,9 @@ class TestFilterGrasps:
 
     def test_filter_keeps_side_grasps(self, scene_info):
         """Default cube position side faces should pass."""
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         feasible = filter_grasps(candidates, table_z=scene_info.table_z)
         # At least some side grasps should pass for the default cube position
         assert len(feasible) > 0
@@ -221,8 +243,8 @@ class TestScoreGrasp:
         self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints
     ):
         """Cube far out of reach should return None."""
-        far_cube = np.array([1.0, 0.0, scene_info.cube_default_pos[2]])
-        candidates = enumerate_face_grasps(far_cube, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        far_cube = np.array([1.0, 0.0, scene_info.green_cube_default_pos[2]])
+        candidates = enumerate_face_grasps(far_cube, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes)
         feasible = filter_grasps(candidates, table_z=scene_info.table_z)
         # Score each — all should fail
         for candidate in feasible:
@@ -231,7 +253,9 @@ class TestScoreGrasp:
 
     def test_score_returns_scored_grasp(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints):
         """Default cube position should have at least one scoreable candidate."""
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         feasible = filter_grasps(candidates, table_z=scene_info.table_z)
 
         scored_any = False
@@ -247,7 +271,9 @@ class TestScoreGrasp:
 
     def test_ori_error_within_tolerance(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints):
         """Scored grasps should have orientation error within tolerance."""
-        candidates = enumerate_face_grasps(scene_info.cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.cube_half_sizes)
+        candidates = enumerate_face_grasps(
+            scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
+        )
         feasible = filter_grasps(candidates, table_z=scene_info.table_z)
 
         for candidate in feasible:
@@ -265,9 +291,9 @@ class TestEvaluateGrasps:
     def test_evaluate_returns_best(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints):
         """Returned grasp should have the best score."""
         best = evaluate_grasps(
-            scene_info.cube_default_pos,
+            scene_info.green_cube_default_pos,
             _DEFAULT_CUBE_QUAT,
-            scene_info.cube_half_sizes,
+            scene_info.green_cube_half_sizes,
             mj_model,
             mj_data,
             ee_site_id,
@@ -281,9 +307,9 @@ class TestEvaluateGrasps:
     def test_evaluate_default_cube_pos(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints):
         """evaluate_grasps works for the default cube position."""
         best = evaluate_grasps(
-            scene_info.cube_default_pos,
+            scene_info.green_cube_default_pos,
             _DEFAULT_CUBE_QUAT,
-            scene_info.cube_half_sizes,
+            scene_info.green_cube_half_sizes,
             mj_model,
             mj_data,
             ee_site_id,
@@ -297,8 +323,8 @@ class TestEvaluateGrasps:
 
     def test_evaluate_various_positions(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints):
         """evaluate_grasps works for several cube placements."""
-        cube_z = scene_info.cube_default_pos[2]
-        cx, cy = scene_info.cube_default_pos[0], scene_info.cube_default_pos[1]
+        cube_z = scene_info.green_cube_default_pos[2]
+        cx, cy = scene_info.green_cube_default_pos[0], scene_info.green_cube_default_pos[1]
         positions = [
             np.array([cx, cy, cube_z]),
             np.array([cx + 0.01, cy + 0.01, cube_z]),
@@ -308,7 +334,7 @@ class TestEvaluateGrasps:
             best = evaluate_grasps(
                 pos,
                 _DEFAULT_CUBE_QUAT,
-                scene_info.cube_half_sizes,
+                scene_info.green_cube_half_sizes,
                 mj_model,
                 mj_data,
                 ee_site_id,
@@ -322,12 +348,12 @@ class TestEvaluateGrasps:
         self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids, seed_joints
     ):
         """Cube far out of reach should raise GraspPlanningFailure."""
-        far_pos = np.array([1.0, 0.0, scene_info.cube_default_pos[2]])
+        far_pos = np.array([1.0, 0.0, scene_info.green_cube_default_pos[2]])
         with pytest.raises(GraspPlanningFailure):
             evaluate_grasps(
                 far_pos,
                 _DEFAULT_CUBE_QUAT,
-                scene_info.cube_half_sizes,
+                scene_info.green_cube_half_sizes,
                 mj_model,
                 mj_data,
                 ee_site_id,

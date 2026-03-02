@@ -66,7 +66,7 @@ _DATA = dict(
     # ── Target Perception state ──
     perc_tracking="TRACKING",
     perc_target="cube-1",
-    perc_center_px=(487, 312),
+    perc_center_px=(0.76, 0.65),
     perc_distance_m=0.09,
     perc_confidence=0.86,
     perc_obs_age_ms=45,
@@ -474,10 +474,10 @@ class TargetPerceptionPanel(Container):
         target = data["perc_target"]
         texts.append(row("Target:", target or "—", "#4fc3f7" if target else "#9e9e9e"))
 
-        # Bbox center (px)
+        # Bbox center (normalised 0..1)
         ctr = data.get("perc_center_px")
         if ctr is not None:
-            texts.append(row("Center:", f"{ctr[0]:.0f}, {ctr[1]:.0f} px", "white"))
+            texts.append(row("Center:", f"{ctr[0]:.2f}, {ctr[1]:.2f}", "white"))
         else:
             texts.append(row("Center:", "—", "#9e9e9e"))
 
@@ -1064,8 +1064,6 @@ class HALOApp(App):
         arm_id: str = "arm0",
         perception_svc: object | None = None,
         skill_runner_svc: object | None = None,
-        joint_control_svc: object | None = None,
-        sim_reset_fn: object | None = None,
         run_logger: RunLogger | None = None,
         tracker_name: str = "",
         video_source: object | None = None,
@@ -1076,8 +1074,6 @@ class HALOApp(App):
         self._arm_id = arm_id
         self._perception_svc = perception_svc
         self._skill_runner_svc = skill_runner_svc
-        self._joint_control_svc = joint_control_svc
-        self._sim_reset_fn = sim_reset_fn  # optional: reset sim env before skill start
         self._tracker_name = tracker_name
         self._video_source = video_source
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
@@ -1102,9 +1098,7 @@ class HALOApp(App):
         if self._runtime and self._agent:
             self._agent_queue = asyncio.Queue()
             self.run_worker(self._agent_processor_loop(), name="agent_processor")
-        # Start teacher-mode services (joint control before skill runner)
-        if self._joint_control_svc is not None:
-            await self._joint_control_svc.start()  # type: ignore[union-attr]
+        # Start sim-mode services
         if self._skill_runner_svc is not None:
             await self._skill_runner_svc.start()  # type: ignore[union-attr]
             # Intercept submit_command to capture commands for routing
@@ -1128,8 +1122,6 @@ class HALOApp(App):
             await self._perception_svc.stop()  # type: ignore[union-attr]
         if self._skill_runner_svc is not None:
             await self._skill_runner_svc.stop()  # type: ignore[union-attr]
-        if self._joint_control_svc is not None:
-            await self._joint_control_svc.stop()  # type: ignore[union-attr]
         if self._cmd_route_queue is not None and self._runtime:
             self._runtime.bus.unsubscribe(self._arm_id, self._cmd_route_queue)  # type: ignore[union-attr]
             self._cmd_route_queue = None
@@ -1503,14 +1495,6 @@ class HALOApp(App):
                 if cmd.type == CommandType.START_SKILL:
                     payload = cmd.payload
                     assert isinstance(payload, StartSkillPayload)
-                    # Reset sim env before starting a new skill
-                    if self._sim_reset_fn is not None:
-                        try:
-                            await self._sim_reset_fn()
-                        except Exception as exc:
-                            import logging
-
-                            logging.getLogger(__name__).warning("Sim reset failed: %s", exc)
                     await self._skill_runner_svc.start_skill(  # type: ignore[union-attr]
                         skill_name=payload.skill_name,
                         skill_run_id=f"run-{cmd.command_id[:8]}",
@@ -1629,41 +1613,30 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
     )
 
-    # Teacher-mode services (only when MuJoCo source is active)
+    # Sim-mode services (only when MuJoCo source is active)
     skill_runner_svc = None
-    joint_control_svc = None
-    sim_reset_fn = None
     if source_type == "mujoco":
         import asyncio as _asyncio
 
-        from halo.bridge.teacher_adapter import make_teacher_step_fn
-        from halo.services.control_service.config import JointControlConfig
-        from halo.services.control_service.joint_service import JointPositionControlService
         from halo.services.skill_runner_service.config import SkillRunnerConfig
         from halo.services.skill_runner_service.service import SkillRunnerService
 
         sim_client = video_source.client
-        sim_client.configure(teacher_mode=True)
-        teacher_step_fn = make_teacher_step_fn(sim_client)
 
-        joint_control_svc = JointPositionControlService(
-            arm_id=arm_id,
-            runtime=runtime,
-            config=JointControlConfig(),
-        )
+        async def start_pick_fn(arm_id_: str, target_body: str) -> dict:
+            loop = _asyncio.get_running_loop()
+            return await loop.run_in_executor(None, sim_client.start_pick, target_body)
+
+        def sim_phase_fn() -> tuple[int, bool]:
+            return video_source.latest_phase_id, video_source.latest_done
 
         skill_runner_svc = SkillRunnerService(
             arm_id=arm_id,
             runtime=runtime,
             config=SkillRunnerConfig(),
-            teacher_step_fn=teacher_step_fn,
-            joint_push_fn=joint_control_svc.push_chunk,
+            start_pick_fn=start_pick_fn,
+            sim_phase_fn=sim_phase_fn,
         )
-
-        # Reset function: reset the sim env before each skill run
-        async def sim_reset_fn():
-            loop = _asyncio.get_running_loop()
-            await loop.run_in_executor(None, lambda: sim_client.reset(seed=None))
 
     HALOApp(
         runtime=runtime,
@@ -1671,8 +1644,6 @@ def _run_live(args: list[str]) -> None:
         arm_id=arm_id,
         perception_svc=perception_svc,
         skill_runner_svc=skill_runner_svc,
-        joint_control_svc=joint_control_svc,
-        sim_reset_fn=sim_reset_fn,
         run_logger=run_logger,
         tracker_name=get_tracker_name(),
         video_source=video_source,

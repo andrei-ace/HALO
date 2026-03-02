@@ -22,7 +22,8 @@ CMD_STEP = "step"
 CMD_RESET = "reset"
 CMD_GET_STATE = "get_state"
 CMD_SET_STATE = "set_state"
-CMD_TEACHER_STEP = "teacher_step"
+CMD_TEACHER_STEP = "teacher_step"  # deprecated — kept for protocol compat
+CMD_START_PICK = "start_pick"
 CMD_CONFIGURE = "configure"
 CMD_SET_HINT = "set_hint"
 CMD_SHUTDOWN = "shutdown"
@@ -31,7 +32,9 @@ CMD_SHUTDOWN = "shutdown"
 RESP_STEP_OK = "step_ok"
 RESP_RESET_OK = "reset_ok"
 RESP_STATE = "state"
-RESP_TEACHER_STEP_OK = "teacher_step_ok"
+RESP_TEACHER_STEP_OK = "teacher_step_ok"  # deprecated
+RESP_START_PICK_OK = "start_pick_ok"
+RESP_START_PICK_ERROR = "start_pick_error"
 RESP_OK = "ok"
 RESP_ERROR = "error"
 
@@ -133,6 +136,7 @@ def pack_telemetry(
     qvel: np.ndarray,
     ee_pose: np.ndarray,
     object_pose: np.ndarray,
+    red_object_pose: np.ndarray,
     joint_pos: np.ndarray,
     gripper: float,
     action: np.ndarray,
@@ -151,6 +155,7 @@ def pack_telemetry(
         "qvel": ndarray_to_bytes(qvel),
         "ee_pose": ndarray_to_bytes(ee_pose),
         "object_pose": ndarray_to_bytes(object_pose),
+        "red_object_pose": ndarray_to_bytes(red_object_pose),
         "joint_pos": ndarray_to_bytes(joint_pos),
         "gripper": gripper,
         "action": ndarray_to_bytes(action),
@@ -167,10 +172,11 @@ def unpack_telemetry(msg: dict) -> dict:
         "step_count": msg["step_count"],
         "phase_id": msg["phase_id"],
         "done": msg["done"],
-        "qpos": bytes_to_ndarray(msg["qpos"], shape=(13,)),
-        "qvel": bytes_to_ndarray(msg["qvel"], shape=(12,)),
+        "qpos": bytes_to_ndarray(msg["qpos"], shape=(20,)),
+        "qvel": bytes_to_ndarray(msg["qvel"], shape=(18,)),
         "ee_pose": bytes_to_ndarray(msg["ee_pose"], shape=(7,)),
         "object_pose": bytes_to_ndarray(msg["object_pose"], shape=(7,)),
+        "red_object_pose": bytes_to_ndarray(msg["red_object_pose"], shape=(7,)),
         "joint_pos": bytes_to_ndarray(msg["joint_pos"], shape=(6,)),
         "gripper": msg["gripper"],
         "action": bytes_to_ndarray(msg["action"], shape=(6,)),

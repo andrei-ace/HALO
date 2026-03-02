@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from halo.contracts.enums import WRIST_ACTIVE_PHASES, PhaseId, SkillFailureCode, SkillOutcomeState
+from halo.contracts.enums import (
+    WRIST_ACTIVE_PHASES,
+    PerceptionFailureCode,
+    PhaseId,
+    SkillFailureCode,
+    SkillOutcomeState,
+)
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 
@@ -64,6 +70,15 @@ class PickFSM:
         self._phase = PhaseId.DONE
         self._phase_start_ms = now_ms
 
+    def fail(self, now_ms: int, code: SkillFailureCode) -> None:
+        """Fail the skill with a specific failure code. No-op if already DONE."""
+        if self._phase == PhaseId.DONE:
+            return
+        self._failure_code = code
+        self._outcome = SkillOutcomeState.FAILURE
+        self._phase = PhaseId.DONE
+        self._phase_start_ms = now_ms
+
     # --- Per-tick ---
 
     def advance(
@@ -76,6 +91,10 @@ class PickFSM:
         """Returns old phase if a transition occurred; None if stayed."""
         if not self.is_active:
             return None
+
+        # Perception failure: abort immediately if VLM reacquire has failed
+        if perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED:
+            return self._fail(now_ms, SkillFailureCode.PERCEPTION_LOST)
 
         phase = self._phase
         elapsed = now_ms - self._phase_start_ms
@@ -174,11 +193,20 @@ class PickFSM:
         return None
 
     def sync_phase(self, now_ms: int, phase_id: PhaseId) -> PhaseId | None:
-        """Accept external phase from teacher. Returns old phase on transition, None if no change."""
+        """Accept external phase from sim. Returns old phase on transition, None if no change.
+
+        Only forward transitions are accepted — if the sim reports a phase
+        numerically lower than the current one (e.g. IDLE while FSM is in
+        SELECT_GRASP), the update is ignored.  This prevents race conditions
+        where telemetry hasn't caught up to a freshly-started trajectory.
+        """
         if not self.is_active or phase_id == self._phase:
             return None
         if phase_id == PhaseId.DONE:
             return self._transition_success(now_ms)
+        # Ignore backward transitions (sim telemetry not yet caught up)
+        if phase_id.value < self._phase.value:
+            return None
         return self._transition(now_ms, phase_id)
 
     def needs_chunk(self, act: ActInfo) -> bool:

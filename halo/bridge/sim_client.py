@@ -2,7 +2,7 @@
 
 Connects to 2 channels:
     TelemetryStream (SUB): frames + state receiver (background thread)
-    CommandRPC (REQ): step, reset, teacher_step, configure, set_hint
+    CommandRPC (REQ): step, reset, start_pick, configure, set_hint
 
 Usage::
 
@@ -12,9 +12,7 @@ Usage::
     client = SimClient(SimBridgeConfig())
     client.start()
     client.reset(seed=42)
-    for _ in range(100):
-        client.step(home_action)
-    resp = client.teacher_step()
+    resp = client.start_pick()  # triggers trajectory planning + autonomous execution
     client.shutdown()
 """
 
@@ -201,25 +199,27 @@ class SimClient:
             }
         )
 
-    def teacher_step(self) -> dict:
-        """Run one teacher step (server-side teacher policy).
+    def start_pick(self, target_body: str) -> dict:
+        """Trigger trajectory planning + autonomous pick execution on the server.
 
-        Returns:
-            Dict with keys: type, action (bytes), phase_id, done,
-            qpos (bytes), qvel (bytes), ee_pose (bytes), object_pose (bytes),
-            joint_pos (bytes), gripper, rgb_scene (bytes), rgb_wrist (bytes).
-        """
-        from mujoco_sim.server.protocol import CMD_TEACHER_STEP
-
-        return self._send_command({"type": CMD_TEACHER_STEP})
-
-    def configure(self, **kwargs: Any) -> dict:
-        """Send runtime configuration changes.
+        The server plans a grasp trajectory from the current arm state and
+        begins executing it at physics_hz. Progress is reported via telemetry
+        (phase_id, done fields).
 
         Args:
-            teacher_mode: Enable/disable teacher stepping.
-            telemetry_profile: Optional telemetry profile selector.
+            target_body: MuJoCo body name of the object to pick (e.g. ``"green_cube"``).
+
+        Returns:
+            Dict with keys: type ("start_pick_ok" | "start_pick_error"),
+            duration (float, trajectory duration in seconds) on success,
+            or message (str) on error.
         """
+        from mujoco_sim.server.protocol import CMD_START_PICK
+
+        return self._send_command({"type": CMD_START_PICK, "target_body": target_body})
+
+    def configure(self, **kwargs: Any) -> dict:
+        """Send runtime configuration changes."""
         from mujoco_sim.server.protocol import CMD_CONFIGURE
 
         return self._send_command({"type": CMD_CONFIGURE, **kwargs})
@@ -240,7 +240,7 @@ class SimClient:
         self,
         *,
         target_handle: str | None = None,
-        bbox_xywh: tuple[int, int, int, int] | None = None,
+        bbox_xywh: tuple[float, float, float, float] | None = None,
         confidence: float = 0.0,
         tracker_ok: bool = False,
     ) -> None:
@@ -261,7 +261,7 @@ class SimClient:
         self,
         *,
         target_handle: str | None = None,
-        bbox_xywh: tuple[int, int, int, int] | None = None,
+        bbox_xywh: tuple[float, float, float, float] | None = None,
         confidence: float = 0.0,
         tracker_ok: bool = False,
     ) -> dict:

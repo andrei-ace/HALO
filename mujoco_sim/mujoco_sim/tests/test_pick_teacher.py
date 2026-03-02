@@ -76,7 +76,7 @@ def _make_obs(
     ee_pose = np.concatenate([ee_pos, ee_quat])
 
     if cube_pos is None:
-        cube_body = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "cube")
+        cube_body = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "green_cube")
         cube_pos_arr = mj_data.xpos[cube_body].copy()
         cube_quat = mj_data.xquat[cube_body].copy()
     else:
@@ -256,7 +256,7 @@ class TestFullEpisode:
 
     def test_different_cube_positions(self, scene_info, mj_model, mj_data):
         """Teacher should complete for various cube placements on the table."""
-        cx, cy, cube_z = scene_info.cube_default_pos
+        cx, cy, cube_z = scene_info.green_cube_default_pos
         for cube_pos in [
             (float(cx), float(cy), float(cube_z)),
             (float(cx + 0.01), float(cy + 0.01), float(cube_z)),

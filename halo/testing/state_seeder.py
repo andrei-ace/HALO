@@ -30,7 +30,7 @@ def make_target(
     time_skew_ms: int = 0,
     delta_xyz_ee: tuple[float, float, float] | None = None,
     center_px: tuple[float, float] | None = None,
-    bbox_xywh: tuple[int, int, int, int] | None = None,
+    bbox_xywh: tuple[float, float, float, float] | None = None,
 ) -> TargetInfo:
     """Build a TargetInfo with sensible defaults."""
     if delta_xyz_ee is None:

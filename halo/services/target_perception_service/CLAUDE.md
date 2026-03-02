@@ -77,7 +77,7 @@ Two functions keep handle identity consistent across VLM calls:
 
 **`_stabilize_scene_for_tracked_target(scene, tracked_handle, tracked_center_px)`** — applied on scene-refresh VLM calls that start while tracking is already in `TRACKING` state:
 1. If the tracked handle already appears in the scene, no-op.
-2. Otherwise, find prefix-matched candidates whose centroid is within `max_center_dist_px` (default 120) of `tracked_center_px` (snapshot taken at VLM call start).
+2. Otherwise, find prefix-matched candidates whose centroid is within `max_center_dist_px` (default 0.15, normalised 0..1) of `tracked_center_px` (snapshot taken at VLM call start).
 3. Pick the closest candidate and rename it to `tracked_handle` in the returned scene.
 
 ## Tracker Init Retries
@@ -146,7 +146,7 @@ Listens on EventBus for `COMMAND_ACCEPTED` events:
 
 Each is tried at runtime via `getattr(cv2, ...)`. The first that instantiates without error is used.
 
-**Output**: 2D only — `center_px` carries real data (bbox centroid in pixels); `delta_xyz_ee` and `distance_m` are zeroed. Real 3D will come from ZED X depth fusion in the hardware phase.
+**Output**: 2D only — `center_px` and `bbox_xywh` carry normalised 0..1 coordinates (fraction of frame dimensions); `delta_xyz_ee` and `distance_m` are zeroed. Real 3D will come from ZED X depth fusion in the hardware phase.
 
 **`get_tracker_name()`**: returns the name of the best available tracker without keeping the allocated instance (useful for logging/diagnostics).
 

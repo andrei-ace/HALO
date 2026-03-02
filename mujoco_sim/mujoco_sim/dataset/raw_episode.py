@@ -25,7 +25,8 @@ class Timestep:
     ee_pose: np.ndarray  # (7,)
     action: np.ndarray  # (6,) joint-position targets
     phase_id: int | None = None  # teacher/detector phase label
-    object_pose: np.ndarray | None = None  # (7,) optional
+    object_pose: np.ndarray | None = None  # (7,) green cube pose, optional
+    red_object_pose: np.ndarray | None = None  # (7,) red cube pose, optional
     joint_pos: np.ndarray | None = None  # (6,) all actuated joint positions, optional
     contacts: np.ndarray | None = None  # (N,) optional
     bbox_xywh: tuple[int, int, int, int] | None = None  # tracker bbox (x, y, w, h)
@@ -122,6 +123,13 @@ class RawEpisode:
         if not self._steps or self._steps[0].object_pose is None:
             return None
         return np.stack([ts.object_pose for ts in self._steps])
+
+    @property
+    def red_object_poses(self) -> np.ndarray | None:
+        """(T, 7) or None if no timestep has red_object_pose."""
+        if not self._steps or self._steps[0].red_object_pose is None:
+            return None
+        return np.stack([ts.red_object_pose for ts in self._steps])
 
     @property
     def contacts_list(self) -> list[np.ndarray | None]:

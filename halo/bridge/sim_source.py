@@ -13,7 +13,7 @@ Usage::
     source = SimSource()
     source.start()
     frame = source.latest_frame     # BGR HWC numpy array
-    qpos = source.latest_qpos       # (13,) float64
+    qpos = source.latest_qpos       # (20,) float64
     capture_fn = source.make_capture_fn("arm0")
     source.stop()
 """
@@ -65,6 +65,8 @@ class SimSource:
         self._latest_frame: np.ndarray | None = None
         self._latest_qpos: np.ndarray | None = None
         self._latest_qvel: np.ndarray | None = None
+        self._latest_phase_id: int = 0
+        self._latest_done: bool = False
 
         self._poll_thread: threading.Thread | None = None
         self._poll_stop = threading.Event()
@@ -114,15 +116,27 @@ class SimSource:
 
     @property
     def latest_qpos(self) -> np.ndarray | None:
-        """Most recent joint positions from sim (13,), or None."""
+        """Most recent joint positions from sim (20,), or None."""
         with self._cond:
             return self._latest_qpos
 
     @property
     def latest_qvel(self) -> np.ndarray | None:
-        """Most recent joint velocities from sim (12,), or None."""
+        """Most recent joint velocities from sim (18,), or None."""
         with self._cond:
             return self._latest_qvel
+
+    @property
+    def latest_phase_id(self) -> int:
+        """Most recent phase_id from sim telemetry (0 if no telemetry yet)."""
+        with self._cond:
+            return self._latest_phase_id
+
+    @property
+    def latest_done(self) -> bool:
+        """Most recent done flag from sim telemetry."""
+        with self._cond:
+            return self._latest_done
 
     def make_capture_fn(self, arm_id: str = "arm0") -> object:
         """Return a CaptureFn that reads sequential frames from telemetry."""
@@ -170,6 +184,8 @@ class SimSource:
                     self._latest_frame = bgr
                     self._latest_qpos = telemetry["qpos"]
                     self._latest_qvel = telemetry["qvel"]
+                    self._latest_phase_id = telemetry.get("phase_id", 0)
+                    self._latest_done = telemetry.get("done", False)
                     self._frame_queue.append(bgr)
                     self._cond.notify_all()
             else:

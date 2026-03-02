@@ -109,14 +109,14 @@ def _make_side_grasp_pose(
 class TestKeyframePlanner:
     def test_produces_five_keyframes(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         assert len(keyframes) == 5
 
     def test_keyframe_labels(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         labels = [kf.label for kf in keyframes]
@@ -124,7 +124,7 @@ class TestKeyframePlanner:
 
     def test_keyframe_phases(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         phases = [kf.phase_id for kf in keyframes]
@@ -133,7 +133,7 @@ class TestKeyframePlanner:
     def test_pregrasp_along_approach(self, scene_info, mj_model, mj_data, ee_site_id):
         """Pregrasp should be offset along approach direction from contact."""
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
         standoff = 0.15
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data, standoff=standoff)
@@ -148,7 +148,7 @@ class TestKeyframePlanner:
     def test_grasp_at_contact_point(self, scene_info, mj_model, mj_data, ee_site_id):
         """Grasp keyframe should place jaw midpoint at contact_point."""
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
 
@@ -160,7 +160,7 @@ class TestKeyframePlanner:
 
     def test_gripper_sequence(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
 
@@ -171,7 +171,7 @@ class TestKeyframePlanner:
     def test_orientation_matches_grasp_pose(self, scene_info, mj_model, mj_data, ee_site_id):
         """Non-home keyframes should use the grasp_pose orientation."""
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
 
@@ -181,7 +181,7 @@ class TestKeyframePlanner:
     def test_tcp_offset_applied(self, scene_info, mj_model, mj_data, ee_site_id):
         """Grasp keyframe position accounts for TCP pinch offset from contact_point."""
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
 
@@ -193,7 +193,7 @@ class TestKeyframePlanner:
     def test_lift_is_vertical(self, scene_info, mj_model, mj_data, ee_site_id):
         """Lift should be vertically above the grasp contact, regardless of approach direction."""
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
         z_lift = 0.10
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data, z_lift=z_lift)
@@ -214,7 +214,7 @@ class TestKeyframePlanner:
 class TestWaypointGenerator:
     def test_produces_correct_count(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         waypoints = generate_joint_waypoints(
@@ -225,7 +225,7 @@ class TestWaypointGenerator:
 
     def test_waypoint_labels_match_keyframes(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         waypoints = generate_joint_waypoints(
@@ -239,7 +239,7 @@ class TestWaypointGenerator:
 
     def test_arm_joints_shape(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids):
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         waypoints = generate_joint_waypoints(
@@ -252,7 +252,7 @@ class TestWaypointGenerator:
     def test_ik_reaches_keyframe_positions(self, scene_info, mj_model, mj_data, ee_site_id, arm_joint_ids):
         """Verify FK of IK solution is close to keyframe target."""
         home_joints = mj_data.qpos[:6].copy()
-        grasp_pose = _make_side_grasp_pose(scene_info.cube_default_pos, scene_info.cube_half_sizes)
+        grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         waypoints = generate_joint_waypoints(
@@ -375,9 +375,9 @@ class TestIntegratedPipeline:
         home_joints = mj_data.qpos[:6].copy()
 
         best = evaluate_grasps(
-            scene_info.cube_default_pos,
+            scene_info.green_cube_default_pos,
             _DEFAULT_CUBE_QUAT,
-            scene_info.cube_half_sizes,
+            scene_info.green_cube_half_sizes,
             mj_model,
             mj_data,
             ee_site_id,
@@ -418,7 +418,7 @@ class TestIntegratedPipeline:
         """Pipeline should work for various cube placements."""
         home_joints = mj_data.qpos[:6].copy()
 
-        cx, cy, cube_z = scene_info.cube_default_pos
+        cx, cy, cube_z = scene_info.green_cube_default_pos
         for cube_pos in [
             np.array([cx, cy, cube_z]),
             np.array([cx + 0.01, cy + 0.01, cube_z]),
@@ -427,7 +427,7 @@ class TestIntegratedPipeline:
             best = evaluate_grasps(
                 cube_pos,
                 _DEFAULT_CUBE_QUAT,
-                scene_info.cube_half_sizes,
+                scene_info.green_cube_half_sizes,
                 mj_model,
                 mj_data,
                 ee_site_id,

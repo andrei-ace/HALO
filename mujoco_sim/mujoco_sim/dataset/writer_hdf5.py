@@ -50,10 +50,15 @@ def write_episode(episode: RawEpisode, path: str | Path) -> Path:
         obs.create_dataset("gripper", data=episode.gripper_array)
         obs.create_dataset("ee_pose", data=episode.ee_poses)
 
-        # Optional object pose
+        # Optional object pose (green cube)
         obj_poses = episode.object_poses
         if obj_poses is not None:
             obs.create_dataset("object_pose", data=obj_poses)
+
+        # Optional red object pose
+        red_obj_poses = episode.red_object_poses
+        if red_obj_poses is not None:
+            obs.create_dataset("red_object_pose", data=red_obj_poses)
 
         # Optional joint positions (6 actuated joints)
         joint_pos = episode.joint_pos_array

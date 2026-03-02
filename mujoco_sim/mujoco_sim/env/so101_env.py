@@ -24,10 +24,15 @@ class SO101Env:
     - State get/set for VCR replay (qpos/qvel injection)
     """
 
-    # Indices into qpos for the cube freejoint (xyz component)
-    _CUBE_QPOS_X = 6  # after 6 robot joints
-    _CUBE_QPOS_Y = 7
-    _CUBE_QPOS_Z = 8
+    # Indices into qpos for the green cube freejoint (xyz component)
+    _GREEN_CUBE_QPOS_X = 6  # after 6 robot joints
+    _GREEN_CUBE_QPOS_Y = 7
+    _GREEN_CUBE_QPOS_Z = 8
+
+    # Indices into qpos for the red cube freejoint (after green cube's 7 DOFs)
+    _RED_CUBE_QPOS_X = 13
+    _RED_CUBE_QPOS_Y = 14
+    _RED_CUBE_QPOS_Z = 15
 
     def __init__(self, config: EnvConfig | None = None) -> None:
         self._config = config or EnvConfig()
@@ -50,7 +55,8 @@ class SO101Env:
         # Cache IDs
         self._scene_cam_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_CAMERA, self._config.scene_camera)
         self._ee_site_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
-        self._cube_body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "cube")
+        self._green_cube_body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "green_cube")
+        self._red_cube_body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "red_cube")
         self._gripper_joint_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, "gripper")
 
         # Physics substeps: model.opt.timestep vs control_freq
@@ -90,10 +96,15 @@ class SO101Env:
         mujoco.mju_mat2Quat(ee_quat, ee_xmat.flatten())
         ee_pose = np.concatenate([ee_pos, ee_quat])
 
-        # Cube pose
-        cube_pos = self._data.xpos[self._cube_body_id].copy()
-        cube_quat = self._data.xquat[self._cube_body_id].copy()
+        # Cube pose (green)
+        cube_pos = self._data.xpos[self._green_cube_body_id].copy()
+        cube_quat = self._data.xquat[self._green_cube_body_id].copy()
         object_pose = np.concatenate([cube_pos, cube_quat])
+
+        # Red cube pose
+        red_cube_pos = self._data.xpos[self._red_cube_body_id].copy()
+        red_cube_quat = self._data.xquat[self._red_cube_body_id].copy()
+        red_object_pose = np.concatenate([red_cube_pos, red_cube_quat])
 
         # Joint positions for all 6 actuated joints (= action space state)
         joint_pos = self._data.qpos[:6].copy()
@@ -106,6 +117,7 @@ class SO101Env:
             "gripper": float(self._data.qpos[self._model.jnt_qposadr[self._gripper_joint_id]]),
             "ee_pose": ee_pose,
             "object_pose": object_pose,
+            "red_object_pose": red_object_pose,
             "joint_pos": joint_pos,
         }
 
@@ -127,11 +139,21 @@ class SO101Env:
 
         if seed is not None:
             rng = np.random.RandomState(seed)
-            cx = rng.uniform(*self._config.cube_x_range)
-            cy = rng.uniform(*self._config.cube_y_range)
-            self._data.qpos[self._CUBE_QPOS_X] = cx
-            self._data.qpos[self._CUBE_QPOS_Y] = cy
+            cx = rng.uniform(*self._config.green_cube_x_range)
+            cy = rng.uniform(*self._config.green_cube_y_range)
+            self._data.qpos[self._GREEN_CUBE_QPOS_X] = cx
+            self._data.qpos[self._GREEN_CUBE_QPOS_Y] = cy
             # Z stays at default (from MJCF), quat stays identity
+
+            # Randomize red cube with 4 cm minimum separation from green cube
+            min_sep = 0.04
+            for _ in range(100):
+                rx = rng.uniform(*self._config.red_cube_x_range)
+                ry = rng.uniform(*self._config.red_cube_y_range)
+                if np.hypot(rx - cx, ry - cy) >= min_sep:
+                    break
+            self._data.qpos[self._RED_CUBE_QPOS_X] = rx
+            self._data.qpos[self._RED_CUBE_QPOS_Y] = ry
 
         mujoco.mj_forward(self._model, self._data)
         self._step_count = 0

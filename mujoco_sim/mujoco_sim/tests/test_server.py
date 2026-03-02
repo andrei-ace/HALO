@@ -77,10 +77,11 @@ class TestProtocol:
     def test_pack_unpack_telemetry(self):
         from mujoco_sim.server.protocol import pack_telemetry, unpack_telemetry
 
-        qpos = np.random.randn(13)
-        qvel = np.random.randn(12)
+        qpos = np.random.randn(20)
+        qvel = np.random.randn(18)
         ee_pose = np.random.randn(7)
         object_pose = np.random.randn(7)
+        red_object_pose = np.random.randn(7)
         joint_pos = np.random.randn(6)
         action = np.random.randn(6)
         rgb_scene = np.random.randint(0, 255, (48, 64, 3), dtype=np.uint8)
@@ -95,6 +96,7 @@ class TestProtocol:
             qvel=qvel,
             ee_pose=ee_pose,
             object_pose=object_pose,
+            red_object_pose=red_object_pose,
             joint_pos=joint_pos,
             gripper=-0.17,
             action=action,
@@ -115,6 +117,7 @@ class TestProtocol:
         np.testing.assert_array_almost_equal(decoded["qpos"], qpos)
         np.testing.assert_array_almost_equal(decoded["qvel"], qvel)
         np.testing.assert_array_almost_equal(decoded["ee_pose"], ee_pose)
+        np.testing.assert_array_almost_equal(decoded["red_object_pose"], red_object_pose)
         np.testing.assert_array_almost_equal(decoded["joint_pos"], joint_pos)
         np.testing.assert_array_almost_equal(decoded["action"], action)
         assert decoded["rgb_scene"].shape == (48, 64, 3)
@@ -128,6 +131,7 @@ class TestProtocol:
             CMD_SET_HINT,
             CMD_SET_STATE,
             CMD_SHUTDOWN,
+            CMD_START_PICK,
             CMD_STEP,
             CMD_TEACHER_STEP,
             MSG_TELEMETRY,
@@ -137,6 +141,8 @@ class TestProtocol:
             RESP_ERROR,
             RESP_OK,
             RESP_RESET_OK,
+            RESP_START_PICK_ERROR,
+            RESP_START_PICK_OK,
             RESP_STATE,
             RESP_STEP_OK,
             RESP_TEACHER_STEP_OK,
@@ -150,6 +156,7 @@ class TestProtocol:
             CMD_GET_STATE,
             CMD_SET_STATE,
             CMD_TEACHER_STEP,
+            CMD_START_PICK,
             CMD_CONFIGURE,
             CMD_SET_HINT,
             CMD_SHUTDOWN,
@@ -157,6 +164,8 @@ class TestProtocol:
             RESP_RESET_OK,
             RESP_STATE,
             RESP_TEACHER_STEP_OK,
+            RESP_START_PICK_OK,
+            RESP_START_PICK_ERROR,
             RESP_OK,
             RESP_ERROR,
             QUERY_VLM_DETECT,
@@ -182,6 +191,7 @@ class TestSimServerConfig:
         assert cfg.command_port == 5561
         assert cfg.render_fps == 10
         assert cfg.jpeg_quality == 85
+        assert cfg.physics_hz == 20
 
     def test_urls(self):
         from mujoco_sim.server.config import SimServerConfig
@@ -192,7 +202,7 @@ class TestSimServerConfig:
 
 
 # ---------------------------------------------------------------------------
-# Command handler tests (require MuJoCo for env/teacher)
+# Command handler tests (require MuJoCo for env)
 # ---------------------------------------------------------------------------
 
 try:
@@ -210,112 +220,138 @@ class TestHandlers:
     """Tests for handlers.py command dispatch."""
 
     @pytest.fixture
-    def env_teacher(self):
+    def env_state(self):
         from mujoco_sim.config import EnvConfig
         from mujoco_sim.env import SO101Env
-        from mujoco_sim.teacher.pick_teacher import PickTeacher, TeacherConfig
+        from mujoco_sim.server.handlers import ServerState
 
         env = SO101Env(EnvConfig())
-        teacher = PickTeacher(TeacherConfig())
+        state = ServerState()
         env.reset(seed=7)
-        yield env, teacher
+        yield env, state
         env.close()
 
-    def test_step(self, env_teacher):
+    def test_step(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
         from mujoco_sim.server.protocol import ndarray_to_bytes
 
-        env, teacher = env_teacher
+        env, state = env_state
         action = np.zeros(6)
         msg = {"type": "step", "action": ndarray_to_bytes(action)}
-        reply, shutdown = dispatch_command(msg, env, teacher)
+        reply, shutdown = dispatch_command(msg, env, state)
         assert reply["type"] == "step_ok"
         assert isinstance(reply["reward"], float)
         assert isinstance(reply["done"], bool)
         assert shutdown is False
 
-    def test_reset(self, env_teacher):
+    def test_reset(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
+        env, state = env_state
         msg = {"type": "reset", "seed": 99}
-        reply, shutdown = dispatch_command(msg, env, teacher)
+        reply, shutdown = dispatch_command(msg, env, state)
         assert reply["type"] == "reset_ok"
         assert reply["seed"] == 99
         assert shutdown is False
 
-    def test_get_set_state(self, env_teacher):
+    def test_get_set_state(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
         from mujoco_sim.server.protocol import ndarray_to_bytes
 
-        env, teacher = env_teacher
+        env, state = env_state
         # Get state
-        reply, _ = dispatch_command({"type": "get_state"}, env, teacher)
+        reply, _ = dispatch_command({"type": "get_state"}, env, state)
         assert reply["type"] == "state"
         assert isinstance(reply["qpos"], bytes)
         assert isinstance(reply["qvel"], bytes)
 
         # Set state
-        qpos = np.zeros(13)
-        qvel = np.zeros(12)
+        qpos = np.zeros(20)
+        qvel = np.zeros(18)
         msg = {"type": "set_state", "qpos": ndarray_to_bytes(qpos), "qvel": ndarray_to_bytes(qvel)}
-        reply, _ = dispatch_command(msg, env, teacher)
+        reply, _ = dispatch_command(msg, env, state)
         assert reply["type"] == "ok"
 
-    def test_teacher_step_requires_mode(self, env_teacher):
+    def test_start_pick(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
-        reply, _ = dispatch_command({"type": "teacher_step"}, env, teacher, teacher_mode=False)
-        assert reply["type"] == "error"
-        assert "teacher_mode" in reply["message"]
+        env, state = env_state
+        reply, _ = dispatch_command({"type": "start_pick", "target_body": "green_cube"}, env, state)
+        assert reply["type"] in ("start_pick_ok", "start_pick_error")
+        if reply["type"] == "start_pick_ok":
+            assert isinstance(reply["duration"], float)
+            assert reply["duration"] > 0
+            assert reply["target_body"] == "green_cube"
+            assert reply["target_body_requested"] == "green_cube"
+            assert reply["target_body_resolved"] == "green_cube"
+            assert state.trajectory is not None
 
-    def test_teacher_step_with_mode(self, env_teacher):
+    def test_start_pick_fuzzy_suffix_target_body(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
-        reply, _ = dispatch_command({"type": "teacher_step"}, env, teacher, teacher_mode=True)
-        assert reply["type"] == "teacher_step_ok"
-        assert isinstance(reply["action"], bytes)
-        assert isinstance(reply["phase_id"], int)
-        assert isinstance(reply["done"], bool)
+        env, state = env_state
+        reply, _ = dispatch_command({"type": "start_pick", "target_body": "green_cube_01"}, env, state)
+        assert reply["type"] in ("start_pick_ok", "start_pick_error")
 
-    def test_shutdown(self, env_teacher):
+        # Planning can still fail (IK/grasp), but fuzzy target resolution should
+        # prevent immediate unknown-body rejection.
+        if reply["type"] == "start_pick_ok":
+            assert reply["target_body"] == "green_cube"
+            assert reply["target_body_requested"] == "green_cube_01"
+            assert reply["target_body_resolved"] == "green_cube"
+            assert state.trajectory is not None
+        else:
+            msg = str(reply.get("message", ""))
+            assert "Unknown body:" not in msg
+            assert "Unknown cube body:" not in msg
+
+    def test_start_pick_unknown_body_lists_known_bodies(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
-        reply, shutdown = dispatch_command({"type": "shutdown"}, env, teacher)
+        env, state = env_state
+        reply, _ = dispatch_command({"type": "start_pick", "target_body": "banana_01"}, env, state)
+        assert reply["type"] == "start_pick_error"
+        msg = str(reply.get("message", ""))
+        assert "Unknown body:" in msg
+        assert "green_cube" in msg
+        assert "red_cube" in msg
+
+    def test_shutdown(self, env_state):
+        from mujoco_sim.server.handlers import dispatch_command
+
+        env, state = env_state
+        reply, shutdown = dispatch_command({"type": "shutdown"}, env, state)
         assert reply["type"] == "ok"
         assert shutdown is True
 
-    def test_unknown_command(self, env_teacher):
+    def test_unknown_command(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
-        reply, shutdown = dispatch_command({"type": "bogus"}, env, teacher)
+        env, state = env_state
+        reply, shutdown = dispatch_command({"type": "bogus"}, env, state)
         assert reply["type"] == "error"
         assert shutdown is False
 
-    def test_configure(self, env_teacher):
+    def test_configure(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
-        msg = {"type": "configure", "teacher_mode": True}
-        reply, shutdown = dispatch_command(msg, env, teacher)
+        env, state = env_state
+        msg = {"type": "configure", "some_option": True}
+        reply, shutdown = dispatch_command(msg, env, state)
         assert reply["type"] == "ok"
         assert shutdown is False
 
-    def test_set_hint(self, env_teacher):
+    def test_set_hint(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 
-        env, teacher = env_teacher
+        env, state = env_state
         msg = {
             "type": "set_hint",
-            "target_handle": "cube",
+            "target_handle": "green_cube",
             "bbox_xywh": [100, 120, 50, 50],
             "confidence": 0.95,
             "tracker_ok": True,
         }
-        reply, shutdown = dispatch_command(msg, env, teacher)
+        reply, shutdown = dispatch_command(msg, env, state)
         assert reply["type"] == "ok"
         assert shutdown is False

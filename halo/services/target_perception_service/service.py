@@ -56,7 +56,7 @@ def _stabilize_scene_for_tracked_target(
     tracked_handle: str | None,
     tracked_center_px: tuple[float, float] | None,
     *,
-    max_center_dist_px: float = 120.0,
+    max_center_dist_px: float = 0.15,
 ) -> VlmScene:
     """Stabilise handle for the actively tracked object on a scene refresh.
 

@@ -217,7 +217,7 @@ async def test_sim_source_frame_basics():
         frame = source.latest_frame
         assert frame is not None, "No frame after start()"
         assert frame.ndim == 3 and frame.shape[2] == 3, f"Expected HWC BGR, got {frame.shape}"
-        assert frame.shape[0] == 480 and frame.shape[1] == 640, f"Expected 480x640, got {frame.shape}"
+        assert frame.shape[0] == 720 and frame.shape[1] == 1280, f"Expected 720x1280, got {frame.shape}"
 
         # capture_fn should return a CapturedFrame
         capture_fn = source.make_capture_fn("arm0")
@@ -225,7 +225,7 @@ async def test_sim_source_frame_basics():
         assert captured.image is not None
         assert captured.arm_id == "arm0"
         assert captured.ts_ms > 0
-        assert captured.image.shape == (480, 640, 3)
+        assert captured.image.shape == (720, 1280, 3)
 
         # A second capture should also work
         captured2 = await capture_fn("arm0")
@@ -234,15 +234,15 @@ async def test_sim_source_frame_basics():
         # latest_frame should reflect the last telemetry frame
         latest = source.latest_frame
         assert latest is not None
-        assert latest.shape == (480, 640, 3)
+        assert latest.shape == (720, 1280, 3)
 
         # qpos/qvel should be available from telemetry
         qpos = source.latest_qpos
         qvel = source.latest_qvel
         assert qpos is not None, "qpos should be available from telemetry"
         assert qvel is not None, "qvel should be available from telemetry"
-        assert qpos.shape == (13,)
-        assert qvel.shape == (12,)
+        assert qpos.shape == (20,)
+        assert qvel.shape == (18,)
 
     finally:
         source.stop()

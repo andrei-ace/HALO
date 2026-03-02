@@ -1,14 +1,14 @@
-"""Component tests for SkillRunnerService in teacher mode — real service, mocked teacher_step_fn."""
+"""Component tests for SkillRunnerService in sim mode — real service, mocked start_pick_fn + sim_phase_fn."""
 
 import asyncio
 
 from halo.contracts.enums import PhaseId, SkillName
 from halo.contracts.events import EventType
-from halo.testing.mock_fns import LatencyProfile, make_mock_teacher_step_fn
+from halo.testing.mock_fns import LatencyProfile, make_mock_sim_phase_fn, make_mock_start_pick_fn
 from halo.testing.runner import HeadlessRunner, RunnerConfig
 
 ARM = "arm0"
-RUN_ID = "run-teacher-1"
+RUN_ID = "run-sim-1"
 
 
 def _runner(latency: LatencyProfile) -> HeadlessRunner:
@@ -20,12 +20,13 @@ def _runner(latency: LatencyProfile) -> HeadlessRunner:
             enable_skill_runner=True,
             enable_control=False,
         ),
-        teacher_step_fn=make_mock_teacher_step_fn(latency),
+        start_pick_fn=make_mock_start_pick_fn(latency),
+        sim_phase_fn=make_mock_sim_phase_fn(),
     )
 
 
-async def test_teacher_happy_path_pick(latency: LatencyProfile):
-    """Teacher drives SkillRunner through all phases to SKILL_SUCCEEDED."""
+async def test_sim_happy_path_pick(latency: LatencyProfile):
+    """Sim mode drives SkillRunner through all phases to SKILL_SUCCEEDED."""
     runner = _runner(latency)
     await runner.start()
     try:
@@ -47,8 +48,8 @@ async def test_teacher_happy_path_pick(latency: LatencyProfile):
         await runner.stop()
 
 
-async def test_teacher_abort(latency: LatencyProfile):
-    """abort_skill() in teacher mode publishes SKILL_FAILED."""
+async def test_sim_abort(latency: LatencyProfile):
+    """abort_skill() in sim mode publishes SKILL_FAILED."""
     # Use a phase sequence that never reaches DONE
     runner = HeadlessRunner(
         config=RunnerConfig(
@@ -58,8 +59,8 @@ async def test_teacher_abort(latency: LatencyProfile):
             enable_skill_runner=True,
             enable_control=False,
         ),
-        teacher_step_fn=make_mock_teacher_step_fn(
-            latency,
+        start_pick_fn=make_mock_start_pick_fn(latency),
+        sim_phase_fn=make_mock_sim_phase_fn(
             phase_sequence=[(int(PhaseId.MOVE_PREGRASP), False)] * 100,
         ),
     )

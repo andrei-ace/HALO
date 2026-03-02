@@ -1,8 +1,12 @@
-"""MuJoCo sim server — standalone process owning SO101Env + PickTeacher.
+"""MuJoCo sim server — standalone process owning SO101Env.
 
 Exposes 2 ZMQ channels:
     TelemetryStream (PUB): frames + state at render_fps
-    CommandRPC (REP): step, reset, teacher_step, configure, set_hint, shutdown
+    CommandRPC (REP): step, reset, start_pick, configure, set_hint, shutdown
+
+Physics runs autonomously at physics_hz (default 20Hz). When a trajectory
+is active (from start_pick), the loop samples it and steps the env.
+Otherwise the arm holds its current position.
 
 Single-threaded main loop (required for macOS OpenGL rendering).
 """
@@ -17,7 +21,7 @@ import numpy as np
 import zmq
 
 from mujoco_sim.server.config import SimServerConfig
-from mujoco_sim.server.handlers import dispatch_command
+from mujoco_sim.server.handlers import ServerState, dispatch_command
 from mujoco_sim.server.protocol import pack_telemetry
 
 logger = logging.getLogger(__name__)
@@ -26,16 +30,15 @@ logger = logging.getLogger(__name__)
 class SimServer:
     """MuJoCo sim server process.
 
-    Owns SO101Env and PickTeacher. Runs a single-threaded polling loop
-    that handles commands on CommandRPC and publishes telemetry on
-    TelemetryStream at the
-    configured render rate.
+    Owns SO101Env. Runs a single-threaded polling loop that:
+    1. Polls CommandRPC (non-blocking)
+    2. Steps physics at physics_hz (trajectory sampling or hold)
+    3. Publishes telemetry at render_fps
     """
 
     def __init__(self, config: SimServerConfig | None = None) -> None:
         self._config = config or SimServerConfig()
         self._running = False
-        self._teacher_mode = False
 
         # ZMQ context + sockets (created in run())
         self._ctx: zmq.Context | None = None
@@ -49,21 +52,21 @@ class SimServer:
         # Telemetry drop counter
         self._telemetry_drops: int = 0
 
-        # Env + teacher (created in run())
+        # Env (created in run())
         self._env = None
-        self._teacher = None
+
+        # Mutable server state (trajectory, phase tracking)
+        self._state = ServerState()
 
     def run(self) -> None:
         """Run the server main loop. Blocks until shutdown command received."""
         from mujoco_sim.env import SO101Env
-        from mujoco_sim.teacher.pick_teacher import PickTeacher
 
         cfg = self._config
 
-        # Create env + teacher (must be on main thread for macOS OpenGL)
+        # Create env (must be on main thread for macOS OpenGL)
         logger.info("Creating SO101Env (scene=%s)", cfg.env_config.scene_xml)
         self._env = SO101Env(cfg.env_config)
-        self._teacher = PickTeacher(cfg.teacher_config)
 
         # Create ZMQ sockets
         self._ctx = zmq.Context()
@@ -84,28 +87,31 @@ class SimServer:
 
         # Reset env
         self._env.reset(seed=0)
+        # Initialise hold target to home pose so IDLE holds position against gravity
+        self._state.hold_target = self._env.home_qpos.copy()
 
+        physics_interval = 1.0 / cfg.physics_hz
         render_interval = 1.0 / cfg.render_fps
+        last_physics = 0.0
         last_render = 0.0
         step_count = 0
         self._running = True
 
-        logger.info("SimServer ready — entering main loop (render_fps=%d)", cfg.render_fps)
+        logger.info(
+            "SimServer ready — entering main loop (physics_hz=%d, render_fps=%d)",
+            cfg.physics_hz,
+            cfg.render_fps,
+        )
 
         try:
             while self._running:
-                # 1. Poll CommandRPC — 10ms timeout
-                socks = dict(self._poller.poll(timeout=10))
+                # 1. Poll CommandRPC — 1ms timeout (fast non-blocking)
+                socks = dict(self._poller.poll(timeout=1))
 
                 if self._rep_commands in socks:
                     raw = self._rep_commands.recv()
                     msg = msgpack.unpackb(raw, raw=False)
-                    # Handle configure specially to update teacher_mode
-                    if msg.get("type") == "configure":
-                        if "teacher_mode" in msg:
-                            self._teacher_mode = msg["teacher_mode"]
-                            logger.info("teacher_mode = %s", self._teacher_mode)
-                    reply, shutdown = dispatch_command(msg, self._env, self._teacher, teacher_mode=self._teacher_mode)
+                    reply, shutdown = dispatch_command(msg, self._env, self._state)
 
                     # Store hint from handler response (single source of truth)
                     if "hint" in reply:
@@ -114,14 +120,18 @@ class SimServer:
 
                     if msg.get("type") == "step" and reply.get("type") == "step_ok":
                         step_count += 1
-                    elif msg.get("type") == "teacher_step" and reply.get("type") == "teacher_step_ok":
-                        step_count += 1
 
                     if shutdown:
                         break
 
-                # 2. Publish telemetry at render_fps
+                # 2. Autonomous physics at physics_hz
                 now = time.monotonic()
+                if now - last_physics >= physics_interval:
+                    last_physics = now
+                    self._physics_tick(now)
+                    step_count += 1
+
+                # 3. Publish telemetry at render_fps
                 if now - last_render >= render_interval:
                     last_render = now
                     self._publish_telemetry(step_count)
@@ -129,11 +139,38 @@ class SimServer:
         finally:
             self._cleanup()
 
+    def _physics_tick(self, now: float) -> None:
+        """One autonomous physics step: sample trajectory or hold position."""
+        state = self._state
+        env = self._env
+
+        if state.trajectory is not None:
+            t = now - state.traj_start_time
+            if t >= state.trajectory.total_duration:
+                # Trajectory complete — sample final point, latch as hold target
+                arm_joints, gripper, phase_id = state.trajectory.sample(state.trajectory.total_duration)
+                action = np.concatenate([arm_joints, [gripper]])
+                env.step(action)
+                state.hold_target = action.copy()
+                state.phase_id = phase_id
+                state.done = True
+                state.trajectory = None
+                logger.info("Trajectory complete (phase_id=%d)", phase_id)
+            else:
+                arm_joints, gripper, phase_id = state.trajectory.sample(t)
+                action = np.concatenate([arm_joints, [gripper]])
+                env.step(action)
+                state.phase_id = phase_id
+        else:
+            # Hold fixed target position (prevents gravity drift)
+            if state.hold_target is not None:
+                env.step(state.hold_target)
+            else:
+                env.step(np.array(env.mujoco_data.ctrl[:6], copy=True))
+
     def _publish_telemetry(self, step_count: int) -> None:
         """Render current state and publish on TelemetryStream."""
         obs = self._env._extract_obs()  # noqa: SLF001
-        phase_id = self._teacher.phase if self._teacher_mode else 0
-        done = self._teacher.done if self._teacher_mode else False
 
         # Get last action from env ctrl
         action = np.array(self._env.mujoco_data.ctrl[:6], copy=True)
@@ -141,12 +178,13 @@ class SimServer:
         msg = pack_telemetry(
             ts_ms=int(time.monotonic() * 1000),
             step_count=step_count,
-            phase_id=phase_id,
-            done=done,
+            phase_id=self._state.phase_id,
+            done=self._state.done,
             qpos=obs["qpos"],
             qvel=obs["qvel"],
             ee_pose=obs["ee_pose"],
             object_pose=obs["object_pose"],
+            red_object_pose=obs["red_object_pose"],
             joint_pos=obs["joint_pos"],
             gripper=float(obs["gripper"]),
             action=action,

@@ -83,7 +83,7 @@ def main() -> None:
     best = evaluate_grasps(
         cube_pos=cube_pos,
         cube_quat=cube_quat,
-        cube_half_sizes=scene.cube_half_sizes,
+        cube_half_sizes=scene.green_cube_half_sizes,
         model=model,
         data=data,
         ee_site_id=ee_site_id,
