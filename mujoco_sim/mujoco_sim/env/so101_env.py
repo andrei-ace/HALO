@@ -145,8 +145,9 @@ class SO101Env:
             self._data.qpos[self._GREEN_CUBE_QPOS_Y] = cy
             # Z stays at default (from MJCF), quat stays identity
 
-            # Randomize red cube with 4 cm minimum separation from green cube
-            min_sep = 0.04
+            # Randomize red cube with larger minimum separation from green cube.
+            # This keeps detections/trackers from hopping between cubes.
+            min_sep = 0.08
             for _ in range(100):
                 rx = rng.uniform(*self._config.red_cube_x_range)
                 ry = rng.uniform(*self._config.red_cube_y_range)

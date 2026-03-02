@@ -45,7 +45,8 @@
     <camera name="scene_cam" pos="0.18 -0.55 0.95" xyaxes="1 0 0 0 0.55 0.84" mode="fixed"/>
 
     <!-- Pick target: green cube with freejoint, sits on table top (table top at z=0.37) -->
-    <body name="green_cube" pos="0.225 0 0.3825">
+    <!-- Keep cubes farther apart in Y to reduce tracker cross-target interference. -->
+    <body name="green_cube" pos="0.225 -0.08 0.3825">
       <freejoint name="green_cube_joint"/>
       <geom type="box" name="green_cube_geom" size="0.01 0.01 0.0125"
             mass="0.05" material="green_cube_material"
@@ -53,8 +54,8 @@
             condim="4" priority="1"/>
     </body>
 
-    <!-- Distractor: red cube with freejoint, offset in Y to avoid overlap -->
-    <body name="red_cube" pos="0.225 0.05 0.3825">
+    <!-- Distractor: red cube with freejoint, offset in Y away from green cube -->
+    <body name="red_cube" pos="0.225 0.08 0.3825">
       <freejoint name="red_cube_joint"/>
       <geom type="box" name="red_cube_geom" size="0.01 0.01 0.0125"
             mass="0.05" material="red_cube_material"

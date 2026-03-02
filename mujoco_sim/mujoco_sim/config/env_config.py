@@ -16,6 +16,7 @@ class EnvConfig:
     control_freq: int = 20
     horizon: int = 1_000_000
     green_cube_x_range: tuple[float, float] = (0.21, 0.27)  # reachable workspace in +X (1.5× further from base)
-    green_cube_y_range: tuple[float, float] = (-0.06, 0.06)
+    # Use disjoint Y bands so target/distractor are visually separated.
+    green_cube_y_range: tuple[float, float] = (-0.11, -0.03)
     red_cube_x_range: tuple[float, float] = (0.21, 0.27)
-    red_cube_y_range: tuple[float, float] = (-0.06, 0.06)
+    red_cube_y_range: tuple[float, float] = (0.03, 0.11)
