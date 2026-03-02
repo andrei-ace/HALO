@@ -14,7 +14,10 @@ from halo.contracts.snapshots import PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 from halo.services.target_perception_service.frame_buffer import CapturedFrame, FrameRingBuffer
-from halo.services.target_perception_service.handle_match import find_detection_by_handle
+from halo.services.target_perception_service.handle_match import (
+    dedupe_detection_handles,
+    find_detection_by_handle,
+)
 from halo.services.target_perception_service.vlm_parser import VlmDetection, VlmScene
 
 if TYPE_CHECKING:
@@ -676,6 +679,7 @@ class TargetPerceptionService:
             if run_id != self._vlm_active_run_id:
                 return
             scene = _stabilize_scene_for_tracked_target(scene, stabilize_handle, stabilize_center_px)
+            scene = dataclasses.replace(scene, detections=dedupe_detection_handles(scene.detections))
 
             self._known_handles = [d.handle for d in scene.detections]
             det_log = [{"handle": d.handle, "label": d.label, "bbox": d.bbox} for d in scene.detections]

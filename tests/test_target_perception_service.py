@@ -11,6 +11,7 @@ from halo.contracts.snapshots import TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 from halo.services.target_perception_service.frame_buffer import CapturedFrame
+from halo.services.target_perception_service.handle_match import dedupe_detection_handles
 from halo.services.target_perception_service.mock_fns import make_mock_capture_fn, make_mock_tracker_factory_fn
 from halo.services.target_perception_service.service import (
     CaptureFn,
@@ -418,6 +419,22 @@ def test_stabilize_scene_for_tracked_target_keeps_handle_when_far():
     assert stabilized.detections[0].handle == "black_cube_02"
 
 
+def test_dedupe_detection_handles_renames_duplicates_deterministically():
+    detections = _scene("cube_01", "cube_01", "cube_01").detections
+    deduped = dedupe_detection_handles(detections)
+
+    assert [d.handle for d in deduped] == ["cube_01", "cube_01_dup2", "cube_01_dup3"]
+
+
+def test_dedupe_detection_handles_skips_taken_suffixes():
+    detections = _scene("cube_01", "cube_01_dup2", "cube_01", "cube_01").detections
+    deduped = dedupe_detection_handles(detections)
+    handles = [d.handle for d in deduped]
+
+    assert handles == ["cube_01", "cube_01_dup2", "cube_01_dup3", "cube_01_dup4"]
+    assert len(handles) == len(set(handles))
+
+
 # ─── VLM async path ───────────────────────────────────────────────────────────
 
 
@@ -514,6 +531,30 @@ async def test_vlm_triggered_on_request_refresh_without_target(rt: HALORuntime):
     await asyncio.sleep(0.05)
 
     assert len(called) == 1
+
+
+async def test_vlm_request_refresh_dedupes_scene_handles_and_known_handles(rt: HALORuntime):
+    async def vlm(arm_id: str, image: object = None, known_handles=None) -> VlmScene:
+        return _scene("cube_01", "cube_01", "cube_01")
+
+    svc = _make_svc(rt, vlm_fn=vlm)
+    await svc.request_refresh(mode="scene_only", reason="test_duplicate_handles")
+
+    scene_events = []
+    for _ in range(20):
+        await asyncio.sleep(0.01)
+        events = rt.bus.get_recent_events(ARM)
+        scene_events = [e for e in events if e.type == EventType.SCENE_DESCRIBED]
+        if scene_events:
+            break
+
+    assert len(scene_events) == 1
+    detections = scene_events[0].data["detections"]
+    handles = [d["handle"] for d in detections]
+
+    assert handles == ["cube_01", "cube_01_dup2", "cube_01_dup3"]
+    assert len(handles) == len(set(handles))
+    assert svc._known_handles == handles
 
 
 async def test_vlm_triggered_on_reacquire_fail_limit(rt: HALORuntime):

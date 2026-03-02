@@ -1,9 +1,42 @@
 from __future__ import annotations
 
+import dataclasses
 import math
 import re
 
 from halo.services.target_perception_service.vlm_parser import VlmDetection
+
+
+def dedupe_detection_handles(detections: list[VlmDetection]) -> list[VlmDetection]:
+    """Return a copy of *detections* with unique handles.
+
+    The first instance of each handle is kept unchanged.
+    Later duplicates are renamed to ``{handle}_dupN`` (starting at N=2),
+    skipping any suffixes that are already present in the scene.
+    """
+    deduped: list[VlmDetection] = []
+    used_handles: set[str] = set()
+    duplicate_counts: dict[str, int] = {}
+
+    for det in detections:
+        handle = det.handle
+        if handle not in used_handles:
+            deduped.append(det)
+            used_handles.add(handle)
+            duplicate_counts.setdefault(handle, 1)
+            continue
+
+        suffix = duplicate_counts.get(handle, 1) + 1
+        candidate = f"{handle}_dup{suffix}"
+        while candidate in used_handles:
+            suffix += 1
+            candidate = f"{handle}_dup{suffix}"
+
+        duplicate_counts[handle] = suffix
+        used_handles.add(candidate)
+        deduped.append(dataclasses.replace(det, handle=candidate))
+
+    return deduped
 
 
 def find_detection_by_handle(
