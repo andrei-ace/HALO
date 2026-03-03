@@ -478,8 +478,8 @@ halo/
       CLAUDE.md                 # tools, one-tool-per-tick, loop detection, snapshot middleware
       config.py                 # PlannerServiceConfig (watchdog_interval_s, max_commands_per_tick)
       snapshot_serializer.py    # snapshot_to_dict() — PlannerSnapshot → plain dict for LLM
-      tools.py                  # AgentContext, build_tools() — 5 LangChain @tool functions
-      agent.py                  # PlannerAgent, make_decide_fn() — LangGraph ReAct agent
+      tools.py                  # AgentContext, build_tools() — 5 plain functions (ADK introspects signature + docstring)
+      agent.py                  # PlannerAgent, make_decide_fn() — ADK Agent with LiteLlm (Ollama)
       service.py                # PlannerService (event-driven loop, 30 s watchdog)
     target_perception_service/
       CLAUDE.md             # tick logic, plausibility gates, VLM async pipeline, state transitions

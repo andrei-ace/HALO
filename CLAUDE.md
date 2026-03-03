@@ -43,7 +43,7 @@ All v0 backbone services are implemented and tested:
 | SkillRunnerService + PickFSM | ✅ done |
 | PlannerService | ✅ done |
 | TargetPerceptionService (mock + VLM pipeline) | ✅ done |
-| PlannerAgent (LangGraph ReAct + tools) | ✅ done |
+| PlannerAgent (ADK ReAct + tools) | ✅ done |
 | TUI (`halo/tui/app.py`) | ✅ done |
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |

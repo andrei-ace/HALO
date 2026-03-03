@@ -355,7 +355,7 @@ Track dataset stats continuously:
 ## 11) Implementation structure (processes/threads)
 
 All services are implemented as async Python classes with dependency injection. Each service directory contains a `CLAUDE.md` with detailed docs (tick order, config tables, integration points, testing notes):
-- `PlannerService` (`halo/services/planner_service/`) — LLM agent via LangGraph ReAct + 5 tools
+- `PlannerService` (`halo/services/planner_service/`) — LLM agent via ADK ReAct + 5 tools
 - `TargetPerceptionService` (`halo/services/target_perception_service/`) — fast loop + async VLM
 - `SkillRunnerService` (`halo/services/skill_runner_service/`) — FSM + ACT chunk scheduling
 - `ControlService` (`halo/services/control_service/`) — real-time executor + safety/reflex
@@ -402,7 +402,7 @@ Planner-grade fields only:
 2. ✅ SkillRunner Pick FSM with deterministic phase transitions and fast success checks (`PickFSM`, `SkillRunnerService`).
 3. ✅ ControlService with TemporalEnsemblingBuffer, SafetyGuard, action clamping, hint freshness interlocks.
 4. ✅ TargetPerceptionService with mocked observe_fn + async VLM pipeline (VLM parser, Ollama VLM client, mock fns, VLM prompt).
-5. ✅ PlannerService (event-driven, 30 s watchdog) + PlannerAgent (LangGraph ReAct, 5 tools, snapshot middleware).
+5. ✅ PlannerService (event-driven, 30 s watchdog) + PlannerAgent (ADK ReAct, 5 tools, before_model_callback).
 6. ✅ TUI (mock + live modes) + RunLogger (JSONL session logs + VLM logging).
 7. ✅ Integration tests (Ollama-backed, auto-skip if unavailable).
 
