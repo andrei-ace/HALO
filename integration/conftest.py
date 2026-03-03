@@ -37,18 +37,29 @@ def _ollama_skip_reason() -> str | None:
     return None
 
 
+def _gemini_skip_reason() -> str | None:
+    """Return a skip reason if GOOGLE_API_KEY is not set, else None."""
+    if not os.getenv("GOOGLE_API_KEY"):
+        return "GOOGLE_API_KEY not set — skipping Gemini cloud integration tests"
+    return None
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "integration: LLM integration tests — require a running Ollama instance",
     )
+    config.addinivalue_line(
+        "markers",
+        "cloud_integration: Gemini cloud integration tests — require GOOGLE_API_KEY",
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    skip_reason = _ollama_skip_reason()
-    if skip_reason is None:
-        return
-    skip = pytest.mark.skip(reason=skip_reason)
+    ollama_skip = _ollama_skip_reason()
+    gemini_skip = _gemini_skip_reason()
     for item in items:
-        if item.get_closest_marker("integration"):
-            item.add_marker(skip)
+        if item.get_closest_marker("integration") and ollama_skip:
+            item.add_marker(pytest.mark.skip(reason=ollama_skip))
+        if item.get_closest_marker("cloud_integration") and gemini_skip:
+            item.add_marker(pytest.mark.skip(reason=gemini_skip))

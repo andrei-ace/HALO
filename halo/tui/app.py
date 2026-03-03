@@ -1561,12 +1561,13 @@ def _run_live(args: list[str]) -> None:
     from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
     from halo.services.target_perception_service.video_source import VideoSource
 
-    # Parse --arm, --model, --vlm-model, --base-url, --source from args
+    # Parse --arm, --model, --vlm-model, --base-url, --source, --backend from args
     arm_id = "arm0"
     model = "gpt-oss:20b"
     vlm_model = "qwen2.5vl:3b"
     base_url = "http://localhost:11434"
     source_type = "videoloop"
+    backend = "local"
 
     for i, arg in enumerate(args):
         if arg == "--arm" and i + 1 < len(args):
@@ -1579,6 +1580,15 @@ def _run_live(args: list[str]) -> None:
             base_url = args[i + 1]
         elif arg == "--source" and i + 1 < len(args):
             source_type = args[i + 1]
+        elif arg == "--backend" and i + 1 < len(args):
+            backend = args[i + 1]
+
+    # Apply cloud defaults when backend is cloud and user didn't override models
+    if backend == "cloud":
+        if model == "gpt-oss:20b":
+            model = "gemini-2.5-flash"
+        if vlm_model == "qwen2.5vl:3b":
+            vlm_model = "gemini-2.5-flash"
 
     runtime = HALORuntime()
     runtime.register_arm(arm_id)
@@ -1586,13 +1596,21 @@ def _run_live(args: list[str]) -> None:
     run_logger = RunLogger(_RUNS_DIR, arm_id)
 
     prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
-    agent = PlannerAgent(model, base_url, prompts_dir)
+    agent = PlannerAgent(model, base_url, prompts_dir, backend=backend)
 
-    vlm_fn = make_ollama_vlm_fn(
-        base_url=base_url,
-        model=vlm_model,
-        run_logger=run_logger,
-    )
+    if backend == "cloud":
+        from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
+
+        vlm_fn = make_gemini_vlm_fn(
+            model=vlm_model,
+            run_logger=run_logger,
+        )
+    else:
+        vlm_fn = make_ollama_vlm_fn(
+            base_url=base_url,
+            model=vlm_model,
+            run_logger=run_logger,
+        )
 
     if source_type == "mujoco":
         from halo.bridge.sim_source import SimSource

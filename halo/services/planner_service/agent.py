@@ -12,6 +12,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from halo.contracts.commands import CommandEnvelope
+from halo.contracts.events import EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.planner_service.service import DecideFn
 from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
@@ -71,6 +72,39 @@ def _load_prompts(prompts_dir: Path) -> str:
     return "\n".join(parts)
 
 
+def _extract_scene_image(snap: PlannerSnapshot) -> object | None:
+    """Extract the VLM image from the most recent SCENE_DESCRIBED event, if any."""
+    for ev in reversed(snap.recent_events):
+        if ev.type == EventType.SCENE_DESCRIBED and ev.data.get("vlm_image") is not None:
+            return ev.data["vlm_image"]
+    return None
+
+
+def _to_png_bytes(image: object) -> bytes | None:
+    """Convert numpy BGR, PIL, or raw bytes to PNG bytes for Gemini multimodal input."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    pil: Image.Image | None = None
+    if isinstance(image, Image.Image):
+        pil = image
+    elif isinstance(image, np.ndarray):
+        import cv2
+
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+    elif isinstance(image, (bytes, bytearray)):
+        pil = Image.open(io.BytesIO(image))
+
+    if pil is None:
+        return None
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _command_key(cmd: CommandEnvelope) -> str:
     """Stable key for a command (type + payload, ignoring IDs and timestamps)."""
     payload_dict = dataclasses.asdict(cmd.payload)
@@ -87,17 +121,25 @@ class PlannerAgent:
         model_name: str,
         base_url: str,
         prompts_dir: Path,
+        backend: str = "local",
     ) -> None:
         system_prompt = _load_prompts(prompts_dir)
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         self._tools = build_tools(self._ctx)
+        self._backend = backend
 
-        # LiteLLM uses OLLAMA_API_BASE env var for the Ollama endpoint.
-        os.environ["OLLAMA_API_BASE"] = base_url
+        if backend == "cloud":
+            # ADK natively routes bare model strings (e.g. "gemini-2.5-flash")
+            # to the Gemini API via GOOGLE_API_KEY env var.
+            model = model_name
+        else:
+            # LiteLLM uses OLLAMA_API_BASE env var for the Ollama endpoint.
+            os.environ["OLLAMA_API_BASE"] = base_url
+            model = LiteLlm(model=f"ollama_chat/{model_name}")
 
         self._agent = Agent(
             name="planner",
-            model=LiteLlm(model=f"ollama_chat/{model_name}"),
+            model=model,
             instruction=system_prompt,
             tools=self._tools,
             before_model_callback=_deprecate_old_snapshots,
@@ -169,10 +211,19 @@ class PlannerAgent:
         if operator_cmd:
             text_parts.append(f"Operator: {operator_cmd}")
 
-        message = types.Content(
-            role="user",
-            parts=[types.Part.from_text("\n\n".join(text_parts))],
-        )
+        parts: list = [types.Part.from_text("\n\n".join(text_parts))]
+
+        # Cloud backend: attach the VLM scene image so Gemini can see what
+        # the VLM analysed.  Local (Ollama) skips this — it doesn't support
+        # inline images in the chat context.
+        if self._backend == "cloud":
+            scene_image = _extract_scene_image(snap)
+            if scene_image is not None:
+                png_bytes = _to_png_bytes(scene_image)
+                if png_bytes is not None:
+                    parts.append(types.Part.from_bytes(data=png_bytes, mime_type="image/png"))
+
+        message = types.Content(role="user", parts=parts)
 
         # Run the agent and extract the final response text.
         last_text = ""
@@ -223,16 +274,19 @@ def make_decide_fn(
     model_name: str = "gpt-oss:20b",
     base_url: str = "http://localhost:11434",
     prompts_dir: Path | str | None = None,
+    backend: str = "local",
 ) -> DecideFn:
     """Factory that creates a PlannerAgent and returns its decide method.
 
     Usage::
 
         from halo.services.planner_service.agent import make_decide_fn
-        decide = make_decide_fn()          # defaults to local Ollama
+        decide = make_decide_fn()                        # local Ollama
+        decide = make_decide_fn(backend="cloud",
+                                model_name="gemini-2.5-flash")  # Gemini
         svc = PlannerService("arm0", runtime, decide)
     """
     if prompts_dir is None:
         prompts_dir = Path(__file__).parents[3] / "configs" / "planner"
-    agent = PlannerAgent(model_name, base_url, Path(prompts_dir))
+    agent = PlannerAgent(model_name, base_url, Path(prompts_dir), backend=backend)
     return agent.decide

@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live-videoloop tui-live-mujoco run-headless-mock run-headless-live sim-server ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live-videoloop tui-live-mujoco tui-live-cloud run-headless-mock run-headless-live sim-server ruff help
 
 install:
 	uv sync --extra dev
@@ -47,6 +47,17 @@ tui-live-mujoco:
 		--vlm-model $(VLM_MODEL) \
 		--base-url $(OLLAMA_URL) \
 		--source mujoco
+
+CLOUD_PLANNER_MODEL ?= gemini-2.5-flash
+CLOUD_VLM_MODEL     ?= gemini-2.5-flash
+
+tui-live-cloud:
+	uv run python -m halo.tui.app --live \
+		--arm $(ARM_ID) \
+		--model $(CLOUD_PLANNER_MODEL) \
+		--vlm-model $(CLOUD_VLM_MODEL) \
+		--backend cloud \
+		--source videoloop
 
 test-component:
 	uv run pytest tests/component/ -v

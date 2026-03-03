@@ -70,8 +70,17 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
 
     command_acks_list = [{"command_id": ack.command_id, "status": ack.status.value} for ack in snap.command_acks]
 
+    # Strip non-serializable fields (e.g. vlm_image) from event data before
+    # JSON encoding.  The raw image is still available on the original
+    # EventEnvelope for multimodal backends that need it.
+    _NON_SERIALIZABLE_KEYS = {"vlm_image"}
     recent_events_list = [
-        {"event_id": ev.event_id, "type": ev.type.value, "data": ev.data} for ev in snap.recent_events
+        {
+            "event_id": ev.event_id,
+            "type": ev.type.value,
+            "data": {k: v for k, v in ev.data.items() if k not in _NON_SERIALIZABLE_KEYS},
+        }
+        for ev in snap.recent_events
     ]
 
     return {

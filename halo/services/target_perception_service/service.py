@@ -693,6 +693,7 @@ class TargetPerceptionService:
                         "detections": det_log,
                         "count": len(scene.detections),
                         "inference_ms": inference_ms,
+                        "vlm_image": vlm_image,
                     },
                 )
                 if self._run_logger is not None:
