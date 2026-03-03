@@ -20,9 +20,12 @@ class LocalConfig:
 
 @dataclass(frozen=True)
 class CloudConfig:
+    service_url: str = ""  # e.g. "https://halo-cognitive-xxx-uc.a.run.app"
+    api_key: str | None = None  # reads HALO_CLOUD_API_KEY env if None
+    request_timeout_s: float = 30.0
+    # Server-side model config (informational only — server owns model choice)
     planner_model: str = "gemini-2.5-flash"
     vlm_model: str = "gemini-2.5-flash"
-    api_key: str | None = None  # reads GOOGLE_API_KEY env if None
 
 
 @dataclass(frozen=True)

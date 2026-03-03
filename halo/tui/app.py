@@ -1561,13 +1561,14 @@ def _run_live(args: list[str]) -> None:
     from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
     from halo.services.target_perception_service.video_source import VideoSource
 
-    # Parse --arm, --model, --vlm-model, --base-url, --source, --backend from args
+    # Parse --arm, --model, --vlm-model, --base-url, --source, --backend, --cloud-url from args
     arm_id = "arm0"
     model = "gpt-oss:20b"
     vlm_model = "qwen2.5vl:3b"
     base_url = "http://localhost:11434"
     source_type = "videoloop"
     backend = "local"
+    cloud_url = ""
 
     for i, arg in enumerate(args):
         if arg == "--arm" and i + 1 < len(args):
@@ -1582,6 +1583,8 @@ def _run_live(args: list[str]) -> None:
             source_type = args[i + 1]
         elif arg == "--backend" and i + 1 < len(args):
             backend = args[i + 1]
+        elif arg == "--cloud-url" and i + 1 < len(args):
+            cloud_url = args[i + 1]
 
     # Apply cloud defaults when backend is cloud and user didn't override models
     if backend == "cloud":
@@ -1595,22 +1598,31 @@ def _run_live(args: list[str]) -> None:
 
     run_logger = RunLogger(_RUNS_DIR, arm_id)
 
-    prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
-    agent = PlannerAgent(model, base_url, prompts_dir, backend=backend)
+    if cloud_url:
+        # Remote cloud backend — thin HTTP client, no local PlannerAgent/VLM
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+        from halo.cognitive.config import CloudConfig
 
-    if backend == "cloud":
-        from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
-
-        vlm_fn = make_gemini_vlm_fn(
-            model=vlm_model,
-            run_logger=run_logger,
-        )
+        cloud_backend = CloudCognitiveBackend(CloudConfig(service_url=cloud_url))
+        agent = cloud_backend
+        vlm_fn = cloud_backend.vlm_scene
     else:
-        vlm_fn = make_ollama_vlm_fn(
-            base_url=base_url,
-            model=vlm_model,
-            run_logger=run_logger,
-        )
+        prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
+        agent = PlannerAgent(model, base_url, prompts_dir, backend=backend)
+
+        if backend == "cloud":
+            from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
+
+            vlm_fn = make_gemini_vlm_fn(
+                model=vlm_model,
+                run_logger=run_logger,
+            )
+        else:
+            vlm_fn = make_ollama_vlm_fn(
+                base_url=base_url,
+                model=vlm_model,
+                run_logger=run_logger,
+            )
 
     if source_type == "mujoco":
         from halo.bridge.sim_source import SimSource
