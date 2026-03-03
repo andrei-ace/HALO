@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 
-from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import before_model
-from langchain_core.messages import HumanMessage, RemoveMessage
-from langchain_ollama import ChatOllama
-from langgraph.checkpoint.memory import InMemorySaver
+from google.adk.agents import Agent
+from google.adk.models.lite_llm import LiteLlm
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from google.genai import types
 
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
@@ -19,31 +20,39 @@ from halo.services.planner_service.tools import AgentContext, build_tools
 _SNAPSHOT_PREFIX = "Current robot state:"
 _DEPRECATED_CONTENT = "[DEPRECATED - superseded by a more recent snapshot]"
 _THREAD_ID = "planner"  # single-thread; one conversation per PlannerAgent
+_APP_NAME = "halo"
+_USER_ID = "planner"
 
 
-@before_model
-def _deprecate_old_snapshots(state: AgentState, runtime: object) -> dict | None:
-    """Enforce the 'exactly one snapshot' invariant from the architecture spec.
+def _deprecate_old_snapshots(
+    callback_context,  # noqa: ARG001 — required by ADK callback signature
+    llm_request,
+):
+    """ADK before_model_callback: enforce exactly-one-snapshot invariant.
 
     Before every model call, replace the content of all but the most recent
-    "Current robot state:" HumanMessage with a deprecation notice so the LLM
+    "Current robot state:" user message with a deprecation notice so the LLM
     only ever reasons about the latest snapshot and the context stays small.
+
+    Returns None to let the (modified) request proceed to the model.
     """
-    messages = state["messages"]
+    contents = llm_request.contents or []
     indices = [
         i
-        for i, m in enumerate(messages)
-        if isinstance(m, HumanMessage) and isinstance(m.content, str) and m.content.startswith(_SNAPSHOT_PREFIX)
+        for i, c in enumerate(contents)
+        if c.role == "user"
+        and c.parts
+        and any(getattr(p, "text", None) and p.text.startswith(_SNAPSHOT_PREFIX) for p in c.parts)
     ]
     if len(indices) <= 1:
         return None
     # Replace all but last snapshot with deprecation notice
-    updates = []
     for i in indices[:-1]:
-        msg = messages[i]
-        updates.append(RemoveMessage(id=msg.id))
-        updates.append(HumanMessage(content=_DEPRECATED_CONTENT, id=msg.id))
-    return {"messages": updates}
+        contents[i] = types.Content(
+            role="user",
+            parts=[types.Part.from_text(_DEPRECATED_CONTENT)],
+        )
+    return None
 
 
 def _load_prompts(prompts_dir: Path) -> str:
@@ -62,23 +71,6 @@ def _load_prompts(prompts_dir: Path) -> str:
     return "\n".join(parts)
 
 
-def _extract_reasoning(result: object) -> str:
-    """Pull the final AI text from an ainvoke result dict.
-
-    The result is ``{"messages": [...]}``; we walk backwards to find the last
-    AIMessage that has non-empty text content and no pending tool_calls.
-    """
-    try:
-        msgs = result.get("messages", []) if isinstance(result, dict) else []  # type: ignore[union-attr]
-        for msg in reversed(msgs):
-            content = getattr(msg, "content", "")
-            if content and isinstance(content, str) and not getattr(msg, "tool_calls", None):
-                return content
-    except Exception:
-        pass
-    return ""
-
-
 def _command_key(cmd: CommandEnvelope) -> str:
     """Stable key for a command (type + payload, ignoring IDs and timestamps)."""
     payload_dict = dataclasses.asdict(cmd.payload)
@@ -86,7 +78,7 @@ def _command_key(cmd: CommandEnvelope) -> str:
 
 
 class PlannerAgent:
-    """LangGraph ReAct agent that implements the DecideFn protocol."""
+    """ADK ReAct agent that implements the DecideFn protocol."""
 
     MAX_LOOP_RETRIES = 4
 
@@ -99,17 +91,36 @@ class PlannerAgent:
         system_prompt = _load_prompts(prompts_dir)
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         self._tools = build_tools(self._ctx)
-        llm = ChatOllama(model=model_name, base_url=base_url)
-        self._checkpointer = InMemorySaver()
-        self._agent = create_agent(
-            llm,
-            self._tools,
-            system_prompt=system_prompt,
-            middleware=[_deprecate_old_snapshots],
-            checkpointer=self._checkpointer,
+
+        # LiteLLM uses OLLAMA_API_BASE env var for the Ollama endpoint.
+        os.environ["OLLAMA_API_BASE"] = base_url
+
+        self._agent = Agent(
+            name="planner",
+            model=LiteLlm(model=f"ollama_chat/{model_name}"),
+            instruction=system_prompt,
+            tools=self._tools,
+            before_model_callback=_deprecate_old_snapshots,
         )
+        self._session_service = InMemorySessionService()
+        self._runner = Runner(
+            agent=self._agent,
+            app_name=_APP_NAME,
+            session_service=self._session_service,
+        )
+        self._session_created = False
         self._last_reasoning: str = ""
         self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
+
+    async def _ensure_session(self) -> None:
+        """Create the ADK session on first use (requires async)."""
+        if not self._session_created:
+            await self._session_service.create_session(
+                app_name=_APP_NAME,
+                user_id=_USER_ID,
+                session_id=_THREAD_ID,
+            )
+            self._session_created = True
 
     @property
     def last_reasoning(self) -> str:
@@ -127,17 +138,19 @@ class PlannerAgent:
     ) -> list[CommandEnvelope]:
         """DecideFn implementation. Thread-safe per design (never called concurrently).
 
-        Uses InMemorySaver checkpointer to persist conversation history across
-        calls.  The _deprecate_old_snapshots middleware replaces all but the
-        latest snapshot with a short deprecation notice before each model call,
-        keeping the context window manageable.
+        Uses InMemorySessionService to persist conversation history across
+        calls.  The _deprecate_old_snapshots before_model_callback replaces all
+        but the latest snapshot with a short deprecation notice before each
+        model call, keeping the context window manageable.
 
         Args:
             snap: Current runtime snapshot.
             operator_cmd: Optional natural-language instruction from the operator.
-                          When provided it is appended as a second HumanMessage so
+                          When provided it is appended to the snapshot message so
                           the agent can act on it in the context of the current state.
         """
+        await self._ensure_session()
+
         self._ctx.arm_id = snap.arm_id
         self._ctx.snapshot_id = snap.snapshot_id
         self._ctx.commands.clear()
@@ -150,15 +163,30 @@ class PlannerAgent:
 
         snap_json = json.dumps(snapshot_to_dict(snap), indent=2)
 
-        messages: list = [
-            HumanMessage(content=f"{_SNAPSHOT_PREFIX}\n```json\n{snap_json}\n```"),
-        ]
+        # Combine snapshot + optional operator command into one user message.
+        # ADK's runner.run_async takes a single new_message per call.
+        text_parts = [f"{_SNAPSHOT_PREFIX}\n```json\n{snap_json}\n```"]
         if operator_cmd:
-            messages.append(HumanMessage(content=f"Operator: {operator_cmd}"))
+            text_parts.append(f"Operator: {operator_cmd}")
 
-        config = {"configurable": {"thread_id": _THREAD_ID}}
-        result = await self._agent.ainvoke({"messages": messages}, config)
-        self._last_reasoning = _extract_reasoning(result)
+        message = types.Content(
+            role="user",
+            parts=[types.Part.from_text("\n\n".join(text_parts))],
+        )
+
+        # Run the agent and extract the final response text.
+        last_text = ""
+        async for event in self._runner.run_async(
+            user_id=_USER_ID,
+            session_id=_THREAD_ID,
+            new_message=message,
+        ):
+            if event.content and event.content.parts:
+                for part in event.content.parts:
+                    if part.text:
+                        last_text = part.text
+
+        self._last_reasoning = last_text
 
         commands = list(self._ctx.commands)
 

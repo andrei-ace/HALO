@@ -1,6 +1,6 @@
 # PlannerService
 
-Event-driven LLM orchestrator (30 s watchdog). Fetches the latest runtime snapshot, calls a LangGraph ReAct agent to decide commands, and submits them back to the runtime.
+Event-driven LLM orchestrator (30 s watchdog). Fetches the latest runtime snapshot, calls an ADK ReAct agent to decide commands, and submits them back to the runtime.
 
 ## Files
 
@@ -8,8 +8,8 @@ Event-driven LLM orchestrator (30 s watchdog). Fetches the latest runtime snapsh
 |------|---------|
 | `config.py` | `PlannerServiceConfig` — watchdog interval, max commands per tick |
 | `snapshot_serializer.py` | `snapshot_to_dict()` — PlannerSnapshot → plain dict for LLM context |
-| `tools.py` | `build_tools(ctx)` — 5 LangChain `@tool` functions closed over `AgentContext` |
-| `agent.py` | `PlannerAgent` — LangGraph ReAct agent with ChatOllama, middleware, loop detection |
+| `tools.py` | `build_tools(ctx)` — 5 plain functions closed over `AgentContext` (ADK introspects signature + docstring) |
+| `agent.py` | `PlannerAgent` — ADK Agent with LiteLlm (Ollama), before_model_callback, loop detection |
 | `service.py` | `PlannerService` — event loop, tick, command submission |
 
 ## Key Types
@@ -22,7 +22,7 @@ PlannerAgent(model_name="gpt-oss:20b", base_url="http://localhost:11434", prompt
 make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 ```
 
-## Tools (5 LangChain @tool functions)
+## Tools (5 plain functions)
 
 | Tool | Command | Precondition |
 |------|---------|-------------|
@@ -36,11 +36,11 @@ make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 
 ## PlannerAgent Design
 
-- **LLM**: ChatOllama (local Ollama, `gpt-oss:20b` default)
-- **Checkpointer**: InMemorySaver (conversation persists across ticks in memory)
-- **Middleware** (`_deprecate_old_snapshots`): replaces all but the latest "Current robot state:" message with a deprecation notice — enforces exactly-one-snapshot invariant
+- **LLM**: LiteLlm with `ollama_chat` provider (local Ollama, `gpt-oss:20b` default)
+- **Session**: InMemorySessionService (conversation persists across ticks in memory)
+- **before_model_callback** (`_deprecate_old_snapshots`): replaces all but the latest "Current robot state:" message with a deprecation notice — enforces exactly-one-snapshot invariant
 - **Loop detection** (MAX_LOOP_RETRIES=4): tracks consecutive identical commands across ticks; rejects batch on streak >= 4
-- `decide(snap, operator_cmd=None)`: main entry point. Formats snapshot as JSON HumanMessage, optionally appends operator instruction, invokes agent, returns accumulated commands
+- `decide(snap, operator_cmd=None)`: main entry point. Formats snapshot as JSON user message, optionally appends operator instruction, runs agent via Runner.run_async, returns accumulated commands
 - `reset_loop_state()`: called when operator sends new instruction
 
 ## Service Event Loop
@@ -82,4 +82,4 @@ Loaded from `halo/configs/planner/`:
 
 ## Testing
 
-`tick()` is directly callable. Tests inject a mock `decide_fn` and verify command submission + ack handling. Integration tests (`integration/`) exercise the full LangGraph agent against Ollama.
+`tick()` is directly callable. Tests inject a mock `decide_fn` and verify command submission + ack handling. Integration tests (`integration/`) exercise the full ADK agent against Ollama.

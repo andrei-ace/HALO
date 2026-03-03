@@ -1,9 +1,6 @@
 """
 Integration test configuration.
 
-- Enables LangChain debug mode so every LLM prompt/response is printed to
-  stdout during the test run (use `pytest -s` to see it, already set in the
-  Makefile target).
 - Health-checks Ollama at session start; skips all @pytest.mark.integration
   tests if the server is unreachable or the required model is not loaded.
 """
@@ -16,9 +13,6 @@ import urllib.error
 import urllib.request
 
 import pytest
-from langchain_core.globals import set_debug
-
-set_debug(True)
 
 OLLAMA_URL = os.getenv("HALO_OLLAMA_URL", "http://localhost:11434")
 MODEL_NAME = os.getenv("HALO_MODEL_NAME", "gpt-oss:20b")

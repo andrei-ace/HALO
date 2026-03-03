@@ -4,8 +4,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
-from langchain_core.tools import tool
-
 from halo.contracts.commands import (
     AbortSkillPayload,
     CommandEnvelope,
@@ -26,7 +24,7 @@ class AgentContext:
 
 
 def build_tools(ctx: AgentContext) -> list:
-    """Build LangChain tool list that close over ctx."""
+    """Build tool list that close over ctx. ADK introspects name/signature/docstring."""
 
     def _once(name: str) -> str | None:
         """Return an error string if tool was already called this tick, else mark it used."""
@@ -35,7 +33,6 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.used_tools.add(name)
         return None
 
-    @tool
     def start_skill(skill_name: str, target_handle: str, options: dict | None = None) -> str:
         """Start a named skill on the arm.
 
@@ -66,7 +63,6 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued START_SKILL {skill_name} target={target_handle}"
 
-    @tool
     def abort_skill(skill_run_id: str, reason: str) -> str:
         """Abort the currently running skill.
 
@@ -90,7 +86,6 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued ABORT_SKILL run_id={skill_run_id} reason={reason}"
 
-    @tool
     def override_target(skill_run_id: str, target_handle: str) -> str:
         """Override the target for the currently running skill.
 
@@ -114,7 +109,6 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued OVERRIDE_TARGET run_id={skill_run_id} target={target_handle}"
 
-    @tool
     def describe_scene(reason: str = "") -> str:
         """Ask TargetPerceptionService to run VLM scene analysis.
 
@@ -143,7 +137,6 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued DESCRIBE_SCENE reason={reason}"
 
-    @tool
     def track_object(target_handle: str) -> str:
         """Tell perception to start tracking a named object.
 

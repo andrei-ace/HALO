@@ -408,9 +408,9 @@ def test_snapshot_to_dict_recent_events_included():
 def test_start_skill_tool_rejects_invalid_skill_name():
     ctx = AgentContext(arm_id=ARM, snapshot_id="snap-1")
     tools = build_tools(ctx)
-    start_tool = next(t for t in tools if t.name == "start_skill")
+    start_tool = next(t for t in tools if t.__name__ == "start_skill")
 
-    result = start_tool.invoke({"skill_name": "pick", "target_handle": "obj-1"})
+    result = start_tool(skill_name="pick", target_handle="obj-1")
 
     assert "REJECTED" in result
     assert ctx.commands == []

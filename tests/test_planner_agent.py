@@ -1,7 +1,7 @@
 """Unit tests for PlannerService tools (AgentContext + build_tools)
 and loop-detection helper.
 
-The LangGraph agent itself (PlannerAgent / make_decide_fn) requires a running
+The ADK agent itself (PlannerAgent / make_decide_fn) requires a running
 Ollama instance and is not unit-tested here.
 """
 
@@ -21,7 +21,7 @@ def _make_ctx(arm_id: str = "arm0", snapshot_id: str | None = "snap-1") -> Agent
 
 
 def _tools_by_name(ctx: AgentContext) -> dict:
-    return {t.name: t for t in build_tools(ctx)}
+    return {fn.__name__: fn for fn in build_tools(ctx)}
 
 
 # ---------------------------------------------------------------------------
@@ -32,7 +32,7 @@ def _tools_by_name(ctx: AgentContext) -> dict:
 def test_start_skill_tool_appends_command() -> None:
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
+    tools["start_skill"](skill_name="PICK", target_handle="cube-1")
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
@@ -49,7 +49,7 @@ def test_start_skill_tool_appends_command() -> None:
 def test_abort_skill_tool_appends_command() -> None:
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["abort_skill"].invoke({"skill_run_id": "run-42", "reason": "timeout"})
+    tools["abort_skill"](skill_run_id="run-42", reason="timeout")
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
@@ -66,7 +66,7 @@ def test_abort_skill_tool_appends_command() -> None:
 def test_override_target_tool_appends_command() -> None:
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["override_target"].invoke({"skill_run_id": "run-7", "target_handle": "mug-2"})
+    tools["override_target"](skill_run_id="run-7", target_handle="mug-2")
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
@@ -83,7 +83,7 @@ def test_override_target_tool_appends_command() -> None:
 def test_describe_scene_tool_appends_command() -> None:
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["describe_scene"].invoke({"reason": "lost target"})
+    tools["describe_scene"](reason="lost target")
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
@@ -99,10 +99,10 @@ def test_describe_scene_tool_appends_command() -> None:
 def test_tool_commands_have_correct_arm_id() -> None:
     ctx = _make_ctx(arm_id="arm0")
     tools = _tools_by_name(ctx)
-    tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
-    tools["abort_skill"].invoke({"skill_run_id": "run-1", "reason": "test"})
-    tools["override_target"].invoke({"skill_run_id": "run-1", "target_handle": "box-2"})
-    tools["describe_scene"].invoke({"reason": ""})
+    tools["start_skill"](skill_name="PICK", target_handle="cube-1")
+    tools["abort_skill"](skill_run_id="run-1", reason="test")
+    tools["override_target"](skill_run_id="run-1", target_handle="box-2")
+    tools["describe_scene"](reason="")
 
     for cmd in ctx.commands:
         assert cmd.arm_id == "arm0"
@@ -117,8 +117,8 @@ def test_duplicate_tool_call_rejected() -> None:
     """Calling the same tool twice in one tick is rejected (once-per-tick guard)."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
-    result2 = tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-2"})
+    tools["start_skill"](skill_name="PICK", target_handle="cube-1")
+    result2 = tools["start_skill"](skill_name="PICK", target_handle="cube-2")
 
     assert len(ctx.commands) == 1, "Only the first call should produce a command"
     assert "REJECTED" in result2
@@ -128,8 +128,8 @@ def test_different_tools_allowed_same_tick() -> None:
     """Different tools can each be called once in the same tick."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["track_object"].invoke({"target_handle": "cube-1"})
-    tools["start_skill"].invoke({"skill_name": "PICK", "target_handle": "cube-1"})
+    tools["track_object"](target_handle="cube-1")
+    tools["start_skill"](skill_name="PICK", target_handle="cube-1")
 
     assert len(ctx.commands) == 2
 
@@ -142,7 +142,7 @@ def test_different_tools_allowed_same_tick() -> None:
 def test_track_object_tool_appends_command() -> None:
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["track_object"].invoke({"target_handle": "mug-2"})
+    tools["track_object"](target_handle="mug-2")
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
