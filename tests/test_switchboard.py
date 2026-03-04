@@ -476,47 +476,6 @@ async def test_rewarm_active_on_cold_detection():
 
 
 # ---------------------------------------------------------------------------
-# LIVE backend failover
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_failover_live_to_local():
-    """LIVE backend failures should fail over to LOCAL."""
-    live = _make_mock_backend("live")
-    local = _make_mock_backend("local")
-    cloud = _make_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.LIVE, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, live=live)
-
-    live.decide = AsyncMock(side_effect=RuntimeError("Live API down"))
-    snap = _idle_snap()
-
-    for _ in range(CONSECUTIVE_FAILURES_BEFORE_SWITCH):
-        await sb.decide(snap)
-
-    # Should have switched to LOCAL (not CLOUD)
-    assert sb.active_type == BackendType.LOCAL
-
-
-@pytest.mark.asyncio
-async def test_live_backend_delegation():
-    """When active is LIVE, decide() delegates to the live backend."""
-    live = _make_mock_backend("live")
-    local = _make_mock_backend("local")
-    cloud = _make_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.LIVE)
-    sb = Switchboard(config=config, local=local, cloud=cloud, live=live)
-
-    snap = _idle_snap()
-    await sb.decide(snap)
-
-    live.decide.assert_awaited_once()
-    local.decide.assert_not_awaited()
-    cloud.decide.assert_not_awaited()
-
-
-# ---------------------------------------------------------------------------
 # Active backend re-warm on COLD detection
 # ---------------------------------------------------------------------------
 

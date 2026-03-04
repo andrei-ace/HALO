@@ -1718,8 +1718,8 @@ def _run_live(args: list[str]) -> None:
         elif arg == "--cloud-url" and i + 1 < len(args):
             cloud_url = args[i + 1]
 
-    # Apply cloud/live defaults when backend is cloud/live and user didn't override models
-    if backend in ("cloud", "live"):
+    # Apply cloud defaults when backend is cloud and user didn't override models
+    if backend == "cloud":
         if model == "gpt-oss:20b":
             model = "gemini-2.5-flash"
         if vlm_model == "qwen2.5vl:3b":
@@ -1733,20 +1733,20 @@ def _run_live(args: list[str]) -> None:
     live_backend = None
 
     if cloud_url:
-        # Remote cloud backend — thin HTTP client, no local PlannerAgent/VLM
+        # Remote cloud backend — thin HTTP client to Cloud Run, no local PlannerAgent/VLM
+        from halo.cognitive.config import RemoteCloudConfig
+        from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url))
+        agent = remote
+        vlm_fn = remote.vlm_scene
+    elif backend == "cloud":
+        # Gemini Live API — bidirectional audio + text
+        from halo.cognitive.audio_io import make_audio_components
         from halo.cognitive.cloud_backend import CloudCognitiveBackend
         from halo.cognitive.config import CloudConfig
 
-        cloud_backend = CloudCognitiveBackend(CloudConfig(service_url=cloud_url))
-        agent = cloud_backend
-        vlm_fn = cloud_backend.vlm_scene
-    elif backend == "live":
-        # Gemini Live API — bidirectional audio + text
-        from halo.cognitive.audio_io import make_audio_components
-        from halo.cognitive.config import LiveConfig
-        from halo.cognitive.live_backend import LiveCognitiveBackend
-
-        live_cfg = LiveConfig(planner_model=model, vlm_model=vlm_model)
+        cloud_cfg = CloudConfig(planner_model=model, vlm_model=vlm_model)
 
         # Set up audio (graceful degradation if sounddevice not installed)
         def _audio_stub(pcm: bytes) -> None:
@@ -1755,21 +1755,21 @@ def _run_live(args: list[str]) -> None:
 
         audio = make_audio_components(
             on_audio=_audio_stub,
-            input_sample_rate=live_cfg.input_sample_rate,
-            output_sample_rate=live_cfg.output_sample_rate,
+            input_sample_rate=cloud_cfg.input_sample_rate,
+            output_sample_rate=cloud_cfg.output_sample_rate,
         )
 
         if not audio.available:
             # Fall back to text-only mode
-            live_cfg = LiveConfig(
+            cloud_cfg = CloudConfig(
                 planner_model=model,
                 vlm_model=vlm_model,
                 audio_enabled=False,
                 response_modalities=("TEXT",),
             )
 
-        live_backend = LiveCognitiveBackend(
-            config=live_cfg,
+        live_backend = CloudCognitiveBackend(
+            config=cloud_cfg,
             audio_capture=audio.capture,
             audio_playback=audio.playback,
             run_logger=run_logger,
@@ -1778,21 +1778,13 @@ def _run_live(args: list[str]) -> None:
         vlm_fn = live_backend.vlm_scene
     else:
         prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
-        agent = PlannerAgent(model, base_url, prompts_dir, backend=backend)
+        agent = PlannerAgent(model, base_url, prompts_dir)
 
-        if backend == "cloud":
-            from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
-
-            vlm_fn = make_gemini_vlm_fn(
-                model=vlm_model,
-                run_logger=run_logger,
-            )
-        else:
-            vlm_fn = make_ollama_vlm_fn(
-                base_url=base_url,
-                model=vlm_model,
-                run_logger=run_logger,
-            )
+        vlm_fn = make_ollama_vlm_fn(
+            base_url=base_url,
+            model=vlm_model,
+            run_logger=run_logger,
+        )
 
     if source_type == "mujoco":
         from halo.bridge.sim_source import SimSource

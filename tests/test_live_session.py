@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from halo.cognitive.config import LiveConfig
+from halo.cognitive.config import CloudConfig
 from halo.cognitive.live_session import LivePlannerSession, LiveSessionState, _command_key
 from halo.contracts.commands import CommandEnvelope, DescribeScenePayload
 from halo.contracts.enums import (
@@ -90,7 +90,7 @@ def test_live_session_state_defaults():
 
 
 def test_session_construction():
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
     assert session.state.connected is False
     assert session.last_reasoning == ""
 
@@ -103,7 +103,7 @@ def test_session_construction():
 @pytest.mark.asyncio
 async def test_decide_sends_content_and_waits_for_turn_complete():
     """decide() should send content to queue and wait for turn_complete."""
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
 
     # Mock ADK internals
     mock_session_service = MagicMock()
@@ -154,7 +154,7 @@ async def test_decide_sends_content_and_waits_for_turn_complete():
 
 @pytest.mark.asyncio
 async def test_drain_pending_commands():
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
     cmd = _make_cmd()
 
     # Enqueue a command
@@ -183,7 +183,7 @@ def test_command_key_stability():
 @pytest.mark.asyncio
 async def test_loop_detection_clears_after_threshold():
     """When the same command repeats MAX_LOOP_RETRIES times, decide() returns []."""
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
 
     # Don't actually start the live session — just test loop detection directly
     session._started = True
@@ -220,7 +220,7 @@ async def test_loop_detection_clears_after_threshold():
 def test_handle_event_audio_to_playback():
     """Audio inline_data in events should be enqueued to playback."""
     mock_playback = MagicMock()
-    session = LivePlannerSession(config=LiveConfig(), audio_playback=mock_playback)
+    session = LivePlannerSession(config=CloudConfig(), audio_playback=mock_playback)
 
     # Create a mock event with audio inline_data
     event = MagicMock()
@@ -246,7 +246,7 @@ def test_handle_event_audio_to_playback():
 def test_handle_event_interrupted_clears_playback():
     """Interrupted event should clear the playback buffer."""
     mock_playback = MagicMock()
-    session = LivePlannerSession(config=LiveConfig(), audio_playback=mock_playback)
+    session = LivePlannerSession(config=CloudConfig(), audio_playback=mock_playback)
 
     event = MagicMock()
     event.interrupted = True
@@ -261,7 +261,7 @@ def test_handle_event_interrupted_clears_playback():
 
 def test_handle_event_transcriptions():
     """Transcription events should update session state."""
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
 
     event = MagicMock()
     event.interrupted = False
@@ -279,7 +279,7 @@ def test_handle_event_transcriptions():
 
 def test_handle_event_turn_complete_drains_commands():
     """turn_complete should move ctx.commands to pending_commands and set event."""
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
     cmd = _make_cmd()
     session._ctx.commands.append(cmd)
 
@@ -308,7 +308,7 @@ def test_handle_event_turn_complete_drains_commands():
 
 def test_handle_event_text_updates_reasoning():
     """Non-partial text in event should update last_reasoning."""
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
 
     event = MagicMock()
     event.interrupted = False
@@ -335,7 +335,7 @@ def test_handle_event_text_updates_reasoning():
 
 
 def test_build_run_config_audio_enabled():
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=True, voice_name="Kore"))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=True, voice_name="Kore"))
     rc = session._build_run_config()
     assert "AUDIO" in rc.response_modalities
     assert rc.speech_config is not None
@@ -343,32 +343,32 @@ def test_build_run_config_audio_enabled():
 
 
 def test_build_run_config_audio_disabled():
-    session = LivePlannerSession(config=LiveConfig(audio_enabled=False))
+    session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
     rc = session._build_run_config()
     assert rc.response_modalities == ["TEXT"]
     assert rc.speech_config is None
 
 
 def test_build_run_config_session_resumption():
-    session = LivePlannerSession(config=LiveConfig(session_resumption=True))
+    session = LivePlannerSession(config=CloudConfig(session_resumption=True))
     rc = session._build_run_config()
     assert rc.session_resumption is not None
     assert rc.session_resumption.transparent is True
 
 
 def test_build_run_config_no_session_resumption():
-    session = LivePlannerSession(config=LiveConfig(session_resumption=False))
+    session = LivePlannerSession(config=CloudConfig(session_resumption=False))
     rc = session._build_run_config()
     assert rc.session_resumption is None
 
 
 def test_build_run_config_context_compression():
-    session = LivePlannerSession(config=LiveConfig(context_compression=True))
+    session = LivePlannerSession(config=CloudConfig(context_compression=True))
     rc = session._build_run_config()
     assert rc.context_window_compression is not None
 
 
 def test_build_run_config_no_context_compression():
-    session = LivePlannerSession(config=LiveConfig(context_compression=False))
+    session = LivePlannerSession(config=CloudConfig(context_compression=False))
     rc = session._build_run_config()
     assert rc.context_window_compression is None

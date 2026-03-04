@@ -1,4 +1,4 @@
-"""Unit tests for CognitiveBackend protocol, LocalCognitiveBackend, CloudCognitiveBackend."""
+"""Unit tests for CognitiveBackend protocol, LocalCognitiveBackend, CloudCognitiveBackend, RemoteCognitiveBackend."""
 
 from __future__ import annotations
 
@@ -10,9 +10,17 @@ import pytest
 from halo.cognitive import CognitiveStack, make_cognitive_stack
 from halo.cognitive.backend import CognitiveBackend, WarmableBackend
 from halo.cognitive.cloud_backend import CloudCognitiveBackend
-from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LiveConfig, LocalConfig
+from halo.cognitive.config import (
+    BackendReadiness,
+    BackendType,
+    CloudConfig,
+    CognitiveConfig,
+    LocalConfig,
+    RemoteCloudConfig,
+)
 from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.cognitive.local_backend import LocalCognitiveBackend
+from halo.cognitive.remote_backend import RemoteCognitiveBackend
 from halo.contracts.enums import (
     ActStatus,
     CommandType,
@@ -80,18 +88,10 @@ def test_config_defaults():
 def test_backend_type_enum():
     assert BackendType.LOCAL == "local"
     assert BackendType.CLOUD == "cloud"
-    assert BackendType.LIVE == "live"
 
 
-def test_cloud_config_service_url():
-    cfg = CloudConfig(service_url="https://example.com", api_key="test-key")
-    assert cfg.service_url == "https://example.com"
-    assert cfg.api_key == "test-key"
-    assert cfg.request_timeout_s == 30.0
-
-
-def test_live_config_defaults():
-    cfg = LiveConfig()
+def test_cloud_config_defaults():
+    cfg = CloudConfig()
     assert cfg.planner_model == "gemini-2.5-flash"
     assert cfg.vlm_model == "gemini-2.5-flash"
     assert cfg.audio_enabled is True
@@ -104,10 +104,11 @@ def test_live_config_defaults():
     assert cfg.enable_transcription is True
 
 
-def test_cognitive_config_has_live():
-    cfg = CognitiveConfig()
-    assert isinstance(cfg.live, LiveConfig)
-    assert cfg.live.planner_model == "gemini-2.5-flash"
+def test_remote_cloud_config_defaults():
+    cfg = RemoteCloudConfig(service_url="https://example.com", api_key="test-key")
+    assert cfg.service_url == "https://example.com"
+    assert cfg.api_key == "test-key"
+    assert cfg.request_timeout_s == 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +134,26 @@ def test_local_backend_is_cognitive_backend():
 
 def test_cloud_backend_is_cognitive_backend():
     """CloudCognitiveBackend satisfies the CognitiveBackend protocol."""
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://localhost:8080"))
+    with (
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=False)
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session.decide = AsyncMock(return_value=[])
+        mock_session.drain_pending_commands = MagicMock(return_value=[])
+        mock_session_cls.return_value = mock_session
+
+        backend = CloudCognitiveBackend()
+    assert isinstance(backend, CognitiveBackend)
+    assert backend.backend_type == "cloud"
+
+
+def test_remote_backend_is_cognitive_backend():
+    """RemoteCognitiveBackend satisfies the CognitiveBackend protocol."""
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://localhost:8080"))
     assert isinstance(backend, CognitiveBackend)
 
 
@@ -199,7 +219,105 @@ async def test_local_backend_health_check_failure():
 
 
 # ---------------------------------------------------------------------------
-# CloudCognitiveBackend (HTTP client)
+# CloudCognitiveBackend (Live API)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_decide():
+    """CloudCognitiveBackend.decide() delegates to session.decide()."""
+    with (
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=True)
+        mock_session.last_reasoning = "cloud thinking"
+        mock_session.decide = AsyncMock(return_value=[])
+        mock_session.reset_loop_state = MagicMock()
+        mock_session.drain_pending_commands = MagicMock(return_value=[])
+        mock_session_cls.return_value = mock_session
+
+        backend = CloudCognitiveBackend()
+
+    snap = _idle_snap()
+    cmds = await backend.decide(snap, operator_cmd="pick cube")
+    assert cmds == []
+    mock_session.decide.assert_awaited_once_with(snap, operator_cmd="pick cube", epoch=None)
+    assert backend.last_reasoning == "cloud thinking"
+    assert backend.backend_type == "cloud"
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_vlm_scene():
+    """CloudCognitiveBackend.vlm_scene() delegates to standard gemini_vlm_fn."""
+    mock_vlm = AsyncMock(return_value=VlmScene(scene="table with cubes", detections=[]))
+    with (
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=mock_vlm),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=True)
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        backend = CloudCognitiveBackend()
+
+    scene = await backend.vlm_scene("arm0", b"fake-image")
+    assert scene.scene == "table with cubes"
+    mock_vlm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_health():
+    """health_check returns session.state.connected."""
+    with (
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_state = MagicMock()
+        mock_state.connected = True
+        mock_session.state = mock_state
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        backend = CloudCognitiveBackend()
+
+    healthy = await backend.health_check()
+    assert healthy is True
+
+    mock_state.connected = False
+    healthy = await backend.health_check()
+    assert healthy is False
+
+
+def test_cloud_backend_readiness():
+    """readiness is READY when connected, COLD otherwise."""
+    with (
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_state = MagicMock()
+        mock_state.connected = False
+        mock_session.state = mock_state
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        backend = CloudCognitiveBackend()
+
+    assert backend.readiness == BackendReadiness.COLD
+
+    mock_state.connected = True
+    assert backend.readiness == BackendReadiness.READY
+
+
+# ---------------------------------------------------------------------------
+# RemoteCognitiveBackend (HTTP client)
 # ---------------------------------------------------------------------------
 
 
@@ -209,8 +327,8 @@ def _mock_response(status_code: int, json_data: dict) -> httpx.Response:
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_decide():
-    """Cloud backend posts to /decide and returns deserialized commands."""
+async def test_remote_backend_decide():
+    """Remote backend posts to /decide and returns deserialized commands."""
     response_json = {
         "commands": [
             {
@@ -226,7 +344,7 @@ async def test_cloud_backend_decide():
     }
 
     mock_response = _mock_response(200, response_json)
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
         snap = _idle_snap()
@@ -240,8 +358,8 @@ async def test_cloud_backend_decide():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_vlm_scene():
-    """Cloud backend posts JPEG + metadata to /vlm/scene."""
+async def test_remote_backend_vlm_scene():
+    """Remote backend posts JPEG + metadata to /vlm/scene."""
     response_json = {
         "scene": "A table with cubes",
         "detections": [
@@ -256,7 +374,7 @@ async def test_cloud_backend_vlm_scene():
     }
 
     mock_response = _mock_response(200, response_json)
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
         scene = await backend.vlm_scene("arm0", b"\xff\xd8\xff\xe0fake-jpeg")
@@ -267,9 +385,9 @@ async def test_cloud_backend_vlm_scene():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_health_check_ok():
+async def test_remote_backend_health_check_ok():
     mock_response = httpx.Response(200, json={"status": "ok"}, request=httpx.Request("GET", "http://test:8080"))
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=mock_response):
         healthy = await backend.health_check()
@@ -278,8 +396,8 @@ async def test_cloud_backend_health_check_ok():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_health_check_failure():
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+async def test_remote_backend_health_check_failure():
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     with patch.object(backend._client, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("refused")):
         healthy = await backend.health_check()
@@ -288,9 +406,9 @@ async def test_cloud_backend_health_check_failure():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_reset_loop_state():
+async def test_remote_backend_reset_loop_state():
     """reset_loop_state fires a best-effort POST /reset."""
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
     # Should not raise even without a running event loop context
     backend.reset_loop_state()
 
@@ -318,9 +436,9 @@ def test_local_backend_is_warmable():
     assert backend.caught_up_cursor == -1
 
 
-def test_cloud_backend_is_warmable():
-    """CloudCognitiveBackend satisfies the WarmableBackend protocol."""
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+def test_remote_backend_is_warmable():
+    """RemoteCognitiveBackend satisfies the WarmableBackend protocol."""
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
     assert isinstance(backend, WarmableBackend)
     assert backend.readiness == BackendReadiness.COLD
     assert backend.caught_up_cursor == -1
@@ -343,10 +461,10 @@ async def test_local_backend_warm_up_always_ready():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_warm_up_success():
+async def test_remote_backend_warm_up_success():
     response_json = {"readiness": "ready", "cursor": 10}
     mock_response = _mock_response(200, response_json)
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     state = CognitiveState(
         ts_ms=100,
@@ -378,11 +496,11 @@ async def test_cloud_backend_warm_up_success():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_warm_up_warming():
-    """Cloud service returns warming (not ready yet)."""
+async def test_remote_backend_warm_up_warming():
+    """Remote service returns warming (not ready yet)."""
     response_json = {"readiness": "warming", "cursor": 5}
     mock_response = _mock_response(200, response_json)
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
         ready = await backend.warm_up(state=None, journal_entries=[])
@@ -393,9 +511,9 @@ async def test_cloud_backend_warm_up_warming():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_warm_up_failure():
+async def test_remote_backend_warm_up_failure():
     """warm_up handles HTTP errors gracefully."""
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
 
     with patch.object(backend._client, "post", new_callable=AsyncMock, side_effect=httpx.ConnectError("refused")):
         ready = await backend.warm_up(state=None, journal_entries=[])
@@ -405,14 +523,14 @@ async def test_cloud_backend_warm_up_failure():
 
 
 # ---------------------------------------------------------------------------
-# Nonce-based restart detection
+# Nonce-based restart detection (RemoteCognitiveBackend)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_nonce_mismatch_resets_readiness():
+async def test_remote_backend_nonce_mismatch_resets_readiness():
     """health_check detects nonce change and resets readiness to COLD."""
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
     # Simulate a prior warm-up made it READY
     backend._readiness = BackendReadiness.READY
     backend._caught_up_cursor = 10
@@ -444,9 +562,9 @@ async def test_cloud_backend_nonce_mismatch_resets_readiness():
 
 
 @pytest.mark.asyncio
-async def test_cloud_backend_nonce_first_check_no_reset():
+async def test_remote_backend_nonce_first_check_no_reset():
     """First health_check (no prior nonce) should not reset readiness."""
-    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
     backend._readiness = BackendReadiness.READY
 
     resp = httpx.Response(
@@ -466,137 +584,6 @@ async def test_cloud_backend_nonce_first_check_no_reset():
 # ---------------------------------------------------------------------------
 
 
-# ---------------------------------------------------------------------------
-# LiveCognitiveBackend
-# ---------------------------------------------------------------------------
-
-
-def test_live_backend_is_cognitive_backend():
-    """LiveCognitiveBackend satisfies the CognitiveBackend protocol."""
-    with (
-        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
-        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
-    ):
-        mock_session = MagicMock()
-        mock_session.state = MagicMock(connected=False)
-        mock_session.last_reasoning = ""
-        mock_session.reset_loop_state = MagicMock()
-        mock_session.decide = AsyncMock(return_value=[])
-        mock_session.drain_pending_commands = MagicMock(return_value=[])
-        mock_session_cls.return_value = mock_session
-
-        from halo.cognitive.live_backend import LiveCognitiveBackend
-
-        backend = LiveCognitiveBackend()
-    assert isinstance(backend, CognitiveBackend)
-    assert backend.backend_type == "live"
-
-
-@pytest.mark.asyncio
-async def test_live_backend_decide():
-    """LiveCognitiveBackend.decide() delegates to session.decide()."""
-    with (
-        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
-        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
-    ):
-        mock_session = MagicMock()
-        mock_session.state = MagicMock(connected=True)
-        mock_session.last_reasoning = "live thinking"
-        mock_session.decide = AsyncMock(return_value=[])
-        mock_session.reset_loop_state = MagicMock()
-        mock_session.drain_pending_commands = MagicMock(return_value=[])
-        mock_session_cls.return_value = mock_session
-
-        from halo.cognitive.live_backend import LiveCognitiveBackend
-
-        backend = LiveCognitiveBackend()
-
-    snap = _idle_snap()
-    cmds = await backend.decide(snap, operator_cmd="pick cube")
-    assert cmds == []
-    mock_session.decide.assert_awaited_once_with(snap, operator_cmd="pick cube", epoch=None)
-    assert backend.last_reasoning == "live thinking"
-
-
-@pytest.mark.asyncio
-async def test_live_backend_vlm_scene():
-    """LiveCognitiveBackend.vlm_scene() delegates to standard gemini_vlm_fn."""
-    mock_vlm = AsyncMock(return_value=VlmScene(scene="table with cubes", detections=[]))
-    with (
-        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
-        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=mock_vlm),
-    ):
-        mock_session = MagicMock()
-        mock_session.state = MagicMock(connected=True)
-        mock_session.last_reasoning = ""
-        mock_session.reset_loop_state = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        from halo.cognitive.live_backend import LiveCognitiveBackend
-
-        backend = LiveCognitiveBackend()
-
-    scene = await backend.vlm_scene("arm0", b"fake-image")
-    assert scene.scene == "table with cubes"
-    mock_vlm.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_live_backend_health():
-    """health_check returns session.state.connected."""
-    with (
-        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
-        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
-    ):
-        mock_session = MagicMock()
-        mock_state = MagicMock()
-        mock_state.connected = True
-        mock_session.state = mock_state
-        mock_session.last_reasoning = ""
-        mock_session.reset_loop_state = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        from halo.cognitive.live_backend import LiveCognitiveBackend
-
-        backend = LiveCognitiveBackend()
-
-    healthy = await backend.health_check()
-    assert healthy is True
-
-    mock_state.connected = False
-    healthy = await backend.health_check()
-    assert healthy is False
-
-
-def test_live_backend_readiness():
-    """readiness is READY when connected, COLD otherwise."""
-    with (
-        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
-        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
-    ):
-        mock_session = MagicMock()
-        mock_state = MagicMock()
-        mock_state.connected = False
-        mock_session.state = mock_state
-        mock_session.last_reasoning = ""
-        mock_session.reset_loop_state = MagicMock()
-        mock_session_cls.return_value = mock_session
-
-        from halo.cognitive.live_backend import LiveCognitiveBackend
-
-        backend = LiveCognitiveBackend()
-
-    assert backend.readiness == BackendReadiness.COLD
-
-    mock_state.connected = True
-    assert backend.readiness == BackendReadiness.READY
-
-
-# ---------------------------------------------------------------------------
-# CognitiveStack factory
-# ---------------------------------------------------------------------------
-
-
 def test_make_cognitive_stack_creates_all_components():
     """make_cognitive_stack() wires up all components correctly."""
     with (
@@ -605,13 +592,20 @@ def test_make_cognitive_stack_creates_all_components():
             return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
         ),
         patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
     ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=False)
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
         stack = make_cognitive_stack()
 
     assert isinstance(stack, CognitiveStack)
     assert isinstance(stack.local, CognitiveBackend)
     assert isinstance(stack.cloud, CognitiveBackend)
-    assert stack.live is None  # only created when active==LIVE
     assert stack.switchboard is not None
     assert stack.context_store is not None
     assert stack.lease_manager is not None
@@ -622,7 +616,6 @@ def test_make_cognitive_stack_with_cloud_active():
     """Factory respects active backend in config."""
     cfg = CognitiveConfig(
         active=BackendType.CLOUD,
-        cloud=CloudConfig(service_url="http://test:8080"),
         enable_failover=True,
     )
     with (
@@ -631,24 +624,7 @@ def test_make_cognitive_stack_with_cloud_active():
             return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
         ),
         patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
-    ):
-        stack = make_cognitive_stack(config=cfg)
-
-    assert stack.switchboard.active_type == BackendType.CLOUD
-    assert stack.config.enable_failover is True
-    assert stack.live is None
-
-
-def test_make_cognitive_stack_with_live_active():
-    """Factory creates LiveCognitiveBackend when active==LIVE."""
-    cfg = CognitiveConfig(active=BackendType.LIVE)
-    with (
-        patch(
-            "halo.cognitive.local_backend.PlannerAgent",
-            return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
-        ),
-        patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
-        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.cognitive.cloud_backend.LivePlannerSession") as mock_session_cls,
         patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
     ):
         mock_session = MagicMock()
@@ -659,5 +635,5 @@ def test_make_cognitive_stack_with_live_active():
 
         stack = make_cognitive_stack(config=cfg)
 
-    assert stack.live is not None
-    assert stack.switchboard.active_type == BackendType.LIVE
+    assert stack.switchboard.active_type == BackendType.CLOUD
+    assert stack.config.enable_failover is True

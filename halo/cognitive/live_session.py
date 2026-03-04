@@ -21,7 +21,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from halo.cognitive.config import LiveConfig
+from halo.cognitive.config import CloudConfig
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
@@ -89,12 +89,12 @@ class LivePlannerSession:
 
     def __init__(
         self,
-        config: LiveConfig | None = None,
+        config: CloudConfig | None = None,
         prompts_dir: Path | None = None,
         audio_capture: object | None = None,
         audio_playback: object | None = None,
     ) -> None:
-        self._config = config or LiveConfig()
+        self._config = config or CloudConfig()
         self._prompts_dir = prompts_dir or _DEFAULT_PROMPTS_DIR
         self._audio_capture = audio_capture
         self._audio_playback = audio_playback

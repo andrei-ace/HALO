@@ -1,69 +1,65 @@
-"""Cloud cognitive backend — thin HTTP client to remote GCP cognitive service."""
+"""Cloud cognitive backend — Gemini Live API (bidirectional audio + text).
+
+Uses a persistent ``LivePlannerSession`` for the planner (brain) and the
+standard Gemini VLM API for scene analysis (eyes).  The Live API does not
+support JSON schema output, so VLM stays on the standard request-response API.
+"""
 
 from __future__ import annotations
 
-import json
 import logging
-import os
-
-import httpx
-import numpy as np
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig
 from halo.cognitive.context_store import CognitiveState, ContextEntry
+from halo.cognitive.live_session import LivePlannerSession, LiveSessionState
 from halo.contracts.commands import CommandEnvelope
-from halo.contracts.serde import (
-    cognitive_state_to_dict,
-    command_envelope_from_dict,
-    context_entry_to_dict,
-    snapshot_to_dict,
-    vlm_scene_from_dict,
-)
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.target_perception_service.vlm_parser import VlmScene
 
+if TYPE_CHECKING:
+    from halo.tui.run_logger import RunLogger
+
 logger = logging.getLogger(__name__)
 
-
-def _encode_jpeg(image: object, quality: int = 85) -> bytes:
-    """Encode a numpy BGR image (or raw bytes passthrough) to JPEG bytes."""
-    if isinstance(image, bytes):
-        return image
-    if isinstance(image, np.ndarray):
-        import cv2
-
-        ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not ok:
-            msg = "JPEG encoding failed"
-            raise RuntimeError(msg)
-        return buf.tobytes()
-    msg = f"Unsupported image type: {type(image)}"
-    raise TypeError(msg)
+_DEFAULT_PROMPTS_DIR = Path(__file__).parents[2] / "configs" / "planner"
 
 
 class CloudCognitiveBackend:
-    """Brain + eyes backed by remote GCP cognitive service."""
+    """Brain (Live API planner) + eyes (standard Gemini VLM) backend."""
 
-    def __init__(self, config: CloudConfig | None = None) -> None:
+    def __init__(
+        self,
+        config: CloudConfig | None = None,
+        prompts_dir: Path | None = None,
+        audio_capture: object | None = None,
+        audio_playback: object | None = None,
+        run_logger: RunLogger | None = None,
+    ) -> None:
         cfg = config or CloudConfig()
         self._config = cfg
-        api_key = cfg.api_key or os.environ.get("HALO_CLOUD_API_KEY", "")
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-        self._client = httpx.AsyncClient(
-            base_url=cfg.service_url,
-            timeout=httpx.Timeout(cfg.request_timeout_s),
-            headers=headers,
+        self._session = LivePlannerSession(
+            config=cfg,
+            prompts_dir=prompts_dir or _DEFAULT_PROMPTS_DIR,
+            audio_capture=audio_capture,
+            audio_playback=audio_playback,
         )
-        self._last_reasoning = ""
-        self._readiness = BackendReadiness.COLD
-        self._caught_up_cursor = -1
-        self._last_nonce: str | None = None
+        # VLM stays on standard API (Live API doesn't support structured JSON schema)
+        from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
+
+        self._vlm_fn = make_gemini_vlm_fn(
+            model=cfg.vlm_model,
+            run_logger=run_logger,
+        )
 
     @property
     def backend_type(self) -> str:
         return BackendType.CLOUD
+
+    @property
+    def session_state(self) -> LiveSessionState:
+        return self._session.state
 
     async def decide(
         self,
@@ -71,14 +67,7 @@ class CloudCognitiveBackend:
         operator_cmd: str | None = None,
         epoch: int | None = None,
     ) -> list[CommandEnvelope]:
-        body: dict = {"snapshot": snapshot_to_dict(snap), "operator_cmd": operator_cmd}
-        if epoch is not None:
-            body["epoch"] = epoch
-        resp = await self._client.post("/decide", json=body)
-        resp.raise_for_status()
-        data = resp.json()
-        self._last_reasoning = data.get("reasoning", "")
-        return [command_envelope_from_dict(c) for c in data["commands"]]
+        return await self._session.decide(snap, operator_cmd=operator_cmd, epoch=epoch)
 
     async def vlm_scene(
         self,
@@ -87,58 +76,17 @@ class CloudCognitiveBackend:
         known_handles: list[str] | None = None,
         target_handle: str | None = None,
     ) -> VlmScene:
-        jpeg_bytes = _encode_jpeg(image)
-        metadata = json.dumps(
-            {
-                "arm_id": arm_id,
-                "known_handles": known_handles or [],
-                "target_handle": target_handle,
-            }
-        )
-        resp = await self._client.post(
-            "/vlm/scene",
-            files={"image": ("frame.jpg", jpeg_bytes, "image/jpeg")},
-            data={"metadata": metadata},
-        )
-        resp.raise_for_status()
-        return vlm_scene_from_dict(resp.json())
+        return await self._vlm_fn(arm_id, image, known_handles, target_handle=target_handle)
 
     async def health_check(self) -> bool:
-        try:
-            resp = await self._client.get("/health", timeout=5.0)
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
-            nonce = data.get("nonce")
-            if nonce and self._last_nonce and nonce != self._last_nonce:
-                logger.warning("Cloud instance restarted (nonce changed: %s → %s)", self._last_nonce, nonce)
-                self._readiness = BackendReadiness.COLD
-                self._caught_up_cursor = -1
-            if nonce:
-                self._last_nonce = nonce
-            return True
-        except Exception:
-            return False
+        return self._session.state.connected
 
     @property
     def last_reasoning(self) -> str:
-        return self._last_reasoning
+        return self._session.last_reasoning
 
     def reset_loop_state(self) -> None:
-        # Server-side session state is ephemeral (Cloud Run cold starts).
-        # Reset is a best-effort POST; failures are silently ignored.
-        try:
-            import asyncio
-
-            asyncio.get_running_loop().create_task(self._reset_remote())
-        except RuntimeError:
-            pass
-
-    async def _reset_remote(self) -> None:
-        try:
-            await self._client.post("/reset")
-        except Exception:
-            pass
+        self._session.reset_loop_state()
 
     # -- WarmableBackend --
 
@@ -147,33 +95,27 @@ class CloudCognitiveBackend:
         state: CognitiveState | None,
         journal_entries: list[ContextEntry],
     ) -> bool:
-        """POST CognitiveState + journal to cloud service's /warm-up endpoint.
-
-        Returns True when the cloud service reports ready.
-        """
+        """Start the live session if not started. Returns True when connected."""
         try:
-            body: dict = {
-                "state": cognitive_state_to_dict(state) if state else None,
-                "journal": [context_entry_to_dict(e) for e in journal_entries],
-            }
-            resp = await self._client.post("/warm-up", json=body)
-            resp.raise_for_status()
-            data = resp.json()
-            self._readiness = BackendReadiness(data.get("readiness", "cold"))
-            self._caught_up_cursor = data.get("cursor", -1)
-            return self._readiness == BackendReadiness.READY
+            await self._session.start()
+            return self._session.state.connected
         except Exception:
-            logger.exception("warm_up() failed")
-            self._readiness = BackendReadiness.FAILED
+            logger.exception("Cloud session warm_up failed")
             return False
 
     @property
     def readiness(self) -> str:
-        return self._readiness
+        if self._session.state.connected:
+            return BackendReadiness.READY
+        return BackendReadiness.COLD
 
     @property
     def caught_up_cursor(self) -> int:
-        return self._caught_up_cursor
+        return -1  # Live session maintains its own conversation state
 
     async def aclose(self) -> None:
-        await self._client.aclose()
+        await self._session.stop()
+
+    def drain_pending_commands(self) -> list[CommandEnvelope]:
+        """Drain voice-triggered commands accumulated between ticks."""
+        return self._session.drain_pending_commands()

@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live-videoloop tui-live-mujoco tui-live-cloud tui-live-voice tui-live-remote-cloud run-headless-mock run-headless-live run-local-service run-cloud-service sim-server ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live-videoloop tui-live-mujoco tui-live-cloud tui-live-remote-cloud run-headless-mock run-headless-live run-local-service run-cloud-service sim-server ruff help
 
 install:
 	uv sync --extra dev
@@ -57,17 +57,6 @@ tui-live-cloud:
 		--model $(CLOUD_PLANNER_MODEL) \
 		--vlm-model $(CLOUD_VLM_MODEL) \
 		--backend cloud \
-		--source videoloop
-
-LIVE_PLANNER_MODEL ?= gemini-2.5-flash
-LIVE_VLM_MODEL     ?= gemini-2.5-flash
-
-tui-live-voice:
-	uv run python -m halo.tui.app --live \
-		--arm $(ARM_ID) \
-		--model $(LIVE_PLANNER_MODEL) \
-		--vlm-model $(LIVE_VLM_MODEL) \
-		--backend live \
 		--source videoloop
 
 HALO_CLOUD_URL ?= http://localhost:8080
@@ -177,6 +166,7 @@ help:
 	@echo "sim-server         start the MuJoCo sim ZMQ server (requires --extra sim)"
 	@echo "visualize-ik       render IK-solved poses as PNGs (IK_SEED=7 IK_OUT_DIR=data/ik_poses)"
 	@echo "tui-live-mujoco    launch the TUI with MuJoCo scene camera (requires Ollama + MuJoCo)"
-	@echo "tui-live-voice     launch the TUI with Gemini Live API voice (requires GOOGLE_API_KEY)"
+	@echo "tui-live-cloud     launch the TUI with Gemini Live API + audio (requires GOOGLE_API_KEY)"
+	@echo "tui-live-remote-cloud  launch the TUI with remote Cloud Run backend"
 	@echo "run-local-service  run cloud_service backed by Ollama (localhost:8080)"
 	@echo "run-cloud-service  run cloud_service backed by Gemini (requires GOOGLE_API_KEY)"
