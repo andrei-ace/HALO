@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import (
     AbortSkillPayload,
     CommandEnvelope,
@@ -25,8 +26,12 @@ from halo.contracts.enums import (
 )
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.serde import (
+    cognitive_state_from_dict,
+    cognitive_state_to_dict,
     command_envelope_from_dict,
     command_envelope_to_dict,
+    context_entry_from_dict,
+    context_entry_to_dict,
     snapshot_from_dict,
     snapshot_to_dict,
     vlm_scene_from_dict,
@@ -229,6 +234,35 @@ def test_command_start_skill_roundtrip():
     assert restored.precondition_snapshot_id == "snap-1"
 
 
+def test_command_epoch_roundtrip():
+    cmd = CommandEnvelope(
+        command_id="cmd-epoch",
+        arm_id="arm0",
+        issued_at_ms=1000,
+        type=CommandType.DESCRIBE_SCENE,
+        payload=DescribeScenePayload(reason="test"),
+        epoch=42,
+    )
+    d = command_envelope_to_dict(cmd)
+    assert d["epoch"] == 42
+    restored = command_envelope_from_dict(d)
+    assert restored.epoch == 42
+
+
+def test_command_epoch_none_omitted():
+    cmd = CommandEnvelope(
+        command_id="cmd-no-epoch",
+        arm_id="arm0",
+        issued_at_ms=1000,
+        type=CommandType.DESCRIBE_SCENE,
+        payload=DescribeScenePayload(reason="test"),
+    )
+    d = command_envelope_to_dict(cmd)
+    assert "epoch" not in d
+    restored = command_envelope_from_dict(d)
+    assert restored.epoch is None
+
+
 def test_command_abort_skill_roundtrip():
     cmd = CommandEnvelope(
         command_id="cmd-2",
@@ -337,3 +371,100 @@ def test_vlm_scene_empty():
     restored = vlm_scene_from_dict(d)
     assert restored.scene == ""
     assert restored.detections == []
+
+
+# ---------------------------------------------------------------------------
+# ContextEntry round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_context_entry_roundtrip():
+    entry = ContextEntry(
+        cursor=5,
+        ts_ms=123456,
+        epoch=2,
+        backend="cloud",
+        entry_type="decision",
+        summary="Issued start_skill pick",
+        data={"command_type": "START_SKILL"},
+    )
+    d = context_entry_to_dict(entry)
+    restored = context_entry_from_dict(d)
+
+    assert restored.cursor == entry.cursor
+    assert restored.ts_ms == entry.ts_ms
+    assert restored.epoch == entry.epoch
+    assert restored.backend == entry.backend
+    assert restored.entry_type == entry.entry_type
+    assert restored.summary == entry.summary
+    assert restored.data == entry.data
+
+
+def test_context_entry_roundtrip_empty_data():
+    entry = ContextEntry(cursor=0, ts_ms=100, epoch=1, backend="local", entry_type="event", summary="e0")
+    d = context_entry_to_dict(entry)
+    restored = context_entry_from_dict(d)
+    assert restored.data == {}
+
+
+# ---------------------------------------------------------------------------
+# CognitiveState round-trip
+# ---------------------------------------------------------------------------
+
+
+def test_cognitive_state_roundtrip_full():
+    state = CognitiveState(
+        ts_ms=999,
+        epoch=3,
+        cursor=42,
+        active_target_handle="red_cube_01",
+        held_object_handle="green_cube_01",
+        known_scene_handles=["red_cube_01", "green_cube_01"],
+        last_scene_description="A table with cubes",
+        pending_operator_instruction="pick the red cube",
+        recent_decisions=["Issued describe_scene", "Issued track_object"],
+        last_snapshot_id="snap-42",
+        last_arm_id="arm0",
+        last_skill_phase="EXECUTE_APPROACH",
+        last_skill_name="PICK",
+        last_outcome_state="IN_PROGRESS",
+    )
+    d = cognitive_state_to_dict(state)
+    restored = cognitive_state_from_dict(d)
+
+    assert restored.ts_ms == state.ts_ms
+    assert restored.epoch == state.epoch
+    assert restored.cursor == state.cursor
+    assert restored.active_target_handle == state.active_target_handle
+    assert restored.held_object_handle == state.held_object_handle
+    assert restored.known_scene_handles == state.known_scene_handles
+    assert restored.last_scene_description == state.last_scene_description
+    assert restored.pending_operator_instruction == state.pending_operator_instruction
+    assert restored.recent_decisions == state.recent_decisions
+    assert restored.last_snapshot_id == state.last_snapshot_id
+    assert restored.last_arm_id == state.last_arm_id
+    assert restored.last_skill_phase == state.last_skill_phase
+    assert restored.last_skill_name == state.last_skill_name
+    assert restored.last_outcome_state == state.last_outcome_state
+
+
+def test_cognitive_state_roundtrip_empty():
+    state = CognitiveState(
+        ts_ms=0,
+        epoch=0,
+        cursor=-1,
+        active_target_handle=None,
+        held_object_handle=None,
+        known_scene_handles=[],
+        last_scene_description="",
+        pending_operator_instruction=None,
+        recent_decisions=[],
+        last_snapshot_id=None,
+        last_arm_id=None,
+        last_skill_phase=None,
+        last_skill_name=None,
+        last_outcome_state=None,
+    )
+    d = cognitive_state_to_dict(state)
+    restored = cognitive_state_from_dict(d)
+    assert restored == state

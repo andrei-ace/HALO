@@ -89,6 +89,10 @@
         "precondition_snapshot_id": {
           "description": "If set, the router rejects the command if the current snapshot_id does not match. Omit to skip the check.",
           "type": ["string", "null"]
+        },
+        "epoch": {
+          "description": "Lease epoch for split-brain prevention. If set, the router rejects commands whose epoch does not match the current active lease. Omit to skip the check.",
+          "type": ["integer", "null"]
         }
       }
     },

@@ -1,10 +1,13 @@
 """FastAPI app for the HALO cloud cognitive service.
 
 Endpoints:
-    POST /decide      — planner decision (snapshot JSON → commands JSON)
-    POST /vlm/scene   — VLM scene analysis (JPEG image → VlmScene JSON)
-    GET  /health      — health check
-    POST /reset       — reset planner session state
+    POST /decide         — planner decision (snapshot JSON → commands JSON)
+    POST /vlm/scene      — VLM scene analysis (JPEG image → VlmScene JSON)
+    POST /warm-up        — warm-up session with state + journal
+    GET  /state/{arm_id} — session readiness and cursor
+    POST /reset/{arm_id} — reset specific arm session
+    POST /reset          — reset default (arm0) session (backward compat)
+    GET  /health         — health check
 """
 
 from __future__ import annotations
@@ -14,13 +17,9 @@ import logging
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, UploadFile
-from halo.contracts.serde import (
-    command_envelope_to_dict,
-    snapshot_from_dict,
-    vlm_scene_to_dict,
-)
+from halo.contracts.serde import command_envelope_to_dict, snapshot_from_dict, vlm_scene_to_dict
 
-from cloud_service.deps import get_agent, get_vlm_fn, lifespan, verify_api_key
+from cloud_service.deps import get_session_manager, get_vlm_fn, lifespan, verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +32,15 @@ async def health() -> dict:
 
 
 @app.post("/decide", dependencies=[Depends(verify_api_key)])
-async def decide(body: dict, agent=Depends(get_agent)) -> dict:
+async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     snapshot = snapshot_from_dict(body["snapshot"])
     operator_cmd = body.get("operator_cmd")
+    epoch = body.get("epoch")
+    arm_id = snapshot.arm_id
 
-    commands = await agent.decide(snapshot, operator_cmd=operator_cmd)
-    reasoning = agent.last_reasoning
+    session = session_mgr.get_or_create(arm_id)
+    commands = await session.agent.decide(snapshot, operator_cmd=operator_cmd, epoch=epoch)
+    reasoning = session.agent.last_reasoning
 
     return {
         "commands": [command_envelope_to_dict(c) for c in commands],
@@ -70,7 +72,45 @@ async def vlm_scene(
     return vlm_scene_to_dict(scene)
 
 
+@app.post("/warm-up", dependencies=[Depends(verify_api_key)])
+async def warm_up(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
+    """Warm up a session with CognitiveState + journal entries."""
+    state_dict = body.get("state")
+    journal_dicts = body.get("journal", [])
+    # Extract arm_id from state or default to "arm0"
+    arm_id = "arm0"
+    if state_dict and state_dict.get("last_arm_id"):
+        arm_id = state_dict["last_arm_id"]
+
+    session = session_mgr.warm_up_session(arm_id, state_dict, journal_dicts)
+    return {
+        "readiness": session.readiness,
+        "cursor": session.cursor,
+    }
+
+
+@app.get("/state/{arm_id}", dependencies=[Depends(verify_api_key)])
+async def get_state(arm_id: str, session_mgr=Depends(get_session_manager)) -> dict:
+    """Return session readiness and cursor for a specific arm."""
+    session = session_mgr.get_session(arm_id)
+    if session is None:
+        return {"readiness": "cold", "cursor": -1, "exists": False}
+    return {
+        "readiness": session.readiness,
+        "cursor": session.cursor,
+        "exists": True,
+    }
+
+
+@app.post("/reset/{arm_id}", dependencies=[Depends(verify_api_key)])
+async def reset_arm(arm_id: str, session_mgr=Depends(get_session_manager)) -> dict:
+    """Reset a specific arm session."""
+    session_mgr.reset_session(arm_id)
+    return {"status": "ok"}
+
+
 @app.post("/reset", dependencies=[Depends(verify_api_key)])
-async def reset(agent=Depends(get_agent)) -> dict:
-    agent.reset_loop_state()
+async def reset(session_mgr=Depends(get_session_manager)) -> dict:
+    """Reset the default arm0 session (backward compat)."""
+    session_mgr.reset_session("arm0")
     return {"status": "ok"}

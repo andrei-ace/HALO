@@ -15,9 +15,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
-from halo.cognitive.config import BackendType, CognitiveConfig
+from halo.cognitive.backend import WarmableBackend
+from halo.cognitive.config import BackendReadiness, BackendType, CognitiveConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.contracts.commands import CommandEnvelope
@@ -44,6 +45,7 @@ class Switchboard:
         lease_mgr: LeaseManager | None = None,
         context_store: ContextStore | None = None,
         bus: EventBus | None = None,
+        snapshot_fn: Callable[[str], Awaitable[PlannerSnapshot | None]] | None = None,
     ) -> None:
         self._config = config
         self._backends: dict[str, CognitiveBackend] = {
@@ -53,6 +55,7 @@ class Switchboard:
         self._lease_mgr = lease_mgr or LeaseManager()
         self._context_store = context_store or ContextStore()
         self._bus = bus
+        self._snapshot_fn = snapshot_fn
 
         # Health tracking
         self._consecutive_failures: int = 0
@@ -89,7 +92,11 @@ class Switchboard:
     ) -> list[CommandEnvelope]:
         """Delegate to active backend.decide(). Track failures for failover."""
         try:
-            commands = await self.active_backend.decide(snap, operator_cmd=operator_cmd)
+            commands = await self.active_backend.decide(
+                snap,
+                operator_cmd=operator_cmd,
+                epoch=self._lease_mgr.current_epoch,
+            )
             self._on_success()
 
             # Record decision in context store
@@ -252,16 +259,56 @@ class Switchboard:
             pass
 
     async def _check_failback(self) -> None:
-        """If we're on the fallback backend and the preferred one is healthy, switch back."""
+        """If we're on the fallback backend and the preferred one is healthy, switch back.
+
+        Uses warm-up protocol for WarmableBackend implementations:
+        - COLD/FAILED: send full CognitiveState + journal via warm_up()
+        - WARMING: send incremental journal entries via warm_up()
+        - READY: switch to preferred backend
+        - Non-WarmableBackend: immediate switch (backward compat)
+        """
         preferred = self._config.active
-        if self._active_type != preferred:
-            try:
-                preferred_backend = self._backends[preferred]
-                healthy = await preferred_backend.health_check()
-                if healthy:
-                    await self.switch_to(preferred, reason="preferred backend recovered")
-            except Exception:
-                pass  # Preferred still unhealthy
+        if self._active_type == preferred:
+            return
+
+        try:
+            preferred_backend = self._backends[preferred]
+            healthy = await preferred_backend.health_check()
+            if not healthy:
+                return
+
+            # Non-warmable backend: immediate switch (backward compat)
+            if not isinstance(preferred_backend, WarmableBackend):
+                await self.switch_to(preferred, reason="preferred backend recovered")
+                return
+
+            readiness = preferred_backend.readiness
+            if readiness in (BackendReadiness.COLD, BackendReadiness.FAILED):
+                # Full state + journal warm-up
+                snapshot = None
+                if self._snapshot_fn is not None:
+                    try:
+                        snapshot = await self._snapshot_fn("arm0")
+                    except Exception:
+                        pass
+                state = self._context_store.build_cognitive_state(
+                    epoch=self._lease_mgr.current_epoch,
+                    snapshot=snapshot,
+                )
+                entries = self._context_store.get_entries_after(-1)
+                await preferred_backend.warm_up(state=state, journal_entries=entries)
+
+            elif readiness == BackendReadiness.WARMING:
+                # Incremental catch-up
+                entries = self._context_store.get_entries_after(preferred_backend.caught_up_cursor)
+                await preferred_backend.warm_up(state=None, journal_entries=entries)
+
+            elif readiness == BackendReadiness.READY:
+                # Caught up — switch
+                await self.switch_to(preferred, reason="preferred backend recovered and warmed up")
+
+        except Exception:
+            pass  # Preferred still unhealthy or warm-up failed
 
     def _on_success(self) -> None:
         """Reset consecutive failure counter on success."""

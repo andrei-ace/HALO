@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 import httpx
 import numpy as np
 
-from halo.cognitive.config import BackendType, CloudConfig
+from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig
+from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.serde import (
+    cognitive_state_to_dict,
     command_envelope_from_dict,
+    context_entry_to_dict,
     snapshot_to_dict,
     vlm_scene_from_dict,
 )
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.target_perception_service.vlm_parser import VlmScene
+
+logger = logging.getLogger(__name__)
 
 
 def _encode_jpeg(image: object, quality: int = 85) -> bytes:
@@ -51,6 +57,8 @@ class CloudCognitiveBackend:
             headers=headers,
         )
         self._last_reasoning = ""
+        self._readiness = BackendReadiness.COLD
+        self._caught_up_cursor = -1
 
     @property
     def backend_type(self) -> str:
@@ -60,8 +68,11 @@ class CloudCognitiveBackend:
         self,
         snap: PlannerSnapshot,
         operator_cmd: str | None = None,
+        epoch: int | None = None,
     ) -> list[CommandEnvelope]:
-        body = {"snapshot": snapshot_to_dict(snap), "operator_cmd": operator_cmd}
+        body: dict = {"snapshot": snapshot_to_dict(snap), "operator_cmd": operator_cmd}
+        if epoch is not None:
+            body["epoch"] = epoch
         resp = await self._client.post("/decide", json=body)
         resp.raise_for_status()
         data = resp.json()
@@ -117,6 +128,41 @@ class CloudCognitiveBackend:
             await self._client.post("/reset")
         except Exception:
             pass
+
+    # -- WarmableBackend --
+
+    async def warm_up(
+        self,
+        state: CognitiveState | None,
+        journal_entries: list[ContextEntry],
+    ) -> bool:
+        """POST CognitiveState + journal to cloud service's /warm-up endpoint.
+
+        Returns True when the cloud service reports ready.
+        """
+        try:
+            body: dict = {
+                "state": cognitive_state_to_dict(state) if state else None,
+                "journal": [context_entry_to_dict(e) for e in journal_entries],
+            }
+            resp = await self._client.post("/warm-up", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+            self._readiness = BackendReadiness(data.get("readiness", "cold"))
+            self._caught_up_cursor = data.get("cursor", -1)
+            return self._readiness == BackendReadiness.READY
+        except Exception:
+            logger.exception("warm_up() failed")
+            self._readiness = BackendReadiness.FAILED
+            return False
+
+    @property
+    def readiness(self) -> str:
+        return self._readiness
+
+    @property
+    def caught_up_cursor(self) -> int:
+        return self._caught_up_cursor
 
     async def aclose(self) -> None:
         await self._client.aclose()

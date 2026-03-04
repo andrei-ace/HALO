@@ -43,6 +43,34 @@ class ContextSnapshot:
     cursor_applied_up_to: int
 
 
+@dataclass(frozen=True)
+class CognitiveState:
+    """Structured state for backend handoff.
+
+    Carries everything a new backend needs to resume seamlessly —
+    both the journal-derived cognitive context and snapshot-derived
+    runtime state so the cloud service can reason without calling
+    back to the edge runtime.
+    """
+
+    ts_ms: int
+    epoch: int
+    cursor: int  # journal cursor this state reflects
+    # Task context
+    active_target_handle: str | None
+    held_object_handle: str | None
+    known_scene_handles: list[str]
+    last_scene_description: str
+    pending_operator_instruction: str | None
+    recent_decisions: list[str]  # last 5
+    # Snapshot-derived (so cloud can reason without calling edge runtime)
+    last_snapshot_id: str | None
+    last_arm_id: str | None
+    last_skill_phase: str | None  # PhaseId.name or None
+    last_skill_name: str | None  # SkillName.value or None
+    last_outcome_state: str | None  # SkillOutcomeState.value or None
+
+
 class ContextStore:
     """Append-only journal with snapshot/handoff support.
 
@@ -155,6 +183,92 @@ class ContextStore:
             parts.append(f"Pending operator instruction: {snap.pending_operator_instruction}")
 
         return "\n".join(parts)
+
+    def build_cognitive_state(
+        self,
+        epoch: int,
+        snapshot: object | None = None,
+    ) -> CognitiveState:
+        """Build a structured CognitiveState for backend handoff.
+
+        Args:
+            epoch: Current lease epoch.
+            snapshot: Optional PlannerSnapshot for runtime-derived fields.
+                      Accepts ``object`` to avoid a hard import of PlannerSnapshot.
+        """
+        recent_decisions = [e.summary for e in self._entries if e.entry_type == "decision"][-5:]
+
+        # Extract snapshot-derived fields (typed loosely to avoid circular import)
+        snap_id: str | None = None
+        arm_id: str | None = None
+        skill_phase: str | None = None
+        skill_name: str | None = None
+        outcome_state: str | None = None
+        if snapshot is not None:
+            snap_id = getattr(snapshot, "snapshot_id", None)
+            arm_id = getattr(snapshot, "arm_id", None)
+            skill = getattr(snapshot, "skill", None)
+            if skill is not None:
+                phase = getattr(skill, "phase", None)
+                skill_phase = phase.name if phase is not None else None
+                name = getattr(skill, "name", None)
+                skill_name = name.value if name is not None else None
+            outcome = getattr(snapshot, "outcome", None)
+            if outcome is not None:
+                state = getattr(outcome, "state", None)
+                outcome_state = state.value if state is not None else None
+
+        return CognitiveState(
+            ts_ms=int(time.monotonic() * 1000),
+            epoch=epoch,
+            cursor=self._next_cursor - 1 if self._entries else -1,
+            active_target_handle=self._active_target_handle,
+            held_object_handle=self._held_object_handle,
+            known_scene_handles=list(self._known_scene_handles),
+            last_scene_description=self._last_scene_description,
+            pending_operator_instruction=self._pending_operator_instruction,
+            recent_decisions=recent_decisions,
+            last_snapshot_id=snap_id,
+            last_arm_id=arm_id,
+            last_skill_phase=skill_phase,
+            last_skill_name=skill_name,
+            last_outcome_state=outcome_state,
+        )
+
+    def apply_entries(self, entries: list[ContextEntry]) -> None:
+        """Replay remote journal entries into local state.
+
+        Used by the cloud service to catch up from the edge ContextStore.
+        Validates cursor monotonicity — entries must have cursors strictly
+        greater than the current latest cursor.
+
+        Raises ValueError if cursor monotonicity is violated.
+        """
+        for entry in entries:
+            if entry.cursor <= self.latest_cursor:
+                msg = (
+                    f"Cursor monotonicity violation: entry cursor {entry.cursor} "
+                    f"<= store latest_cursor {self.latest_cursor}"
+                )
+                raise ValueError(msg)
+
+            # Set internal cursor to match the entry (so _next_cursor stays in sync)
+            self._next_cursor = entry.cursor + 1
+            self._entries.append(entry)
+
+            # Update tracked state (same logic as append())
+            if entry.entry_type == "scene":
+                self._last_scene_description = entry.summary
+                self._known_scene_handles = entry.data.get("handles", []) if entry.data else []
+            elif entry.entry_type == "operator":
+                self._pending_operator_instruction = entry.summary
+            elif entry.entry_type == "decision":
+                self._pending_operator_instruction = None
+
+            # Trim if over limit
+            if len(self._entries) > self._max_entries:
+                excess = len(self._entries) - self._max_entries
+                self._entries = self._entries[excess:]
 
     def get_entries_after(self, cursor: int, limit: int = 50) -> list[ContextEntry]:
         """Return entries with cursor > the given value, up to limit."""

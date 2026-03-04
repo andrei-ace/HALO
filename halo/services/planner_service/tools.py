@@ -21,6 +21,7 @@ class AgentContext:
     snapshot_id: str | None
     commands: list[CommandEnvelope] = field(default_factory=list)
     used_tools: set[str] = field(default_factory=set)
+    epoch: int | None = None
 
 
 def build_tools(ctx: AgentContext) -> list:
@@ -59,6 +60,7 @@ def build_tools(ctx: AgentContext) -> list:
                 options=options or {},
             ),
             precondition_snapshot_id=ctx.snapshot_id,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued START_SKILL {skill_name} target={target_handle}"
@@ -82,6 +84,7 @@ def build_tools(ctx: AgentContext) -> list:
                 reason=reason,
             ),
             precondition_snapshot_id=ctx.snapshot_id,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued ABORT_SKILL run_id={skill_run_id} reason={reason}"
@@ -105,6 +108,7 @@ def build_tools(ctx: AgentContext) -> list:
                 target_handle=target_handle,
             ),
             precondition_snapshot_id=ctx.snapshot_id,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued OVERRIDE_TARGET run_id={skill_run_id} target={target_handle}"
@@ -133,6 +137,7 @@ def build_tools(ctx: AgentContext) -> list:
             # Pinning it to a snapshot_id causes REJECTED_STALE as soon as the
             # snapshot advances between decide() and submit().
             precondition_snapshot_id=None,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued DESCRIBE_SCENE reason={reason}"
@@ -158,6 +163,7 @@ def build_tools(ctx: AgentContext) -> list:
                 target_handle=target_handle,
             ),
             precondition_snapshot_id=None,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued TRACK_OBJECT target={target_handle}"

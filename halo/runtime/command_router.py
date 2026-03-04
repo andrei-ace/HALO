@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from halo.contracts.commands import (
     AbortSkillPayload,
@@ -14,18 +14,23 @@ from halo.contracts.enums import CommandAckStatus
 from halo.contracts.events import EventEnvelope, EventType
 from halo.runtime.state_store import RuntimeStateStore
 
+if TYPE_CHECKING:
+    from halo.cognitive.lease import LeaseManager
+
 
 class CommandRouter:
     """
     Validates and dispatches planner commands.
 
-    Enforces three checks in order:
+    Enforces four checks in order:
 
     1. Idempotency — duplicate command_id → ALREADY_APPLIED (accepted commands
        are remembered; the same command_id always returns ALREADY_APPLIED).
-    2. Precondition — if precondition_snapshot_id is set and does not match the
+    2. Epoch — if cmd.epoch is set and LeaseManager is present, the epoch must
+       match the current active lease → REJECTED_WRONG_EPOCH.
+    3. Precondition — if precondition_snapshot_id is set and does not match the
        current snapshot → REJECTED_STALE.
-    3. Skill-run match — for ABORT_SKILL / OVERRIDE_TARGET, the payload's
+    4. Skill-run match — for ABORT_SKILL / OVERRIDE_TARGET, the payload's
        skill_run_id must match the current skill → REJECTED_WRONG_SKILL_RUN.
 
     Rejected commands are not cached; they may be retried with a new command_id
@@ -37,10 +42,12 @@ class CommandRouter:
         store: RuntimeStateStore,
         bus: object | None = None,
         build_snapshot: Callable[[str], Awaitable[object]] | None = None,
+        lease_manager: LeaseManager | None = None,
     ) -> None:
         self._store = store
         self._bus = bus  # EventBus | None
         self._build_snapshot = build_snapshot
+        self._lease_mgr = lease_manager
         self._accepted: set[str] = set()  # command_ids that were accepted
         self._lock = asyncio.Lock()
 
@@ -53,6 +60,15 @@ class CommandRouter:
                     status=CommandAckStatus.ALREADY_APPLIED,
                 )
 
+            # --- 2. Epoch check ---
+            if cmd.epoch is not None and self._lease_mgr is not None:
+                if not self._lease_mgr.is_valid(cmd.epoch):
+                    return await self._reject(
+                        cmd,
+                        CommandAckStatus.REJECTED_WRONG_EPOCH,
+                        f"epoch {cmd.epoch} does not match current lease",
+                    )
+
             # --- Fetch latest snapshot once if any check needs it ---
             needs_snapshot = cmd.precondition_snapshot_id is not None or isinstance(
                 cmd.payload, (AbortSkillPayload, OverrideTargetPayload)
@@ -61,7 +77,7 @@ class CommandRouter:
             if needs_snapshot and latest is None and self._build_snapshot is not None:
                 latest = await self._build_snapshot(cmd.arm_id)  # type: ignore[misc]
 
-            # --- 2. Precondition check ---
+            # --- 3. Precondition check ---
             if cmd.precondition_snapshot_id is not None:
                 current_id = latest.snapshot_id if latest else None
                 if current_id != cmd.precondition_snapshot_id:
@@ -71,7 +87,7 @@ class CommandRouter:
                         f"expected snapshot {cmd.precondition_snapshot_id!r}, current is {current_id!r}",
                     )
 
-            # --- 3. Skill-run match (abort / override only) ---
+            # --- 4. Skill-run match (abort / override only) ---
             if isinstance(cmd.payload, (AbortSkillPayload, OverrideTargetPayload)):
                 current_skill = latest.skill if latest else None
                 current_run_id = current_skill.skill_run_id if current_skill else None

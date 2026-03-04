@@ -177,6 +177,7 @@ class PlannerAgent:
         self,
         snap: PlannerSnapshot,
         operator_cmd: str | None = None,
+        epoch: int | None = None,
     ) -> list[CommandEnvelope]:
         """DecideFn implementation. Thread-safe per design (never called concurrently).
 
@@ -190,11 +191,13 @@ class PlannerAgent:
             operator_cmd: Optional natural-language instruction from the operator.
                           When provided it is appended to the snapshot message so
                           the agent can act on it in the context of the current state.
+            epoch: Optional lease epoch to stamp on generated commands.
         """
         await self._ensure_session()
 
         self._ctx.arm_id = snap.arm_id
         self._ctx.snapshot_id = snap.snapshot_id
+        self._ctx.epoch = epoch
         self._ctx.commands.clear()
         self._ctx.used_tools.clear()
 

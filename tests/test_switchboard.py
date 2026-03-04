@@ -1,4 +1,4 @@
-"""Unit tests for Switchboard — failover, failback, context handoff."""
+"""Unit tests for Switchboard — failover, failback, context handoff, warm-up."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
-from halo.cognitive.config import BackendType, CognitiveConfig
+from halo.cognitive.config import BackendReadiness, BackendType, CognitiveConfig
 from halo.cognitive.switchboard import CONSECUTIVE_FAILURES_BEFORE_SWITCH, Switchboard
 from halo.contracts.enums import (
     ActStatus,
@@ -90,7 +90,7 @@ async def test_decide_delegates_to_active():
     sb, local, cloud = _make_switchboard(active=BackendType.LOCAL)
     snap = _idle_snap()
     await sb.decide(snap, operator_cmd="pick cube")
-    local.decide.assert_awaited_once_with(snap, operator_cmd="pick cube")
+    local.decide.assert_awaited_once_with(snap, operator_cmd="pick cube", epoch=sb.lease_manager.current_epoch)
     cloud.decide.assert_not_awaited()
 
 
@@ -265,3 +265,142 @@ def test_reset_loop_state_delegates():
     sb, local, cloud = _make_switchboard(active=BackendType.LOCAL)
     sb.reset_loop_state()
     local.reset_loop_state.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Epoch stamping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_decide_passes_epoch():
+    """Switchboard.decide() passes the current epoch to the backend."""
+    sb, local, cloud = _make_switchboard(active=BackendType.LOCAL)
+    snap = _idle_snap()
+    await sb.decide(snap)
+    local.decide.assert_awaited_once()
+    _, kwargs = local.decide.call_args
+    assert kwargs["epoch"] == sb.lease_manager.current_epoch
+
+
+# ---------------------------------------------------------------------------
+# Warm-up failback protocol
+# ---------------------------------------------------------------------------
+
+
+def _make_warmable_mock_backend(backend_type: str = "local") -> MagicMock:
+    """Create a mock that implements both CognitiveBackend and WarmableBackend."""
+    backend = _make_mock_backend(backend_type)
+    backend.warm_up = AsyncMock(return_value=False)
+    type(backend).readiness = PropertyMock(return_value=BackendReadiness.COLD)
+    type(backend).caught_up_cursor = PropertyMock(return_value=-1)
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_failback_sends_full_warmup_when_cold():
+    """When preferred backend is COLD, _check_failback sends full state + journal."""
+    local = _make_warmable_mock_backend("local")
+    cloud = _make_warmable_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud)
+
+    # Simulate: switched to cloud (local is preferred but failed)
+    await sb.switch_to(BackendType.CLOUD, reason="test failover")
+    assert sb.active_type == BackendType.CLOUD
+
+    # Local is COLD but healthy — should trigger warm_up with full state
+    type(local).readiness = PropertyMock(return_value=BackendReadiness.COLD)
+    local.health_check = AsyncMock(return_value=True)
+    local.warm_up = AsyncMock(return_value=False)  # not ready yet
+
+    await sb._check_failback()
+
+    local.warm_up.assert_awaited_once()
+    call_kwargs = local.warm_up.call_args[1]
+    assert call_kwargs["state"] is not None  # CognitiveState was built
+    assert isinstance(call_kwargs["journal_entries"], list)
+    # Still on cloud (warm_up returned False)
+    assert sb.active_type == BackendType.CLOUD
+
+
+@pytest.mark.asyncio
+async def test_failback_sends_incremental_when_warming():
+    """When preferred backend is WARMING, _check_failback sends incremental entries."""
+    local = _make_warmable_mock_backend("local")
+    cloud = _make_warmable_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud)
+
+    await sb.switch_to(BackendType.CLOUD, reason="test")
+
+    # Local is WARMING with cursor=5
+    type(local).readiness = PropertyMock(return_value=BackendReadiness.WARMING)
+    type(local).caught_up_cursor = PropertyMock(return_value=5)
+    local.health_check = AsyncMock(return_value=True)
+    local.warm_up = AsyncMock(return_value=False)
+
+    await sb._check_failback()
+
+    local.warm_up.assert_awaited_once()
+    call_kwargs = local.warm_up.call_args[1]
+    assert call_kwargs["state"] is None  # incremental — no full state
+
+
+@pytest.mark.asyncio
+async def test_failback_switches_when_ready():
+    """When preferred backend is READY, _check_failback switches to it."""
+    local = _make_warmable_mock_backend("local")
+    cloud = _make_warmable_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud)
+
+    await sb.switch_to(BackendType.CLOUD, reason="test")
+    assert sb.active_type == BackendType.CLOUD
+
+    # Local is READY — should switch back
+    type(local).readiness = PropertyMock(return_value=BackendReadiness.READY)
+    local.health_check = AsyncMock(return_value=True)
+
+    await sb._check_failback()
+
+    assert sb.active_type == BackendType.LOCAL
+
+
+@pytest.mark.asyncio
+async def test_failback_immediate_for_non_warmable():
+    """Non-warmable backends get immediate switch (backward compat)."""
+    # Use plain mocks without warm_up/readiness/caught_up_cursor
+    sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
+    await sb.switch_to(BackendType.CLOUD, reason="test")
+    assert sb.active_type == BackendType.CLOUD
+
+    local.health_check = AsyncMock(return_value=True)
+    await sb._check_failback()
+
+    # Should switch immediately (no warm-up)
+    assert sb.active_type == BackendType.LOCAL
+
+
+@pytest.mark.asyncio
+async def test_failback_warmup_with_snapshot_fn():
+    """When snapshot_fn is provided, it's used to build CognitiveState for warm-up."""
+    local = _make_warmable_mock_backend("local")
+    cloud = _make_warmable_mock_backend("cloud")
+    snap = _idle_snap()
+    snapshot_fn = AsyncMock(return_value=snap)
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, snapshot_fn=snapshot_fn)
+
+    await sb.switch_to(BackendType.CLOUD, reason="test")
+
+    type(local).readiness = PropertyMock(return_value=BackendReadiness.COLD)
+    local.health_check = AsyncMock(return_value=True)
+    local.warm_up = AsyncMock(return_value=False)
+
+    await sb._check_failback()
+
+    snapshot_fn.assert_awaited_once_with("arm0")
+    call_kwargs = local.warm_up.call_args[1]
+    # State should contain snapshot-derived fields
+    assert call_kwargs["state"].last_snapshot_id == "snap-001"

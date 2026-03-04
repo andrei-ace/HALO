@@ -8,7 +8,8 @@ import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from halo.cognitive.config import BackendType, LocalConfig
+from halo.cognitive.config import BackendReadiness, BackendType, LocalConfig
+from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.planner_service.agent import PlannerAgent
@@ -52,8 +53,9 @@ class LocalCognitiveBackend:
         self,
         snap: PlannerSnapshot,
         operator_cmd: str | None = None,
+        epoch: int | None = None,
     ) -> list[CommandEnvelope]:
-        return await self._agent.decide(snap, operator_cmd=operator_cmd)
+        return await self._agent.decide(snap, operator_cmd=operator_cmd, epoch=epoch)
 
     async def vlm_scene(
         self,
@@ -86,3 +88,21 @@ class LocalCognitiveBackend:
 
     def reset_loop_state(self) -> None:
         self._agent.reset_loop_state()
+
+    # -- WarmableBackend --
+
+    async def warm_up(
+        self,
+        state: CognitiveState | None,
+        journal_entries: list[ContextEntry],
+    ) -> bool:
+        """Local backend shares process with ContextStore — always ready."""
+        return True
+
+    @property
+    def readiness(self) -> str:
+        return BackendReadiness.READY
+
+    @property
+    def caught_up_cursor(self) -> int:
+        return -1  # shares process, no cursor tracking needed

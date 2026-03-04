@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from halo.contracts.commands import CommandAck, CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.runtime.command_router import CommandRouter
 from halo.runtime.event_bus import EventBus
 from halo.runtime.state_store import RuntimeStateStore
+
+if TYPE_CHECKING:
+    from halo.cognitive.lease import LeaseManager
 
 
 class HALORuntime:
@@ -22,10 +27,15 @@ class HALORuntime:
         q = rt.bus.subscribe("arm0")
     """
 
-    def __init__(self) -> None:
+    def __init__(self, lease_manager: LeaseManager | None = None) -> None:
         self.store = RuntimeStateStore()
         self.bus = EventBus()
-        self.router = CommandRouter(self.store, self.bus, self.get_latest_runtime_snapshot)
+        self.router = CommandRouter(
+            self.store,
+            self.bus,
+            self.get_latest_runtime_snapshot,
+            lease_manager=lease_manager,
+        )
 
     def register_arm(self, arm_id: str) -> None:
         """Register an arm. Must be called before any arm-specific operations."""

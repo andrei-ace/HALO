@@ -47,6 +47,7 @@ class CommandEnvelope:
     type: CommandType
     payload: CommandPayload
     precondition_snapshot_id: str | None = None
+    epoch: int | None = None  # lease epoch; None skips epoch check
 
 
 @dataclass(frozen=True)

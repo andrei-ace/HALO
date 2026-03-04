@@ -7,9 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from halo.cognitive.backend import CognitiveBackend
+from halo.cognitive.backend import CognitiveBackend, WarmableBackend
 from halo.cognitive.cloud_backend import CloudCognitiveBackend
-from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
+from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LocalConfig
+from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.cognitive.local_backend import LocalCognitiveBackend
 from halo.contracts.enums import (
     ActStatus,
@@ -138,7 +139,7 @@ async def test_local_backend_decide():
     snap = _idle_snap()
     cmds = await backend.decide(snap, operator_cmd="pick cube")
     assert cmds == []
-    mock_agent.decide.assert_awaited_once_with(snap, operator_cmd="pick cube")
+    mock_agent.decide.assert_awaited_once_with(snap, operator_cmd="pick cube", epoch=None)
     assert backend.last_reasoning == "thinking..."
     assert backend.backend_type == "local"
 
@@ -270,3 +271,112 @@ async def test_cloud_backend_reset_loop_state():
     backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
     # Should not raise even without a running event loop context
     backend.reset_loop_state()
+
+
+# ---------------------------------------------------------------------------
+# WarmableBackend compliance
+# ---------------------------------------------------------------------------
+
+
+def test_local_backend_is_warmable():
+    """LocalCognitiveBackend satisfies the WarmableBackend protocol."""
+    with (
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=MagicMock(decide=AsyncMock(return_value=[]), last_reasoning="", reset_loop_state=MagicMock()),
+        ),
+        patch(
+            "halo.cognitive.local_backend.make_ollama_vlm_fn",
+            return_value=AsyncMock(return_value=VlmScene(scene="", detections=[])),
+        ),
+    ):
+        backend = LocalCognitiveBackend()
+    assert isinstance(backend, WarmableBackend)
+    assert backend.readiness == BackendReadiness.READY
+    assert backend.caught_up_cursor == -1
+
+
+def test_cloud_backend_is_warmable():
+    """CloudCognitiveBackend satisfies the WarmableBackend protocol."""
+    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    assert isinstance(backend, WarmableBackend)
+    assert backend.readiness == BackendReadiness.COLD
+    assert backend.caught_up_cursor == -1
+
+
+@pytest.mark.asyncio
+async def test_local_backend_warm_up_always_ready():
+    with (
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
+        ),
+        patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
+    ):
+        backend = LocalCognitiveBackend()
+
+    ready = await backend.warm_up(state=None, journal_entries=[])
+    assert ready is True
+    assert backend.readiness == BackendReadiness.READY
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_warm_up_success():
+    response_json = {"readiness": "ready", "cursor": 10}
+    mock_response = _mock_response(200, response_json)
+    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+
+    state = CognitiveState(
+        ts_ms=100,
+        epoch=1,
+        cursor=10,
+        active_target_handle="cube",
+        held_object_handle=None,
+        known_scene_handles=["cube"],
+        last_scene_description="table",
+        pending_operator_instruction=None,
+        recent_decisions=["d1"],
+        last_snapshot_id="snap-1",
+        last_arm_id="arm0",
+        last_skill_phase=None,
+        last_skill_name=None,
+        last_outcome_state=None,
+    )
+    entries = [
+        ContextEntry(cursor=9, ts_ms=90, epoch=1, backend="local", entry_type="decision", summary="d0"),
+        ContextEntry(cursor=10, ts_ms=100, epoch=1, backend="local", entry_type="decision", summary="d1"),
+    ]
+
+    with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+        ready = await backend.warm_up(state=state, journal_entries=entries)
+
+    assert ready is True
+    assert backend.readiness == BackendReadiness.READY
+    assert backend.caught_up_cursor == 10
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_warm_up_warming():
+    """Cloud service returns warming (not ready yet)."""
+    response_json = {"readiness": "warming", "cursor": 5}
+    mock_response = _mock_response(200, response_json)
+    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+
+    with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+        ready = await backend.warm_up(state=None, journal_entries=[])
+
+    assert ready is False
+    assert backend.readiness == BackendReadiness.WARMING
+    assert backend.caught_up_cursor == 5
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_warm_up_failure():
+    """warm_up handles HTTP errors gracefully."""
+    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+
+    with patch.object(backend._client, "post", new_callable=AsyncMock, side_effect=httpx.ConnectError("refused")):
+        ready = await backend.warm_up(state=None, journal_entries=[])
+
+    assert ready is False
+    assert backend.readiness == BackendReadiness.FAILED

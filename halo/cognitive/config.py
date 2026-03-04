@@ -11,6 +11,14 @@ class BackendType(StrEnum):
     CLOUD = "cloud"
 
 
+class BackendReadiness(StrEnum):
+    COLD = "cold"
+    WARMING = "warming"
+    READY = "ready"
+    ACTIVE = "active"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True)
 class LocalConfig:
     base_url: str = "http://localhost:11434"

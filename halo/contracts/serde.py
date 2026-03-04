@@ -5,6 +5,7 @@ Both the local codebase and the remote cloud_service import from here.
 
 from __future__ import annotations
 
+from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import (
     AbortSkillPayload,
     CommandAck,
@@ -266,7 +267,7 @@ def command_envelope_to_dict(cmd: CommandEnvelope) -> dict:
     elif isinstance(p, TrackObjectPayload):
         payload_dict = {"target_handle": p.target_handle}
 
-    return {
+    d = {
         "command_id": cmd.command_id,
         "arm_id": cmd.arm_id,
         "issued_at_ms": cmd.issued_at_ms,
@@ -274,6 +275,9 @@ def command_envelope_to_dict(cmd: CommandEnvelope) -> dict:
         "payload": payload_dict,
         "precondition_snapshot_id": cmd.precondition_snapshot_id,
     }
+    if cmd.epoch is not None:
+        d["epoch"] = cmd.epoch
+    return d
 
 
 def command_envelope_from_dict(d: dict) -> CommandEnvelope:
@@ -306,6 +310,7 @@ def command_envelope_from_dict(d: dict) -> CommandEnvelope:
         type=cmd_type,
         payload=payload,
         precondition_snapshot_id=d.get("precondition_snapshot_id"),
+        epoch=d.get("epoch"),
     )
 
 
@@ -344,3 +349,79 @@ def vlm_scene_from_dict(d: dict) -> VlmScene:
         for det in d.get("detections", [])
     ]
     return VlmScene(scene=d.get("scene", ""), detections=detections)
+
+
+# ---------------------------------------------------------------------------
+# ContextEntry
+# ---------------------------------------------------------------------------
+
+
+def context_entry_to_dict(entry: ContextEntry) -> dict:
+    """Serialize a ContextEntry to a plain dict."""
+    return {
+        "cursor": entry.cursor,
+        "ts_ms": entry.ts_ms,
+        "epoch": entry.epoch,
+        "backend": entry.backend,
+        "entry_type": entry.entry_type,
+        "summary": entry.summary,
+        "data": entry.data,
+    }
+
+
+def context_entry_from_dict(d: dict) -> ContextEntry:
+    """Reconstruct a ContextEntry from a plain dict."""
+    return ContextEntry(
+        cursor=d["cursor"],
+        ts_ms=d["ts_ms"],
+        epoch=d["epoch"],
+        backend=d["backend"],
+        entry_type=d["entry_type"],
+        summary=d["summary"],
+        data=d.get("data", {}),
+    )
+
+
+# ---------------------------------------------------------------------------
+# CognitiveState
+# ---------------------------------------------------------------------------
+
+
+def cognitive_state_to_dict(state: CognitiveState) -> dict:
+    """Serialize a CognitiveState to a plain dict."""
+    return {
+        "ts_ms": state.ts_ms,
+        "epoch": state.epoch,
+        "cursor": state.cursor,
+        "active_target_handle": state.active_target_handle,
+        "held_object_handle": state.held_object_handle,
+        "known_scene_handles": list(state.known_scene_handles),
+        "last_scene_description": state.last_scene_description,
+        "pending_operator_instruction": state.pending_operator_instruction,
+        "recent_decisions": list(state.recent_decisions),
+        "last_snapshot_id": state.last_snapshot_id,
+        "last_arm_id": state.last_arm_id,
+        "last_skill_phase": state.last_skill_phase,
+        "last_skill_name": state.last_skill_name,
+        "last_outcome_state": state.last_outcome_state,
+    }
+
+
+def cognitive_state_from_dict(d: dict) -> CognitiveState:
+    """Reconstruct a CognitiveState from a plain dict."""
+    return CognitiveState(
+        ts_ms=d["ts_ms"],
+        epoch=d["epoch"],
+        cursor=d["cursor"],
+        active_target_handle=d.get("active_target_handle"),
+        held_object_handle=d.get("held_object_handle"),
+        known_scene_handles=d.get("known_scene_handles", []),
+        last_scene_description=d.get("last_scene_description", ""),
+        pending_operator_instruction=d.get("pending_operator_instruction"),
+        recent_decisions=d.get("recent_decisions", []),
+        last_snapshot_id=d.get("last_snapshot_id"),
+        last_arm_id=d.get("last_arm_id"),
+        last_skill_phase=d.get("last_skill_phase"),
+        last_skill_name=d.get("last_skill_name"),
+        last_outcome_state=d.get("last_outcome_state"),
+    )

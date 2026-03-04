@@ -1,9 +1,10 @@
-"""Tests for CommandRouter: idempotency, precondition, skill-run enforcement."""
+"""Tests for CommandRouter: idempotency, precondition, skill-run, epoch enforcement."""
 
 import asyncio
 
 import pytest
 
+from halo.cognitive.lease import LeaseManager
 from halo.contracts.commands import (
     AbortSkillPayload,
     CommandEnvelope,
@@ -231,3 +232,78 @@ async def test_track_object_accepted_includes_target_handle(rt: HALORuntime):
     assert accepted_events[0].data["command_type"] == "TRACK_OBJECT"
 
     rt.bus.unsubscribe(ARM, q)
+
+
+# ---------------------------------------------------------------------------
+# Epoch gating
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def rt_with_lease() -> HALORuntime:
+    """HALORuntime wired with a LeaseManager."""
+    lm = LeaseManager()
+    r = HALORuntime(lease_manager=lm)
+    r.register_arm(ARM)
+    return r, lm
+
+
+async def test_epoch_none_skips_check(rt_with_lease):
+    """Commands with epoch=None are always accepted (backward compat)."""
+    rt, lm = rt_with_lease
+    lm.grant("local")
+    cmd = _start(command_id="cmd-no-epoch")
+    assert cmd.epoch is None
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.ACCEPTED
+
+
+async def test_epoch_correct_accepted(rt_with_lease):
+    """Commands with matching epoch pass the check."""
+    rt, lm = rt_with_lease
+    lease = lm.grant("local")
+    cmd = CommandEnvelope(
+        command_id="cmd-epoch-ok",
+        arm_id=ARM,
+        issued_at_ms=1000,
+        type=CommandType.DESCRIBE_SCENE,
+        payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
+        epoch=lease.epoch,
+    )
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.ACCEPTED
+
+
+async def test_epoch_wrong_rejected(rt_with_lease):
+    """Commands with a stale epoch are rejected."""
+    rt, lm = rt_with_lease
+    lm.grant("local")  # epoch=1
+    lm.revoke(1)
+    lm.grant("cloud")  # epoch=2
+    cmd = CommandEnvelope(
+        command_id="cmd-epoch-stale",
+        arm_id=ARM,
+        issued_at_ms=1000,
+        type=CommandType.START_SKILL,
+        payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
+        epoch=1,  # old epoch
+    )
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.REJECTED_WRONG_EPOCH
+    assert ack.reason is not None
+
+
+async def test_epoch_no_lease_manager_skips_check():
+    """Without a lease manager, epoch field is ignored."""
+    rt = HALORuntime()
+    rt.register_arm(ARM)
+    cmd = CommandEnvelope(
+        command_id="cmd-no-lm",
+        arm_id=ARM,
+        issued_at_ms=1000,
+        type=CommandType.START_SKILL,
+        payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
+        epoch=999,  # some epoch, but no lease manager
+    )
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.ACCEPTED
