@@ -1803,7 +1803,7 @@ def _run_live(args: list[str]) -> None:
         from halo.cognitive.lease import LeaseManager
         from halo.cognitive.remote_backend import RemoteCognitiveBackend
 
-        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url))
+        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url), arm_id=arm_id)
         lease_mgr = LeaseManager()
         runtime = HALORuntime(lease_manager=lease_mgr)
         runtime.register_arm(arm_id)

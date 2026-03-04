@@ -145,6 +145,7 @@ class SessionManager:
             session.readiness = BackendReadiness.COLD
             session.cursor = -1
             session.context_store = ContextStore()
+            session.pending_handoff = None
             logger.info("Reset session for arm_id=%s", arm_id)
 
     def reset_all(self) -> None:

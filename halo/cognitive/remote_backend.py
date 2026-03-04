@@ -50,9 +50,10 @@ class RemoteCognitiveBackend:
     Cloud Run is a future milestone.
     """
 
-    def __init__(self, config: RemoteCloudConfig | None = None) -> None:
+    def __init__(self, config: RemoteCloudConfig | None = None, arm_id: str = "arm0") -> None:
         cfg = config or RemoteCloudConfig()
         self._config = cfg
+        self._arm_id = arm_id
         api_key = cfg.api_key or os.environ.get("HALO_CLOUD_API_KEY", "")
         headers = {}
         if api_key:
@@ -153,6 +154,7 @@ class RemoteCognitiveBackend:
         """POST CognitiveState + journal to cloud service's /warm-up endpoint."""
         try:
             body: dict = {
+                "arm_id": self._arm_id,
                 "state": cognitive_state_to_dict(state) if state else None,
                 "journal": [context_entry_to_dict(e) for e in journal_entries],
             }

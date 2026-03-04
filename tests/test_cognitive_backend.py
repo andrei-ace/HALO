@@ -637,3 +637,58 @@ def test_make_cognitive_stack_with_cloud_active():
 
     assert stack.switchboard.active_type == BackendType.CLOUD
     assert stack.config.enable_failover is True
+
+
+@pytest.mark.asyncio
+async def test_local_backend_journal_buffer_bounded_across_batches():
+    """Journal buffer stays within _max_journal_lines across multiple incremental batches."""
+    with (
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=MagicMock(
+                decide=AsyncMock(),
+                last_reasoning="",
+                reset_loop_state=MagicMock(),
+                reset_session=AsyncMock(),
+                inject_handoff_context=AsyncMock(),
+            ),
+        ),
+        patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
+    ):
+        backend = LocalCognitiveBackend()
+
+    # Full warm-up with state
+    state = CognitiveState(
+        ts_ms=0,
+        epoch=1,
+        cursor=0,
+        active_target_handle=None,
+        held_object_handle=None,
+        known_scene_handles=[],
+        last_scene_description="",
+        pending_operator_instruction=None,
+        recent_decisions=[],
+        last_snapshot_id=None,
+        last_arm_id="arm0",
+        last_skill_phase=None,
+        last_skill_name=None,
+        last_outcome_state=None,
+    )
+    entries = [
+        ContextEntry(cursor=i, ts_ms=i, epoch=1, backend="cloud", entry_type="event", summary=f"e{i}")
+        for i in range(20)
+    ]
+    await backend.warm_up(state=state, journal_entries=entries)
+    assert backend.caught_up_cursor == 19
+
+    # Send 4 incremental batches of 20 entries each (80 total new entries)
+    for batch_start in range(20, 100, 20):
+        entries = [
+            ContextEntry(cursor=i, ts_ms=i, epoch=1, backend="cloud", entry_type="event", summary=f"e{i}")
+            for i in range(batch_start, batch_start + 20)
+        ]
+        await backend.warm_up(state=None, journal_entries=entries)
+
+    assert backend.caught_up_cursor == 99
+    # Buffer must be capped at _max_journal_lines (40)
+    assert len(backend._journal_buffer) <= backend._max_journal_lines

@@ -45,6 +45,9 @@ class LocalCognitiveBackend:
             run_logger=run_logger,
         )
         self._caught_up_cursor: int = -1
+        self._journal_buffer: list[str] = []  # accumulated journal summaries (rolling window)
+        self._state_context: list[str] = []  # state context from full warm-up
+        self._max_journal_lines: int = 40  # cap to avoid overflowing local model context
 
     @property
     def backend_type(self) -> str:
@@ -97,29 +100,52 @@ class LocalCognitiveBackend:
         state: CognitiveState | None,
         journal_entries: list[ContextEntry],
     ) -> bool:
-        """Inject handoff context into the in-process PlannerAgent."""
+        """Inject handoff context into the in-process PlannerAgent.
+
+        Full warm-up (state provided): resets session and rebuilds context
+        from scratch. Incremental (state=None): accumulates journal entries
+        across batches and re-injects the full buffer without losing earlier
+        batches.
+        """
         if state is None and not journal_entries:
             return True
-        context_parts = ["[Context handoff from previous backend]"]
+
         if state is not None:
+            # Full warm-up: reset everything and rebuild state context
+            self._state_context = ["[Context handoff from previous backend]"]
+            self._journal_buffer = []
             if state.last_scene_description:
-                context_parts.append(f"Last scene: {state.last_scene_description}")
+                self._state_context.append(f"Last scene: {state.last_scene_description}")
             if state.known_scene_handles:
-                context_parts.append(f"Known objects: {', '.join(state.known_scene_handles)}")
+                self._state_context.append(f"Known objects: {', '.join(state.known_scene_handles)}")
             if state.active_target_handle:
-                context_parts.append(f"Active target: {state.active_target_handle}")
+                self._state_context.append(f"Active target: {state.active_target_handle}")
             if state.held_object_handle:
-                context_parts.append(f"Holding: {state.held_object_handle}")
+                self._state_context.append(f"Holding: {state.held_object_handle}")
             if state.recent_decisions:
-                context_parts.append("Recent decisions:")
+                self._state_context.append("Recent decisions:")
                 for d in state.recent_decisions:
-                    context_parts.append(f"  - {d}")
+                    self._state_context.append(f"  - {d}")
             if state.pending_operator_instruction:
-                context_parts.append(f"Pending operator: {state.pending_operator_instruction}")
+                self._state_context.append(f"Pending operator: {state.pending_operator_instruction}")
+
+        # Accumulate journal entries across batches (rolling window)
+        if journal_entries:
+            for e in journal_entries:
+                self._journal_buffer.append(f"  [{e.entry_type}] {e.summary}")
+            # Trim oldest entries to stay within context budget
+            if len(self._journal_buffer) > self._max_journal_lines:
+                self._journal_buffer = self._journal_buffer[-self._max_journal_lines :]
+            self._caught_up_cursor = max(e.cursor for e in journal_entries)
+
+        # Build full context and inject
+        context_parts = list(self._state_context)
+        if self._journal_buffer:
+            context_parts.append("Recent journal:")
+            context_parts.extend(self._journal_buffer)
+
         await self._agent.reset_session()
         await self._agent.inject_handoff_context("\n".join(context_parts))
-        if journal_entries:
-            self._caught_up_cursor = max(e.cursor for e in journal_entries)
         return True
 
     @property

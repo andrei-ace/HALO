@@ -84,10 +84,8 @@ async def warm_up(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     """Warm up a session with CognitiveState + journal entries."""
     state_dict = body.get("state")
     journal_dicts = body.get("journal", [])
-    # Extract arm_id from state or default to "arm0"
-    arm_id = "arm0"
-    if state_dict and state_dict.get("last_arm_id"):
-        arm_id = state_dict["last_arm_id"]
+    # Read arm_id from top-level body, fall back to state, then default
+    arm_id = body.get("arm_id") or (state_dict.get("last_arm_id") if state_dict else None) or "arm0"
 
     session = session_mgr.warm_up_session(arm_id, state_dict, journal_dicts)
     return {

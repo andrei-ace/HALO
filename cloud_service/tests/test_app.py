@@ -262,3 +262,91 @@ def test_auth_required():
         body = {"snapshot": snapshot_to_dict(snap)}
         resp = c.post("/decide", json=body, headers={"Authorization": "Bearer secret-key"})
         assert resp.status_code == 200
+
+
+def _make_test_session_mgr():
+    """Create a SessionManager with mocked PlannerAgent creation."""
+    from pathlib import Path
+
+    from cloud_service.session_manager import SessionManager
+
+    mgr = SessionManager(
+        model_name="test",
+        prompts_dir=Path("/tmp"),
+        vlm_fn_factory=lambda: MagicMock(),
+    )
+    # Patch get_or_create to use mock agents instead of real PlannerAgent
+    _orig = mgr.get_or_create
+
+    def _patched(arm_id):
+        from cloud_service.session_manager import ArmSession
+
+        if arm_id in mgr._sessions:
+            session = mgr._sessions[arm_id]
+            session.touch()
+            return session
+        agent = MagicMock()
+        agent.reset_loop_state = MagicMock()
+        session = ArmSession(arm_id=arm_id, agent=agent)
+        session.touch()
+        mgr._sessions[arm_id] = session
+        return session
+
+    mgr.get_or_create = _patched
+    return mgr
+
+
+def test_warm_up_routes_by_body_arm_id():
+    """SessionManager receives correct arm_id (not hardcoded arm0)."""
+    mgr = _make_test_session_mgr()
+    session = mgr.warm_up_session("arm7", state_dict=None, journal_dicts=[])
+    assert session.arm_id == "arm7"
+    assert mgr.get_session("arm7") is not None
+    assert mgr.get_session("arm0") is None
+
+
+def test_warm_up_endpoint_reads_body_arm_id(client):
+    """/warm-up endpoint passes body arm_id to session manager (not hardcoded arm0)."""
+    # Patch the session manager's warm_up_session to capture the arm_id argument
+    from unittest.mock import patch as _patch
+
+    with _patch("cloud_service.deps._session_mgr") as patched_mgr:
+        session_mock = MagicMock()
+        session_mock.readiness = "ready"
+        session_mock.cursor = -1
+        patched_mgr.warm_up_session.return_value = session_mock
+
+        body = {"arm_id": "arm5", "state": None, "journal": []}
+        resp = client.post("/warm-up", json=body)
+        assert resp.status_code == 200
+        patched_mgr.warm_up_session.assert_called_once()
+        call_args = patched_mgr.warm_up_session.call_args
+        assert call_args[0][0] == "arm5" or call_args[1].get("arm_id") == "arm5"
+
+
+def test_reset_clears_pending_handoff():
+    """After reset, pending_handoff is cleared so stale context doesn't leak."""
+    mgr = _make_test_session_mgr()
+    state_dict = {
+        "ts_ms": 100,
+        "epoch": 1,
+        "cursor": 0,
+        "active_target_handle": None,
+        "held_object_handle": None,
+        "known_scene_handles": [],
+        "last_scene_description": "table",
+        "pending_operator_instruction": None,
+        "recent_decisions": [],
+        "last_snapshot_id": "snap-1",
+        "last_arm_id": "arm0",
+        "last_skill_phase": None,
+        "last_skill_name": None,
+        "last_outcome_state": None,
+    }
+    session = mgr.warm_up_session("arm0", state_dict=state_dict, journal_dicts=[])
+    assert session.pending_handoff is not None
+
+    # Reset should clear it
+    mgr.reset_session("arm0")
+    session_after = mgr.get_session("arm0")
+    assert session_after.pending_handoff is None

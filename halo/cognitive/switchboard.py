@@ -33,6 +33,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CONSECUTIVE_FAILURES_BEFORE_SWITCH = 3
+_CATCHUP_BATCH_SIZE = 20
 
 _JOURNALED_EVENT_TYPES = frozenset(
     {
@@ -373,9 +374,9 @@ class Switchboard:
                 await preferred_backend.warm_up(state=state, journal_entries=entries)
 
             elif readiness == BackendReadiness.WARMING:
-                # Incremental catch-up
+                # Incremental catch-up (bounded batch)
                 entries = self._context_store.get_entries_after(preferred_backend.caught_up_cursor)
-                await preferred_backend.warm_up(state=None, journal_entries=entries)
+                await preferred_backend.warm_up(state=None, journal_entries=entries[:_CATCHUP_BATCH_SIZE])
 
             elif readiness == BackendReadiness.READY:
                 # Verify cursor parity before switching
@@ -390,7 +391,7 @@ class Switchboard:
                     entries = self._context_store.get_entries_after(backend_cursor)
                     if not entries:
                         entries = self._context_store.get_entries_after(-1)
-                    await preferred_backend.warm_up(state=None, journal_entries=entries)
+                    await preferred_backend.warm_up(state=None, journal_entries=entries[:_CATCHUP_BATCH_SIZE])
                     return
                 # Caught up (backend_cursor >= store_cursor) — switch
                 await self.switch_to(preferred, reason="preferred backend recovered and warmed up")
