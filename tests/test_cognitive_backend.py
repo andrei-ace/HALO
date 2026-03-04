@@ -10,7 +10,7 @@ import pytest
 from halo.cognitive import CognitiveStack, make_cognitive_stack
 from halo.cognitive.backend import CognitiveBackend, WarmableBackend
 from halo.cognitive.cloud_backend import CloudCognitiveBackend
-from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LocalConfig
+from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LiveConfig, LocalConfig
 from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.cognitive.local_backend import LocalCognitiveBackend
 from halo.contracts.enums import (
@@ -80,6 +80,7 @@ def test_config_defaults():
 def test_backend_type_enum():
     assert BackendType.LOCAL == "local"
     assert BackendType.CLOUD == "cloud"
+    assert BackendType.LIVE == "live"
 
 
 def test_cloud_config_service_url():
@@ -87,6 +88,26 @@ def test_cloud_config_service_url():
     assert cfg.service_url == "https://example.com"
     assert cfg.api_key == "test-key"
     assert cfg.request_timeout_s == 30.0
+
+
+def test_live_config_defaults():
+    cfg = LiveConfig()
+    assert cfg.planner_model == "gemini-2.5-flash"
+    assert cfg.vlm_model == "gemini-2.5-flash"
+    assert cfg.audio_enabled is True
+    assert cfg.input_sample_rate == 16000
+    assert cfg.output_sample_rate == 24000
+    assert cfg.voice_name == "Kore"
+    assert cfg.session_resumption is True
+    assert cfg.context_compression is True
+    assert cfg.response_modalities == ("AUDIO",)
+    assert cfg.enable_transcription is True
+
+
+def test_cognitive_config_has_live():
+    cfg = CognitiveConfig()
+    assert isinstance(cfg.live, LiveConfig)
+    assert cfg.live.planner_model == "gemini-2.5-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +466,137 @@ async def test_cloud_backend_nonce_first_check_no_reset():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# LiveCognitiveBackend
+# ---------------------------------------------------------------------------
+
+
+def test_live_backend_is_cognitive_backend():
+    """LiveCognitiveBackend satisfies the CognitiveBackend protocol."""
+    with (
+        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=False)
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session.decide = AsyncMock(return_value=[])
+        mock_session.drain_pending_commands = MagicMock(return_value=[])
+        mock_session_cls.return_value = mock_session
+
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        backend = LiveCognitiveBackend()
+    assert isinstance(backend, CognitiveBackend)
+    assert backend.backend_type == "live"
+
+
+@pytest.mark.asyncio
+async def test_live_backend_decide():
+    """LiveCognitiveBackend.decide() delegates to session.decide()."""
+    with (
+        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=True)
+        mock_session.last_reasoning = "live thinking"
+        mock_session.decide = AsyncMock(return_value=[])
+        mock_session.reset_loop_state = MagicMock()
+        mock_session.drain_pending_commands = MagicMock(return_value=[])
+        mock_session_cls.return_value = mock_session
+
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        backend = LiveCognitiveBackend()
+
+    snap = _idle_snap()
+    cmds = await backend.decide(snap, operator_cmd="pick cube")
+    assert cmds == []
+    mock_session.decide.assert_awaited_once_with(snap, operator_cmd="pick cube", epoch=None)
+    assert backend.last_reasoning == "live thinking"
+
+
+@pytest.mark.asyncio
+async def test_live_backend_vlm_scene():
+    """LiveCognitiveBackend.vlm_scene() delegates to standard gemini_vlm_fn."""
+    mock_vlm = AsyncMock(return_value=VlmScene(scene="table with cubes", detections=[]))
+    with (
+        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=mock_vlm),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=True)
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        backend = LiveCognitiveBackend()
+
+    scene = await backend.vlm_scene("arm0", b"fake-image")
+    assert scene.scene == "table with cubes"
+    mock_vlm.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_live_backend_health():
+    """health_check returns session.state.connected."""
+    with (
+        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_state = MagicMock()
+        mock_state.connected = True
+        mock_session.state = mock_state
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        backend = LiveCognitiveBackend()
+
+    healthy = await backend.health_check()
+    assert healthy is True
+
+    mock_state.connected = False
+    healthy = await backend.health_check()
+    assert healthy is False
+
+
+def test_live_backend_readiness():
+    """readiness is READY when connected, COLD otherwise."""
+    with (
+        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_state = MagicMock()
+        mock_state.connected = False
+        mock_session.state = mock_state
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        backend = LiveCognitiveBackend()
+
+    assert backend.readiness == BackendReadiness.COLD
+
+    mock_state.connected = True
+    assert backend.readiness == BackendReadiness.READY
+
+
+# ---------------------------------------------------------------------------
+# CognitiveStack factory
+# ---------------------------------------------------------------------------
+
+
 def test_make_cognitive_stack_creates_all_components():
     """make_cognitive_stack() wires up all components correctly."""
     with (
@@ -459,6 +611,7 @@ def test_make_cognitive_stack_creates_all_components():
     assert isinstance(stack, CognitiveStack)
     assert isinstance(stack.local, CognitiveBackend)
     assert isinstance(stack.cloud, CognitiveBackend)
+    assert stack.live is None  # only created when active==LIVE
     assert stack.switchboard is not None
     assert stack.context_store is not None
     assert stack.lease_manager is not None
@@ -483,3 +636,28 @@ def test_make_cognitive_stack_with_cloud_active():
 
     assert stack.switchboard.active_type == BackendType.CLOUD
     assert stack.config.enable_failover is True
+    assert stack.live is None
+
+
+def test_make_cognitive_stack_with_live_active():
+    """Factory creates LiveCognitiveBackend when active==LIVE."""
+    cfg = CognitiveConfig(active=BackendType.LIVE)
+    with (
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
+        ),
+        patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
+        patch("halo.cognitive.live_backend.LivePlannerSession") as mock_session_cls,
+        patch("halo.services.target_perception_service.gemini_vlm_fn.make_gemini_vlm_fn", return_value=AsyncMock()),
+    ):
+        mock_session = MagicMock()
+        mock_session.state = MagicMock(connected=False)
+        mock_session.last_reasoning = ""
+        mock_session.reset_loop_state = MagicMock()
+        mock_session_cls.return_value = mock_session
+
+        stack = make_cognitive_stack(config=cfg)
+
+    assert stack.live is not None
+    assert stack.switchboard.active_type == BackendType.LIVE

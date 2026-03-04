@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from halo.cognitive.backend import CognitiveBackend
-from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
+from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LiveConfig, LocalConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.cognitive.switchboard import Switchboard
@@ -23,6 +23,7 @@ class CognitiveStack:
     switchboard: Switchboard
     local: CognitiveBackend
     cloud: CognitiveBackend
+    live: CognitiveBackend | None
     context_store: ContextStore
     lease_manager: LeaseManager
     config: CognitiveConfig
@@ -33,6 +34,8 @@ def make_cognitive_stack(
     bus: EventBus | None = None,
     snapshot_fn: Callable[[str], Awaitable[PlannerSnapshot | None]] | None = None,
     run_logger: object | None = None,
+    audio_capture: object | None = None,
+    audio_playback: object | None = None,
 ) -> CognitiveStack:
     """Factory that wires up all cognitive components from config.
 
@@ -41,6 +44,8 @@ def make_cognitive_stack(
         bus: Optional EventBus for BACKEND_SWITCHED events.
         snapshot_fn: Optional async callable to get latest PlannerSnapshot for warm-up.
         run_logger: Optional RunLogger for local backend VLM logging.
+        audio_capture: Optional AudioCapture for live backend voice input.
+        audio_playback: Optional AudioPlayback for live backend voice output.
     """
     from halo.cognitive.cloud_backend import CloudCognitiveBackend
     from halo.cognitive.local_backend import LocalCognitiveBackend
@@ -52,10 +57,22 @@ def make_cognitive_stack(
     local = LocalCognitiveBackend(config=cfg.local, run_logger=run_logger)
     cloud = CloudCognitiveBackend(config=cfg.cloud)
 
+    live: CognitiveBackend | None = None
+    if cfg.active == BackendType.LIVE:
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        live = LiveCognitiveBackend(
+            config=cfg.live,
+            audio_capture=audio_capture,
+            audio_playback=audio_playback,
+            run_logger=run_logger,
+        )
+
     switchboard = Switchboard(
         config=cfg,
         local=local,
         cloud=cloud,
+        live=live,
         lease_mgr=lease_mgr,
         context_store=context_store,
         bus=bus,
@@ -66,6 +83,7 @@ def make_cognitive_stack(
         switchboard=switchboard,
         local=local,
         cloud=cloud,
+        live=live,
         context_store=context_store,
         lease_manager=lease_mgr,
         config=cfg,
@@ -78,6 +96,7 @@ __all__ = [
     "CognitiveBackend",
     "CognitiveConfig",
     "CognitiveStack",
+    "LiveConfig",
     "LocalConfig",
     "make_cognitive_stack",
 ]

@@ -9,6 +9,7 @@ from enum import StrEnum
 class BackendType(StrEnum):
     LOCAL = "local"
     CLOUD = "cloud"
+    LIVE = "live"
 
 
 class BackendReadiness(StrEnum):
@@ -37,9 +38,24 @@ class CloudConfig:
 
 
 @dataclass(frozen=True)
+class LiveConfig:
+    planner_model: str = "gemini-2.5-flash"
+    vlm_model: str = "gemini-2.5-flash"
+    audio_enabled: bool = True
+    input_sample_rate: int = 16000
+    output_sample_rate: int = 24000
+    voice_name: str = "Kore"
+    session_resumption: bool = True
+    context_compression: bool = True
+    response_modalities: tuple[str, ...] = ("AUDIO",)
+    enable_transcription: bool = True
+
+
+@dataclass(frozen=True)
 class CognitiveConfig:
     active: BackendType = BackendType.LOCAL
     local: LocalConfig = field(default_factory=LocalConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
+    live: LiveConfig = field(default_factory=LiveConfig)
     enable_failover: bool = False
     health_check_interval_s: float = 10.0

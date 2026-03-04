@@ -738,6 +738,48 @@ class EventsPanel(VerticalScroll):
         self.scroll_end(animate=False)
 
 
+class AudioPanel(Container):
+    """Live audio status panel — mic/speaker state, transcriptions."""
+
+    def on_mount(self) -> None:
+        self.border_title = "Voice"
+
+    def compose(self) -> ComposeResult:
+        yield Static(Text("Mic: —", style="#9e9e9e"), id="audio-mic")
+        yield Static(Text("Speaker: —", style="#9e9e9e"), id="audio-speaker")
+        yield Static(Text("", style="#9e9e9e"), id="audio-transcript-in")
+        yield Static(Text("", style="#9e9e9e"), id="audio-transcript-out")
+
+    def refresh_live(
+        self,
+        mic_status: str,
+        speaker_status: str,
+        transcript_in: str = "",
+        transcript_out: str = "",
+    ) -> None:
+        mic_text = Text()
+        mic_text.append("Mic: ", style="bold white")
+        mic_text.append(mic_status, style="bright_green" if "Listening" in mic_status else "#9e9e9e")
+        self.query_one("#audio-mic", Static).update(mic_text)
+
+        spk_text = Text()
+        spk_text.append("Speaker: ", style="bold white")
+        spk_text.append(speaker_status, style="bright_green" if "Speaking" in speaker_status else "#9e9e9e")
+        self.query_one("#audio-speaker", Static).update(spk_text)
+
+        if transcript_in:
+            tin = Text()
+            tin.append("You: ", style="bold #4fc3f7")
+            tin.append(transcript_in[-80:], style="#b0bcd0")
+            self.query_one("#audio-transcript-in", Static).update(tin)
+
+        if transcript_out:
+            tout = Text()
+            tout.append("AI: ", style="bold #66bb6a")
+            tout.append(transcript_out[-80:], style="#b0bcd0")
+            self.query_one("#audio-transcript-out", Static).update(tout)
+
+
 class PanicPanel(Container):
     def on_mount(self) -> None:
         self.border_title = "Panic"
@@ -895,13 +937,17 @@ class HALOApp(App):
     TalkPanel,
     SystemPanel,
     EventsPanel,
-    PanicPanel {
+    PanicPanel,
+    AudioPanel {
         border: solid #263050;
         border-title-color: #4fc3f7;
         border-title-style: bold;
         padding: 0 1;
         height: auto;
     }
+
+    AudioPanel            { height: auto; min-height: 6; display: none; }
+    AudioPanel.visible    { display: block; }
 
     /* info containers shrink first; Talk + Panic hold their space */
     #left-info            { height: 1fr; min-height: 0; overflow: hidden hidden; }
@@ -1050,6 +1096,7 @@ class HALOApp(App):
         Binding("r", "show_reasoning", "reasoning", show=False),
         Binding("y", "yank_reasoning", "yank", show=False),
         Binding("f", "toggle_feed", "feed", show=False),
+        Binding("m", "toggle_mic", "mic", show=False),
         Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
@@ -1067,6 +1114,7 @@ class HALOApp(App):
         run_logger: RunLogger | None = None,
         tracker_name: str = "",
         video_source: object | None = None,
+        live_backend: object | None = None,
     ) -> None:
         super().__init__()
         self._runtime = runtime
@@ -1076,6 +1124,7 @@ class HALOApp(App):
         self._skill_runner_svc = skill_runner_svc
         self._tracker_name = tracker_name
         self._video_source = video_source
+        self._live_backend = live_backend
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
@@ -1113,6 +1162,10 @@ class HALOApp(App):
             await self._perception_svc.start()  # type: ignore[union-attr]
             # Run a single scene analysis on startup via the service.
             await self._perception_svc.request_refresh(reason="startup")  # type: ignore[union-attr]
+        # Live backend: voice command polling + audio panel updates
+        if self._live_backend is not None:
+            self.run_worker(self._poll_voice_commands(), name="voice_cmd_poll")
+            self.set_interval(0.5, self._poll_audio_panel)
 
     async def on_unmount(self) -> None:
         if self._feed_viewer is not None:
@@ -1126,6 +1179,11 @@ class HALOApp(App):
             self._runtime.bus.unsubscribe(self._arm_id, self._cmd_route_queue)  # type: ignore[union-attr]
             self._cmd_route_queue = None
         self._pending_commands.clear()
+        if self._live_backend is not None and hasattr(self._live_backend, "aclose"):
+            try:
+                await self._live_backend.aclose()  # type: ignore[union-attr]
+            except Exception:
+                pass
         if self._run_logger:
             self._run_logger.close()
         if self._runtime and self._event_queue is not None:
@@ -1141,6 +1199,10 @@ class HALOApp(App):
                         yield PlannerPanel(data=d, id="planner-panel")
                         yield TargetPerceptionPanel(data=d, tracker_name=self._tracker_name, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
+                    audio_panel = AudioPanel(id="audio-panel")
+                    if self._live_backend is not None:
+                        audio_panel.add_class("visible")
+                    yield audio_panel
                 with Vertical(id="right-col"):
                     with Vertical(id="right-info"):
                         yield SystemPanel(data=d, id="system-panel")
@@ -1263,6 +1325,23 @@ class HALOApp(App):
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
+    def action_toggle_mic(self) -> None:
+        if self._live_backend is None:
+            self.notify("Mic toggle requires live backend", severity="warning", timeout=3)
+            return
+        session_state = getattr(self._live_backend, "session_state", None)
+        if session_state is None:
+            return
+        # Find the audio capture on the session
+        session = getattr(self._live_backend, "_session", None)
+        if session is None:
+            return
+        capture = getattr(session, "_audio_capture", None)
+        if capture is not None and hasattr(capture, "muted"):
+            capture.muted = not capture.muted
+            status = "muted" if capture.muted else "listening"
+            self.notify(f"Mic {status}", timeout=2)
+
     # ── Live workers ──
 
     async def _poll_system_panel(self) -> None:
@@ -1300,6 +1379,59 @@ class HALOApp(App):
             vel = float(qvel[i]) if qvel is not None and i < len(qvel) else 0.0
             servos.append((jid, self._SO101_JOINT_NAMES[i], "OK", float(qpos[i]), vel))
         self.query_one("#servos-panel", ServosPanel).refresh_live(servos)
+
+    async def _poll_voice_commands(self) -> None:
+        """Poll live backend for voice-triggered commands and submit them."""
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+                if self._live_backend is None or self._runtime is None:
+                    continue
+                drain_fn = getattr(self._live_backend, "drain_pending_commands", None)
+                if drain_fn is None:
+                    continue
+                commands = drain_fn()
+                if not commands:
+                    continue
+                from dataclasses import replace as _dc_replace
+
+                for cmd in commands:
+                    cmd = _dc_replace(cmd, precondition_snapshot_id=None)
+                    await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
+        except asyncio.CancelledError:
+            pass
+
+    async def _poll_audio_panel(self) -> None:
+        """Refresh the AudioPanel from live backend session state."""
+        if self._live_backend is None:
+            return
+        session_state = getattr(self._live_backend, "session_state", None)
+        if session_state is None:
+            return
+        try:
+            panel = self.query_one("#audio-panel", AudioPanel)
+        except Exception:
+            return
+        # Determine mic status
+        session = getattr(self._live_backend, "_session", None)
+        capture = getattr(session, "_audio_capture", None) if session else None
+        if capture is not None and hasattr(capture, "muted"):
+            mic_status = "Muted" if capture.muted else "Listening"
+        elif session_state.connected:
+            mic_status = "Text-only"
+        else:
+            mic_status = "Disconnected"
+
+        speaker_status = "Speaking" if getattr(session_state, "turn_active", False) else "Silent"
+        if not session_state.connected:
+            speaker_status = "Disconnected"
+
+        panel.refresh_live(
+            mic_status=mic_status,
+            speaker_status=speaker_status,
+            transcript_in=getattr(session_state, "last_transcription_in", ""),
+            transcript_out=getattr(session_state, "last_transcription_out", ""),
+        )
 
     def _with_task_context(self, system_msg: str) -> str:
         """Append the last operator instruction so the agent keeps task context."""
@@ -1586,8 +1718,8 @@ def _run_live(args: list[str]) -> None:
         elif arg == "--cloud-url" and i + 1 < len(args):
             cloud_url = args[i + 1]
 
-    # Apply cloud defaults when backend is cloud and user didn't override models
-    if backend == "cloud":
+    # Apply cloud/live defaults when backend is cloud/live and user didn't override models
+    if backend in ("cloud", "live"):
         if model == "gpt-oss:20b":
             model = "gemini-2.5-flash"
         if vlm_model == "qwen2.5vl:3b":
@@ -1598,6 +1730,8 @@ def _run_live(args: list[str]) -> None:
 
     run_logger = RunLogger(_RUNS_DIR, arm_id)
 
+    live_backend = None
+
     if cloud_url:
         # Remote cloud backend — thin HTTP client, no local PlannerAgent/VLM
         from halo.cognitive.cloud_backend import CloudCognitiveBackend
@@ -1606,6 +1740,42 @@ def _run_live(args: list[str]) -> None:
         cloud_backend = CloudCognitiveBackend(CloudConfig(service_url=cloud_url))
         agent = cloud_backend
         vlm_fn = cloud_backend.vlm_scene
+    elif backend == "live":
+        # Gemini Live API — bidirectional audio + text
+        from halo.cognitive.audio_io import make_audio_components
+        from halo.cognitive.config import LiveConfig
+        from halo.cognitive.live_backend import LiveCognitiveBackend
+
+        live_cfg = LiveConfig(planner_model=model, vlm_model=vlm_model)
+
+        # Set up audio (graceful degradation if sounddevice not installed)
+        def _audio_stub(pcm: bytes) -> None:
+            if live_backend is not None:
+                live_backend._session.on_audio_chunk(pcm)
+
+        audio = make_audio_components(
+            on_audio=_audio_stub,
+            input_sample_rate=live_cfg.input_sample_rate,
+            output_sample_rate=live_cfg.output_sample_rate,
+        )
+
+        if not audio.available:
+            # Fall back to text-only mode
+            live_cfg = LiveConfig(
+                planner_model=model,
+                vlm_model=vlm_model,
+                audio_enabled=False,
+                response_modalities=("TEXT",),
+            )
+
+        live_backend = LiveCognitiveBackend(
+            config=live_cfg,
+            audio_capture=audio.capture,
+            audio_playback=audio.playback,
+            run_logger=run_logger,
+        )
+        agent = live_backend
+        vlm_fn = live_backend.vlm_scene
     else:
         prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
         agent = PlannerAgent(model, base_url, prompts_dir, backend=backend)
@@ -1677,6 +1847,7 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
         tracker_name=get_tracker_name(),
         video_source=video_source,
+        live_backend=live_backend,
     ).run()
 
     video_source.stop()

@@ -42,6 +42,7 @@ class Switchboard:
         config: CognitiveConfig,
         local: CognitiveBackend,
         cloud: CognitiveBackend,
+        live: CognitiveBackend | None = None,
         lease_mgr: LeaseManager | None = None,
         context_store: ContextStore | None = None,
         bus: EventBus | None = None,
@@ -52,6 +53,8 @@ class Switchboard:
             BackendType.LOCAL: local,
             BackendType.CLOUD: cloud,
         }
+        if live is not None:
+            self._backends[BackendType.LIVE] = live
         self._lease_mgr = lease_mgr or LeaseManager()
         self._context_store = context_store or ContextStore()
         self._bus = bus
@@ -346,6 +349,9 @@ class Switchboard:
         """Increment failure counter and switch if threshold reached."""
         self._consecutive_failures += 1
         if self._config.enable_failover and self._consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_SWITCH:
-            # Switch to the other backend
-            target = BackendType.CLOUD if self._active_type == BackendType.LOCAL else BackendType.LOCAL
+            # LIVE and CLOUD both fail over to LOCAL; LOCAL fails over to CLOUD
+            if self._active_type in (BackendType.CLOUD, BackendType.LIVE):
+                target = BackendType.LOCAL
+            else:
+                target = BackendType.CLOUD
             await self.switch_to(target, reason=f"{self._consecutive_failures} consecutive failures")
