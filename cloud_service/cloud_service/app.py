@@ -43,6 +43,9 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     arm_id = snapshot.arm_id
 
     session = session_mgr.get_or_create(arm_id)
+    if session.pending_handoff:
+        await session.agent.inject_handoff_context(session.pending_handoff)
+        session.pending_handoff = None
     commands = await session.agent.decide(snapshot, operator_cmd=operator_cmd, epoch=epoch)
     reasoning = session.agent.last_reasoning
 

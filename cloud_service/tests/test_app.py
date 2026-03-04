@@ -42,6 +42,7 @@ class _FakeSessionManager:
         session.agent = self._agent
         session.readiness = "ready"
         session.cursor = -1
+        session.pending_handoff = None
         return session
 
     def get_session(self, arm_id):
@@ -66,6 +67,7 @@ def mock_agent():
     agent.decide = AsyncMock(return_value=[])
     agent.last_reasoning = "test reasoning"
     agent.reset_loop_state = MagicMock()
+    agent.inject_handoff_context = AsyncMock()
     return agent
 
 

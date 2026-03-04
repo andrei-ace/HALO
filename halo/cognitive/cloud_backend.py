@@ -26,6 +26,26 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PROMPTS_DIR = Path(__file__).parents[2] / "configs" / "planner"
 
 
+def _build_handoff_text(state: CognitiveState) -> str:
+    """Build handoff context text from CognitiveState (same format as local_backend)."""
+    parts = ["[Context handoff from previous backend]"]
+    if state.last_scene_description:
+        parts.append(f"Last scene: {state.last_scene_description}")
+    if state.known_scene_handles:
+        parts.append(f"Known objects: {', '.join(state.known_scene_handles)}")
+    if state.active_target_handle:
+        parts.append(f"Active target: {state.active_target_handle}")
+    if state.held_object_handle:
+        parts.append(f"Holding: {state.held_object_handle}")
+    if state.recent_decisions:
+        parts.append("Recent decisions:")
+        for d in state.recent_decisions:
+            parts.append(f"  - {d}")
+    if state.pending_operator_instruction:
+        parts.append(f"Pending operator: {state.pending_operator_instruction}")
+    return "\n".join(parts)
+
+
 class CloudCognitiveBackend:
     """Brain (Live API planner) + eyes (standard Gemini VLM) backend."""
 
@@ -52,6 +72,7 @@ class CloudCognitiveBackend:
             model=cfg.vlm_model,
             run_logger=run_logger,
         )
+        self._caught_up_cursor: int = -1
 
     @property
     def backend_type(self) -> str:
@@ -95,9 +116,14 @@ class CloudCognitiveBackend:
         state: CognitiveState | None,
         journal_entries: list[ContextEntry],
     ) -> bool:
-        """Start the live session if not started. Returns True when connected."""
+        """Start the live session and inject handoff context."""
         try:
             await self._session.start()
+            if state is not None and self._session.state.connected:
+                context_text = _build_handoff_text(state)
+                self._session.inject_handoff_context(context_text)
+            if journal_entries:
+                self._caught_up_cursor = max(e.cursor for e in journal_entries)
             return self._session.state.connected
         except Exception:
             logger.exception("Cloud session warm_up failed")
@@ -111,7 +137,7 @@ class CloudCognitiveBackend:
 
     @property
     def caught_up_cursor(self) -> int:
-        return -1  # Live session maintains its own conversation state
+        return self._caught_up_cursor
 
     async def aclose(self) -> None:
         await self._session.stop()

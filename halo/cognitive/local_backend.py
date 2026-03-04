@@ -44,6 +44,7 @@ class LocalCognitiveBackend:
             model=cfg.vlm_model,
             run_logger=run_logger,
         )
+        self._caught_up_cursor: int = -1
 
     @property
     def backend_type(self) -> str:
@@ -96,7 +97,29 @@ class LocalCognitiveBackend:
         state: CognitiveState | None,
         journal_entries: list[ContextEntry],
     ) -> bool:
-        """Local backend shares process with ContextStore — always ready."""
+        """Inject handoff context into the in-process PlannerAgent."""
+        if state is None and not journal_entries:
+            return True
+        context_parts = ["[Context handoff from previous backend]"]
+        if state is not None:
+            if state.last_scene_description:
+                context_parts.append(f"Last scene: {state.last_scene_description}")
+            if state.known_scene_handles:
+                context_parts.append(f"Known objects: {', '.join(state.known_scene_handles)}")
+            if state.active_target_handle:
+                context_parts.append(f"Active target: {state.active_target_handle}")
+            if state.held_object_handle:
+                context_parts.append(f"Holding: {state.held_object_handle}")
+            if state.recent_decisions:
+                context_parts.append("Recent decisions:")
+                for d in state.recent_decisions:
+                    context_parts.append(f"  - {d}")
+            if state.pending_operator_instruction:
+                context_parts.append(f"Pending operator: {state.pending_operator_instruction}")
+        await self._agent.reset_session()
+        await self._agent.inject_handoff_context("\n".join(context_parts))
+        if journal_entries:
+            self._caught_up_cursor = max(e.cursor for e in journal_entries)
         return True
 
     @property
@@ -105,4 +128,4 @@ class LocalCognitiveBackend:
 
     @property
     def caught_up_cursor(self) -> int:
-        return -1  # shares process, no cursor tracking needed
+        return self._caught_up_cursor

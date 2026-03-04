@@ -42,7 +42,13 @@ def _encode_jpeg(image: object, quality: int = 85) -> bytes:
 
 
 class RemoteCognitiveBackend:
-    """Brain + eyes backed by remote GCP cognitive service (HTTP client)."""
+    """Brain + eyes backed by remote GCP cognitive service (HTTP client).
+
+    NOTE: This backend uses HTTP request-response only. The Gemini Live API
+    bidirectional streaming path (audio, voice commands) is only available
+    via CloudCognitiveBackend running in-process. WebSocket streaming to
+    Cloud Run is a future milestone.
+    """
 
     def __init__(self, config: RemoteCloudConfig | None = None) -> None:
         cfg = config or RemoteCloudConfig()
@@ -125,14 +131,13 @@ class RemoteCognitiveBackend:
         return self._last_reasoning
 
     def reset_loop_state(self) -> None:
-        try:
-            import asyncio
+        """Clear local state only. Does NOT reset the remote session —
+        warm-up already establishes fresh context on the remote side.
+        Use reset_remote() for explicit operator-initiated resets."""
+        self._last_reasoning = ""
 
-            asyncio.get_running_loop().create_task(self._reset_remote())
-        except RuntimeError:
-            pass
-
-    async def _reset_remote(self) -> None:
+    async def reset_remote(self) -> None:
+        """Explicitly reset the remote session (operator-initiated only)."""
         try:
             await self._client.post("/reset")
         except Exception:

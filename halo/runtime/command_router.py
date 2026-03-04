@@ -60,13 +60,25 @@ class CommandRouter:
                     status=CommandAckStatus.ALREADY_APPLIED,
                 )
 
-            # --- 2. Epoch check ---
-            if cmd.epoch is not None and self._lease_mgr is not None:
+            # --- 2. Epoch + token check ---
+            if self._lease_mgr is not None:
+                if cmd.epoch is None or cmd.lease_token is None:
+                    return await self._reject(
+                        cmd,
+                        CommandAckStatus.REJECTED_WRONG_EPOCH,
+                        "epoch and lease_token required when lease management is active",
+                    )
                 if not self._lease_mgr.is_valid(cmd.epoch):
                     return await self._reject(
                         cmd,
                         CommandAckStatus.REJECTED_WRONG_EPOCH,
                         f"epoch {cmd.epoch} does not match current lease",
+                    )
+                if not self._lease_mgr.is_valid_token(cmd.lease_token):
+                    return await self._reject(
+                        cmd,
+                        CommandAckStatus.REJECTED_WRONG_EPOCH,
+                        "lease_token does not match current lease",
                     )
 
             # --- Fetch latest snapshot once if any check needs it ---

@@ -59,4 +59,5 @@ class CognitiveConfig:
     local: LocalConfig = field(default_factory=LocalConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
     enable_failover: bool = False
-    health_check_interval_s: float = 10.0
+    health_check_interval_s: float = 5.0
+    startup_cloud_wait_s: float = 10.0  # max seconds to wait for cloud at startup

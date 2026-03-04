@@ -65,7 +65,7 @@ def test_is_valid():
 
 
 def test_lease_expired():
-    lease = Lease(epoch=1, holder="local", granted_at_ms=0, ttl_ms=1)
+    lease = Lease(epoch=1, holder="local", granted_at_ms=0, token="tok", ttl_ms=1)
     # granted_at_ms=0 and ttl_ms=1 means it expired long ago
     assert lease.expired
 
@@ -77,6 +77,37 @@ def test_lease_not_expired():
         epoch=1,
         holder="local",
         granted_at_ms=int(time.monotonic() * 1000),
+        token="tok",
         ttl_ms=30_000,
     )
     assert not lease.expired
+
+
+def test_grant_generates_token():
+    mgr = LeaseManager()
+    lease = mgr.grant("local")
+    assert lease.token is not None
+    assert len(lease.token) == 32  # hex UUID
+
+
+def test_current_token():
+    mgr = LeaseManager()
+    assert mgr.current_token is None
+    lease = mgr.grant("local")
+    assert mgr.current_token == lease.token
+
+
+def test_is_valid_token():
+    mgr = LeaseManager()
+    lease = mgr.grant("local")
+    assert mgr.is_valid_token(lease.token)
+    assert not mgr.is_valid_token("wrong-token")
+
+
+def test_token_changes_on_grant():
+    mgr = LeaseManager()
+    l1 = mgr.grant("local")
+    l2 = mgr.grant("cloud")
+    assert l1.token != l2.token
+    assert mgr.is_valid_token(l2.token)
+    assert not mgr.is_valid_token(l1.token)

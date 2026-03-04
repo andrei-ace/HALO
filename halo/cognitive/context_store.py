@@ -69,6 +69,9 @@ class CognitiveState:
     last_skill_phase: str | None  # PhaseId.name or None
     last_skill_name: str | None  # SkillName.value or None
     last_outcome_state: str | None  # SkillOutcomeState.value or None
+    # Richer handoff context
+    recent_event_summaries: list[str] = field(default_factory=list)  # last 5 event entries
+    goal_summary: str | None = None  # derived from operator + latest decision
 
 
 class ContextStore:
@@ -182,6 +185,12 @@ class ContextStore:
         if snap.pending_operator_instruction:
             parts.append(f"Pending operator instruction: {snap.pending_operator_instruction}")
 
+        event_entries = [e for e in self._entries if e.entry_type == "event"][-5:]
+        if event_entries:
+            parts.append("Recent events:")
+            for e in event_entries:
+                parts.append(f"  - {e.summary}")
+
         return "\n".join(parts)
 
     def build_cognitive_state(
@@ -197,6 +206,15 @@ class ContextStore:
                       Accepts ``object`` to avoid a hard import of PlannerSnapshot.
         """
         recent_decisions = [e.summary for e in self._entries if e.entry_type == "decision"][-5:]
+        recent_events = [e.summary for e in self._entries if e.entry_type == "event"][-5:]
+
+        # Goal summary
+        goal_parts: list[str] = []
+        if self._pending_operator_instruction:
+            goal_parts.append(f"Operator: {self._pending_operator_instruction}")
+        if recent_decisions:
+            goal_parts.append(f"Latest: {recent_decisions[-1]}")
+        goal_summary = " | ".join(goal_parts) if goal_parts else None
 
         # Extract snapshot-derived fields (typed loosely to avoid circular import)
         snap_id: str | None = None
@@ -233,6 +251,8 @@ class ContextStore:
             last_skill_phase=skill_phase,
             last_skill_name=skill_name,
             last_outcome_state=outcome_state,
+            recent_event_summaries=recent_events,
+            goal_summary=goal_summary,
         )
 
     def apply_entries(self, entries: list[ContextEntry]) -> None:
@@ -270,9 +290,12 @@ class ContextStore:
                 excess = len(self._entries) - self._max_entries
                 self._entries = self._entries[excess:]
 
-    def get_entries_after(self, cursor: int, limit: int = 50) -> list[ContextEntry]:
-        """Return entries with cursor > the given value, up to limit."""
-        return [e for e in self._entries if e.cursor > cursor][:limit]
+    def get_entries_after(self, cursor: int, limit: int | None = None) -> list[ContextEntry]:
+        """Return entries with cursor > the given value, up to limit (None = no limit)."""
+        entries = [e for e in self._entries if e.cursor > cursor]
+        if limit is not None:
+            entries = entries[:limit]
+        return entries
 
     @property
     def latest_cursor(self) -> int:

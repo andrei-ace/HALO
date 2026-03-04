@@ -35,6 +35,9 @@ def make_cognitive_stack(
     run_logger: object | None = None,
     audio_capture: object | None = None,
     audio_playback: object | None = None,
+    lease_mgr: LeaseManager | None = None,
+    cloud_backend: CognitiveBackend | None = None,
+    arm_id: str = "arm0",
 ) -> CognitiveStack:
     """Factory that wires up all cognitive components from config.
 
@@ -45,21 +48,28 @@ def make_cognitive_stack(
         run_logger: Optional RunLogger for backend VLM logging.
         audio_capture: Optional AudioCapture for cloud backend voice input.
         audio_playback: Optional AudioPlayback for cloud backend voice output.
+        lease_mgr: Optional LeaseManager — when provided, shared with HALORuntime.
+        cloud_backend: Optional pre-built cloud backend (e.g. RemoteCognitiveBackend).
+        arm_id: Arm ID for Switchboard event subscriptions. Defaults to "arm0".
     """
     from halo.cognitive.cloud_backend import CloudCognitiveBackend
     from halo.cognitive.local_backend import LocalCognitiveBackend
 
     cfg = config or CognitiveConfig()
     context_store = ContextStore()
-    lease_mgr = LeaseManager()
+    lease_mgr = lease_mgr or LeaseManager()
 
     local = LocalCognitiveBackend(config=cfg.local, run_logger=run_logger)
-    cloud = CloudCognitiveBackend(
-        config=cfg.cloud,
-        audio_capture=audio_capture,
-        audio_playback=audio_playback,
-        run_logger=run_logger,
-    )
+
+    if cloud_backend is not None:
+        cloud = cloud_backend
+    else:
+        cloud = CloudCognitiveBackend(
+            config=cfg.cloud,
+            audio_capture=audio_capture,
+            audio_playback=audio_playback,
+            run_logger=run_logger,
+        )
 
     switchboard = Switchboard(
         config=cfg,
@@ -69,6 +79,7 @@ def make_cognitive_stack(
         context_store=context_store,
         bus=bus,
         snapshot_fn=snapshot_fn,
+        arm_id=arm_id,
     )
 
     return CognitiveStack(

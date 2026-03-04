@@ -118,6 +118,7 @@ class LivePlannerSession:
         # Loop detection
         self._last_reasoning: str = ""
         self._cmd_streak: dict[str, int] = {}
+        self._pending_handoff: str | None = None
 
     @property
     def state(self) -> LiveSessionState:
@@ -129,6 +130,16 @@ class LivePlannerSession:
 
     def reset_loop_state(self) -> None:
         self._cmd_streak.clear()
+        # Drain stale voice commands to prevent them surviving failover
+        while not self._pending_commands.empty():
+            try:
+                self._pending_commands.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+    def inject_handoff_context(self, context_text: str) -> None:
+        """Queue handoff context for the next decide() content send."""
+        self._pending_handoff = context_text
 
     async def start(self) -> None:
         """Create ADK Agent, Runner, session, and start the event loop."""
@@ -243,6 +254,9 @@ class LivePlannerSession:
         # 3. Build content
         snap_json = json.dumps(snapshot_to_dict(snap), indent=2)
         text_parts = [f"{_SNAPSHOT_PREFIX}\n```json\n{snap_json}\n```"]
+        if self._pending_handoff:
+            text_parts.insert(0, self._pending_handoff)
+            self._pending_handoff = None
         if operator_cmd:
             text_parts.append(f"Operator: {operator_cmd}")
 

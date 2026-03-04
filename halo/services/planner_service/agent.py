@@ -153,6 +153,7 @@ class PlannerAgent:
         self._session_created = False
         self._last_reasoning: str = ""
         self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
+        self._pending_handoff: str | None = None
 
     async def _ensure_session(self) -> None:
         """Create the ADK session on first use (requires async)."""
@@ -171,6 +172,24 @@ class PlannerAgent:
 
     def reset_loop_state(self) -> None:
         """Clear the loop-detection history (e.g. on new operator instruction)."""
+        self._cmd_streak.clear()
+
+    async def inject_handoff_context(self, context_text: str) -> None:
+        """Queue handoff context to be prepended to the next decide() call."""
+        self._pending_handoff = context_text
+
+    async def reset_session(self) -> None:
+        """Delete the current ADK session for a fresh start after backend switch."""
+        if self._session_created:
+            try:
+                await self._session_service.delete_session(
+                    app_name=_APP_NAME,
+                    user_id=_USER_ID,
+                    session_id=_THREAD_ID,
+                )
+            except Exception:
+                pass
+            self._session_created = False
         self._cmd_streak.clear()
 
     async def decide(
@@ -211,6 +230,9 @@ class PlannerAgent:
         # Combine snapshot + optional operator command into one user message.
         # ADK's runner.run_async takes a single new_message per call.
         text_parts = [f"{_SNAPSHOT_PREFIX}\n```json\n{snap_json}\n```"]
+        if self._pending_handoff:
+            text_parts.insert(0, self._pending_handoff)
+            self._pending_handoff = None
         if operator_cmd:
             text_parts.append(f"Operator: {operator_cmd}")
 

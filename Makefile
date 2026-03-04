@@ -1,10 +1,9 @@
 .PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live-videoloop tui-live-mujoco tui-live-cloud tui-live-remote-cloud run-headless-mock run-headless-live run-local-service run-cloud-service sim-server ruff help
 
 install:
-	uv sync --extra dev
-
-install-sim:
 	uv sync --extra dev --extra sim
+
+install-sim: install
 
 test:
 	uv run pytest
@@ -143,8 +142,8 @@ test-integration:
 		2>&1 | tee $(RUN_DIR)/output.log
 
 help:
-	@echo "install            install deps (uv sync --extra dev)"
-	@echo "install-sim        install deps + MuJoCo (uv sync --extra dev --extra sim)"
+	@echo "install            install deps + MuJoCo (uv sync --extra dev --extra sim)"
+	@echo "install-sim        alias for install"
 	@echo "generate-episodes        generate teacher episodes w/ VLM tracking (requires Ollama)"
 	@echo "generate-episodes-video  same + save mp4 preview per episode (requires opencv)"
 	@echo "test-sim           run mujoco_sim tests (requires --extra sim)"

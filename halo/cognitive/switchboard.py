@@ -22,6 +22,7 @@ from halo.cognitive.config import BackendReadiness, BackendType, CognitiveConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.contracts.commands import CommandEnvelope
+from halo.contracts.events import EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.target_perception_service.vlm_parser import VlmScene
 
@@ -32,6 +33,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CONSECUTIVE_FAILURES_BEFORE_SWITCH = 3
+
+_JOURNALED_EVENT_TYPES = frozenset(
+    {
+        EventType.SKILL_STARTED,
+        EventType.SKILL_SUCCEEDED,
+        EventType.SKILL_FAILED,
+        EventType.SAFETY_REFLEX_TRIGGERED,
+        EventType.TARGET_ACQUIRED,
+        EventType.PERCEPTION_FAILURE,
+    }
+)
 
 
 class Switchboard:
@@ -46,6 +58,7 @@ class Switchboard:
         context_store: ContextStore | None = None,
         bus: EventBus | None = None,
         snapshot_fn: Callable[[str], Awaitable[PlannerSnapshot | None]] | None = None,
+        arm_id: str = "arm0",
     ) -> None:
         self._config = config
         self._backends: dict[str, CognitiveBackend] = {
@@ -56,10 +69,12 @@ class Switchboard:
         self._context_store = context_store or ContextStore()
         self._bus = bus
         self._snapshot_fn = snapshot_fn
+        self._arm_id = arm_id
 
         # Health tracking
         self._consecutive_failures: int = 0
         self._health_task: asyncio.Task | None = None
+        self._journal_task: asyncio.Task | None = None
 
         # Grant initial lease to the configured active backend
         self._active_type: BackendType = config.active
@@ -98,6 +113,13 @@ class Switchboard:
                 epoch=self._lease_mgr.current_epoch,
             )
             self._on_success()
+
+            # Stamp lease_token on all returned commands
+            from dataclasses import replace as _dc_replace
+
+            token = self._lease_mgr.current_token
+            if token is not None:
+                commands = [_dc_replace(c, lease_token=token) for c in commands]
 
             # Record decision in context store
             reasoning = self.active_backend.last_reasoning
@@ -169,10 +191,11 @@ class Switchboard:
 
         Protocol:
         1. Snapshot context from current backend
-        2. Revoke old lease (bumps epoch)
-        3. Grant new lease to target backend
-        4. Reset loop state on new backend
-        5. Publish BACKEND_SWITCHED event (if bus available)
+        2. Pre-warm new backend (best-effort, while old lease still valid)
+        3. Revoke old lease
+        4. Grant new lease to target backend
+        5. Reset loop state on new backend
+        6. Publish BACKEND_SWITCHED event (if bus available)
         """
         if target == self._active_type:
             logger.info("Already on %s backend, skipping switch", target)
@@ -186,18 +209,38 @@ class Switchboard:
         # 1. Snapshot context
         _snapshot = self._context_store.take_snapshot(old_epoch)
 
-        # 2. Revoke old lease
+        # 2. Pre-warm new backend (best-effort, old lease still active)
+        new_backend = self._backends[target]
+        if isinstance(new_backend, WarmableBackend):
+            try:
+                snapshot = None
+                if self._snapshot_fn is not None:
+                    try:
+                        snapshot = await self._snapshot_fn(self._arm_id)
+                    except Exception:
+                        pass
+                state = self._context_store.build_cognitive_state(
+                    epoch=old_epoch,
+                    snapshot=snapshot,
+                )
+                entries = self._context_store.get_entries_after(-1)
+                await new_backend.warm_up(state=state, journal_entries=entries)
+            except Exception:
+                logger.warning("Pre-warm failed for %s during switch", target)
+
+        # 3. Revoke old lease
         self._lease_mgr.revoke(old_epoch)
 
-        # 3. Grant new lease
+        # 4. Grant new lease
         self._active_type = target
         self._lease_mgr.grant(target)
         self._consecutive_failures = 0
 
-        # 4. Reset loop state on new backend
-        self._backends[target].reset_loop_state()
+        # 5. Reset loop state on both backends (old: drain stale commands; new: fresh start)
+        self._backends[old_type].reset_loop_state()
+        new_backend.reset_loop_state()
 
-        # 5. Publish event
+        # 6. Publish event
         if self._bus is not None:
             from halo.contracts.events import EventEnvelope, EventType
 
@@ -226,19 +269,23 @@ class Switchboard:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start background health monitoring (if failover enabled)."""
+        """Start background health monitoring (if failover enabled) and event journal."""
         if self._config.enable_failover and self._health_task is None:
             self._health_task = asyncio.create_task(self._health_loop())
+        if self._bus is not None and self._journal_task is None:
+            self._journal_task = asyncio.create_task(self._event_journal_loop())
 
     async def stop(self) -> None:
-        """Stop health monitoring."""
-        if self._health_task is not None:
-            self._health_task.cancel()
-            try:
-                await self._health_task
-            except asyncio.CancelledError:
-                pass
-            self._health_task = None
+        """Stop health monitoring and event journal."""
+        for task in (self._health_task, self._journal_task):
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self._health_task = None
+        self._journal_task = None
 
     async def _health_loop(self) -> None:
         """Periodically check active backend health."""
@@ -273,7 +320,7 @@ class Switchboard:
             snapshot = None
             if self._snapshot_fn is not None:
                 try:
-                    snapshot = await self._snapshot_fn("arm0")
+                    snapshot = await self._snapshot_fn(self._arm_id)
                 except Exception:
                     pass
             state = self._context_store.build_cognitive_state(
@@ -315,7 +362,7 @@ class Switchboard:
                 snapshot = None
                 if self._snapshot_fn is not None:
                     try:
-                        snapshot = await self._snapshot_fn("arm0")
+                        snapshot = await self._snapshot_fn(self._arm_id)
                     except Exception:
                         pass
                 state = self._context_store.build_cognitive_state(
@@ -331,11 +378,58 @@ class Switchboard:
                 await preferred_backend.warm_up(state=None, journal_entries=entries)
 
             elif readiness == BackendReadiness.READY:
-                # Caught up — switch
+                # Verify cursor parity before switching
+                backend_cursor = preferred_backend.caught_up_cursor
+                store_cursor = self._context_store.latest_cursor
+                if backend_cursor < store_cursor:
+                    logger.info(
+                        "Preferred backend READY but cursor behind (%d < %d), sending catchup",
+                        backend_cursor,
+                        store_cursor,
+                    )
+                    entries = self._context_store.get_entries_after(backend_cursor)
+                    if not entries:
+                        entries = self._context_store.get_entries_after(-1)
+                    await preferred_backend.warm_up(state=None, journal_entries=entries)
+                    return
+                # Caught up (backend_cursor >= store_cursor) — switch
                 await self.switch_to(preferred, reason="preferred backend recovered and warmed up")
 
         except Exception:
             pass  # Preferred still unhealthy or warm-up failed
+
+    async def _event_journal_loop(self) -> None:
+        """Subscribe to EventBus and journal key runtime events."""
+        if self._bus is None:
+            return
+        queue = self._bus.subscribe(self._arm_id, maxsize=0)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+                if event.type not in _JOURNALED_EVENT_TYPES:
+                    continue
+                summary = event.type.value
+                data = dict(event.data) if event.data else {}
+                details = {
+                    k: v
+                    for k, v in data.items()
+                    if k in ("target_handle", "failure_code", "reason", "phase", "skill_name", "reflex_reason")
+                }
+                if details:
+                    summary += f": {details}"
+                self._context_store.append(
+                    epoch=self._lease_mgr.current_epoch,
+                    backend=self._active_type,
+                    entry_type="event",
+                    summary=summary,
+                    data={"event_type": event.type.value, **data},
+                )
+        except asyncio.CancelledError:
+            if self._bus is not None:
+                self._bus.unsubscribe(self._arm_id, queue)
 
     def _on_success(self) -> None:
         """Reset consecutive failure counter and renew lease TTL on success."""

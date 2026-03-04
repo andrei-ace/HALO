@@ -27,6 +27,7 @@ class ArmSession:
     cursor: int = -1
     readiness: str = BackendReadiness.COLD
     last_active_ms: int = 0
+    pending_handoff: str | None = None
 
     def touch(self) -> None:
         self.last_active_ms = int(time.monotonic() * 1000)
@@ -119,11 +120,15 @@ class SessionManager:
                     session.cursor = session.context_store.latest_cursor
 
         # If state was provided, apply tracked state
+        epoch = 0
         if state_dict is not None:
             state = cognitive_state_from_dict(state_dict)
             session.context_store.set_active_target(state.active_target_handle)
             session.context_store.set_held_object(state.held_object_handle)
+            epoch = state.epoch
 
+        # Build handoff text — consumed once on next /decide
+        session.pending_handoff = session.context_store.get_handoff_context(epoch)
         session.readiness = BackendReadiness.READY
         session.touch()
         return session

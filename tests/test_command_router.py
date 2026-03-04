@@ -248,18 +248,18 @@ def rt_with_lease() -> HALORuntime:
     return r, lm
 
 
-async def test_epoch_none_skips_check(rt_with_lease):
-    """Commands with epoch=None are always accepted (backward compat)."""
+async def test_epoch_none_rejected_when_lease_active(rt_with_lease):
+    """Commands with epoch=None are rejected when lease management is active."""
     rt, lm = rt_with_lease
     lm.grant("local")
     cmd = _start(command_id="cmd-no-epoch")
     assert cmd.epoch is None
     ack = await rt.submit_command(cmd)
-    assert ack.status == CommandAckStatus.ACCEPTED
+    assert ack.status == CommandAckStatus.REJECTED_WRONG_EPOCH
 
 
 async def test_epoch_correct_accepted(rt_with_lease):
-    """Commands with matching epoch pass the check."""
+    """Commands with matching epoch and token pass the check."""
     rt, lm = rt_with_lease
     lease = lm.grant("local")
     cmd = CommandEnvelope(
@@ -269,6 +269,7 @@ async def test_epoch_correct_accepted(rt_with_lease):
         type=CommandType.DESCRIBE_SCENE,
         payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
         epoch=lease.epoch,
+        lease_token=lease.token,
     )
     ack = await rt.submit_command(cmd)
     assert ack.status == CommandAckStatus.ACCEPTED
@@ -277,7 +278,8 @@ async def test_epoch_correct_accepted(rt_with_lease):
 async def test_epoch_wrong_rejected(rt_with_lease):
     """Commands with a stale epoch are rejected."""
     rt, lm = rt_with_lease
-    lm.grant("local")  # epoch=1
+    old_lease = lm.grant("local")  # epoch=1
+    old_token = old_lease.token
     lm.revoke(1)
     lm.grant("cloud")  # epoch=2
     cmd = CommandEnvelope(
@@ -287,6 +289,7 @@ async def test_epoch_wrong_rejected(rt_with_lease):
         type=CommandType.START_SKILL,
         payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
         epoch=1,  # old epoch
+        lease_token=old_token,
     )
     ack = await rt.submit_command(cmd)
     assert ack.status == CommandAckStatus.REJECTED_WRONG_EPOCH
@@ -294,7 +297,7 @@ async def test_epoch_wrong_rejected(rt_with_lease):
 
 
 async def test_epoch_no_lease_manager_skips_check():
-    """Without a lease manager, epoch field is ignored."""
+    """Without a lease manager, epoch and token fields are ignored."""
     rt = HALORuntime()
     rt.register_arm(ARM)
     cmd = CommandEnvelope(
@@ -304,6 +307,42 @@ async def test_epoch_no_lease_manager_skips_check():
         type=CommandType.START_SKILL,
         payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
         epoch=999,  # some epoch, but no lease manager
+        lease_token="fake-token",
     )
     ack = await rt.submit_command(cmd)
     assert ack.status == CommandAckStatus.ACCEPTED
+
+
+async def test_lease_token_wrong_rejected(rt_with_lease):
+    """Commands with correct epoch but wrong token are rejected."""
+    rt, lm = rt_with_lease
+    lease = lm.grant("local")
+    cmd = CommandEnvelope(
+        command_id="cmd-bad-token",
+        arm_id=ARM,
+        issued_at_ms=1000,
+        type=CommandType.START_SKILL,
+        payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
+        epoch=lease.epoch,
+        lease_token="wrong-token",
+    )
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.REJECTED_WRONG_EPOCH
+    assert "lease_token" in ack.reason
+
+
+async def test_lease_token_missing_rejected(rt_with_lease):
+    """Commands with epoch but no token are rejected when lease management is active."""
+    rt, lm = rt_with_lease
+    lease = lm.grant("local")
+    cmd = CommandEnvelope(
+        command_id="cmd-no-token",
+        arm_id=ARM,
+        issued_at_ms=1000,
+        type=CommandType.START_SKILL,
+        payload=StartSkillPayload(skill_name=SkillName.PICK, target_handle="cube-1"),
+        epoch=lease.epoch,
+        lease_token=None,
+    )
+    ack = await rt.submit_command(cmd)
+    assert ack.status == CommandAckStatus.REJECTED_WRONG_EPOCH

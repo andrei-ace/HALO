@@ -8,6 +8,7 @@ dropped by the Switchboard.
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 
 
@@ -18,6 +19,7 @@ class Lease:
     epoch: int
     holder: str  # "local" or "cloud"
     granted_at_ms: int
+    token: str  # UUID, unique per grant
     ttl_ms: int = 30_000
 
     @property
@@ -43,6 +45,11 @@ class LeaseManager:
     def current_lease(self) -> Lease | None:
         return self._lease
 
+    @property
+    def current_token(self) -> str | None:
+        """Token of the active lease, or None."""
+        return self._lease.token if self._lease else None
+
     def grant(self, holder: str, ttl_ms: int = 30_000) -> Lease:
         """Grant a new lease to *holder*, incrementing the epoch."""
         self._epoch += 1
@@ -50,6 +57,7 @@ class LeaseManager:
             epoch=self._epoch,
             holder=holder,
             granted_at_ms=int(time.monotonic() * 1000),
+            token=uuid.uuid4().hex,
             ttl_ms=ttl_ms,
         )
         return self._lease
@@ -73,3 +81,9 @@ class LeaseManager:
         if self._lease is None:
             return False
         return self._lease.epoch == epoch and not self._lease.expired
+
+    def is_valid_token(self, token: str) -> bool:
+        """Check if token matches the active, non-expired lease."""
+        if self._lease is None:
+            return False
+        return self._lease.token == token and not self._lease.expired

@@ -394,6 +394,9 @@ async def test_failback_warmup_with_snapshot_fn():
 
     await sb.switch_to(BackendType.CLOUD, reason="test")
 
+    # Reset snapshot_fn call count after switch_to (which also calls it for handoff)
+    snapshot_fn.reset_mock()
+
     type(local).readiness = PropertyMock(return_value=BackendReadiness.COLD)
     local.health_check = AsyncMock(return_value=True)
     local.warm_up = AsyncMock(return_value=False)

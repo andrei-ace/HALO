@@ -277,6 +277,7 @@ def command_envelope_to_dict(cmd: CommandEnvelope) -> dict:
     }
     if cmd.epoch is not None:
         d["epoch"] = cmd.epoch
+    d["lease_token"] = cmd.lease_token
     return d
 
 
@@ -311,6 +312,7 @@ def command_envelope_from_dict(d: dict) -> CommandEnvelope:
         payload=payload,
         precondition_snapshot_id=d.get("precondition_snapshot_id"),
         epoch=d.get("epoch"),
+        lease_token=d.get("lease_token"),
     )
 
 
@@ -404,6 +406,8 @@ def cognitive_state_to_dict(state: CognitiveState) -> dict:
         "last_skill_phase": state.last_skill_phase,
         "last_skill_name": state.last_skill_name,
         "last_outcome_state": state.last_outcome_state,
+        "recent_event_summaries": list(state.recent_event_summaries),
+        "goal_summary": state.goal_summary,
     }
 
 
@@ -424,4 +428,6 @@ def cognitive_state_from_dict(d: dict) -> CognitiveState:
         last_skill_phase=d.get("last_skill_phase"),
         last_skill_name=d.get("last_skill_name"),
         last_outcome_state=d.get("last_outcome_state"),
+        recent_event_summaries=d.get("recent_event_summaries", []),
+        goal_summary=d.get("goal_summary"),
     )
