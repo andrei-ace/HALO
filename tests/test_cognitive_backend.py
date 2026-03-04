@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
+from halo.cognitive import CognitiveStack, make_cognitive_stack
 from halo.cognitive.backend import CognitiveBackend, WarmableBackend
 from halo.cognitive.cloud_backend import CloudCognitiveBackend
 from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LocalConfig
@@ -380,3 +381,105 @@ async def test_cloud_backend_warm_up_failure():
 
     assert ready is False
     assert backend.readiness == BackendReadiness.FAILED
+
+
+# ---------------------------------------------------------------------------
+# Nonce-based restart detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_nonce_mismatch_resets_readiness():
+    """health_check detects nonce change and resets readiness to COLD."""
+    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    # Simulate a prior warm-up made it READY
+    backend._readiness = BackendReadiness.READY
+    backend._caught_up_cursor = 10
+
+    # First health check — establishes nonce
+    resp1 = httpx.Response(
+        200,
+        json={"status": "ok", "nonce": "nonce-1", "sessions": []},
+        request=httpx.Request("GET", "http://test:8080"),
+    )
+    with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=resp1):
+        healthy = await backend.health_check()
+    assert healthy is True
+    assert backend._last_nonce == "nonce-1"
+    assert backend.readiness == BackendReadiness.READY  # unchanged
+
+    # Second health check — nonce changed (instance restarted)
+    resp2 = httpx.Response(
+        200,
+        json={"status": "ok", "nonce": "nonce-2", "sessions": []},
+        request=httpx.Request("GET", "http://test:8080"),
+    )
+    with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=resp2):
+        healthy = await backend.health_check()
+    assert healthy is True
+    assert backend._last_nonce == "nonce-2"
+    assert backend.readiness == BackendReadiness.COLD
+    assert backend.caught_up_cursor == -1
+
+
+@pytest.mark.asyncio
+async def test_cloud_backend_nonce_first_check_no_reset():
+    """First health_check (no prior nonce) should not reset readiness."""
+    backend = CloudCognitiveBackend(config=CloudConfig(service_url="http://test:8080"))
+    backend._readiness = BackendReadiness.READY
+
+    resp = httpx.Response(
+        200,
+        json={"status": "ok", "nonce": "nonce-1", "sessions": []},
+        request=httpx.Request("GET", "http://test:8080"),
+    )
+    with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=resp):
+        healthy = await backend.health_check()
+
+    assert healthy is True
+    assert backend.readiness == BackendReadiness.READY  # no reset on first check
+
+
+# ---------------------------------------------------------------------------
+# CognitiveStack factory
+# ---------------------------------------------------------------------------
+
+
+def test_make_cognitive_stack_creates_all_components():
+    """make_cognitive_stack() wires up all components correctly."""
+    with (
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
+        ),
+        patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
+    ):
+        stack = make_cognitive_stack()
+
+    assert isinstance(stack, CognitiveStack)
+    assert isinstance(stack.local, CognitiveBackend)
+    assert isinstance(stack.cloud, CognitiveBackend)
+    assert stack.switchboard is not None
+    assert stack.context_store is not None
+    assert stack.lease_manager is not None
+    assert stack.config.active == BackendType.LOCAL
+
+
+def test_make_cognitive_stack_with_cloud_active():
+    """Factory respects active backend in config."""
+    cfg = CognitiveConfig(
+        active=BackendType.CLOUD,
+        cloud=CloudConfig(service_url="http://test:8080"),
+        enable_failover=True,
+    )
+    with (
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
+        ),
+        patch("halo.cognitive.local_backend.make_ollama_vlm_fn", return_value=AsyncMock()),
+    ):
+        stack = make_cognitive_stack(config=cfg)
+
+    assert stack.switchboard.active_type == BackendType.CLOUD
+    assert stack.config.enable_failover is True

@@ -404,3 +404,87 @@ async def test_failback_warmup_with_snapshot_fn():
     call_kwargs = local.warm_up.call_args[1]
     # State should contain snapshot-derived fields
     assert call_kwargs["state"].last_snapshot_id == "snap-001"
+
+
+# ---------------------------------------------------------------------------
+# Lease renewal
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_successful_decide_renews_lease():
+    """Every successful decide() call should renew the lease TTL."""
+    sb, local, cloud = _make_switchboard(active=BackendType.LOCAL)
+    snap = _idle_snap()
+
+    lease_before = sb.lease_manager.current_lease
+    granted_at_before = lease_before.granted_at_ms
+
+    # Small sleep to ensure monotonic time advances
+    import asyncio
+
+    await asyncio.sleep(0.002)
+
+    await sb.decide(snap)
+
+    # granted_at should have been refreshed
+    assert sb.lease_manager.current_lease.granted_at_ms >= granted_at_before
+
+
+@pytest.mark.asyncio
+async def test_lease_expires_without_renewal():
+    """Lease should expire if TTL passes without renewal."""
+    from halo.cognitive.lease import LeaseManager
+
+    mgr = LeaseManager()
+    lease = mgr.grant("local", ttl_ms=1)  # 1ms TTL
+
+    import asyncio
+
+    await asyncio.sleep(0.005)
+
+    # Lease should be expired since no renewal happened
+    assert not mgr.is_valid(lease.epoch)
+
+    # After renewal, lease should be valid again
+    mgr.renew(lease.epoch)
+    assert mgr.is_valid(lease.epoch)
+
+
+# ---------------------------------------------------------------------------
+# Active backend re-warm on COLD detection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_rewarm_active_on_cold_detection():
+    """When active WarmableBackend drops to COLD, _rewarm_active() sends warm-up."""
+    local = _make_warmable_mock_backend("local")
+    cloud = _make_warmable_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud)
+
+    # Cloud is active and drops to COLD (e.g. instance restart)
+    type(cloud).readiness = PropertyMock(return_value=BackendReadiness.COLD)
+    cloud.warm_up = AsyncMock(return_value=True)
+
+    await sb._rewarm_active()
+
+    cloud.warm_up.assert_awaited_once()
+    call_kwargs = cloud.warm_up.call_args[1]
+    assert call_kwargs["state"] is not None
+
+
+@pytest.mark.asyncio
+async def test_rewarm_active_skips_when_ready():
+    """_rewarm_active() is a no-op when active backend readiness is not COLD."""
+    local = _make_warmable_mock_backend("local")
+    cloud = _make_warmable_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud)
+
+    type(cloud).readiness = PropertyMock(return_value=BackendReadiness.READY)
+
+    await sb._rewarm_active()
+
+    cloud.warm_up.assert_not_awaited()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -56,6 +57,7 @@ class SessionManager:
         self._idle_timeout_ms = int(idle_timeout_s * 1000)
         self._sessions: dict[str, ArmSession] = {}
         self._vlm_fn: VlmFn | None = None  # shared VLM fn (created once)
+        self._nonce: str = uuid.uuid4().hex  # unique per process lifetime
 
     @property
     def vlm_fn(self) -> VlmFn:
@@ -144,6 +146,16 @@ class SessionManager:
         """Reset all sessions."""
         for arm_id in list(self._sessions):
             self.reset_session(arm_id)
+
+    @property
+    def nonce(self) -> str:
+        """Unique identifier for this process lifetime. Changes on restart."""
+        return self._nonce
+
+    @property
+    def active_arm_ids(self) -> list[str]:
+        """List of arm IDs with active sessions."""
+        return list(self._sessions.keys())
 
     @property
     def session_count(self) -> int:

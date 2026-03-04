@@ -249,6 +249,8 @@ class Switchboard:
                     healthy = await self.active_backend.health_check()
                     if healthy:
                         self._on_success()
+                        # Re-warm active backend if it dropped to COLD (e.g. instance restart)
+                        await self._rewarm_active()
                         # Check if preferred backend is healthy for failback
                         await self._check_failback()
                     else:
@@ -257,6 +259,31 @@ class Switchboard:
                     await self._on_failure()
         except asyncio.CancelledError:
             pass
+
+    async def _rewarm_active(self) -> None:
+        """Re-warm the active backend if it dropped to COLD (e.g. cloud instance restart)."""
+        backend = self.active_backend
+        if not isinstance(backend, WarmableBackend):
+            return
+        if backend.readiness != BackendReadiness.COLD:
+            return
+
+        logger.info("Active backend %s dropped to COLD — re-warming", self._active_type)
+        try:
+            snapshot = None
+            if self._snapshot_fn is not None:
+                try:
+                    snapshot = await self._snapshot_fn("arm0")
+                except Exception:
+                    pass
+            state = self._context_store.build_cognitive_state(
+                epoch=self._lease_mgr.current_epoch,
+                snapshot=snapshot,
+            )
+            entries = self._context_store.get_entries_after(-1)
+            await backend.warm_up(state=state, journal_entries=entries)
+        except Exception:
+            logger.exception("Re-warm of active backend failed")
 
     async def _check_failback(self) -> None:
         """If we're on the fallback backend and the preferred one is healthy, switch back.
@@ -311,8 +338,9 @@ class Switchboard:
             pass  # Preferred still unhealthy or warm-up failed
 
     def _on_success(self) -> None:
-        """Reset consecutive failure counter on success."""
+        """Reset consecutive failure counter and renew lease TTL on success."""
         self._consecutive_failures = 0
+        self._lease_mgr.renew(self._lease_mgr.current_epoch)
 
     async def _on_failure(self) -> None:
         """Increment failure counter and switch if threshold reached."""

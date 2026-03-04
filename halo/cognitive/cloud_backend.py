@@ -59,6 +59,7 @@ class CloudCognitiveBackend:
         self._last_reasoning = ""
         self._readiness = BackendReadiness.COLD
         self._caught_up_cursor = -1
+        self._last_nonce: str | None = None
 
     @property
     def backend_type(self) -> str:
@@ -105,7 +106,17 @@ class CloudCognitiveBackend:
     async def health_check(self) -> bool:
         try:
             resp = await self._client.get("/health", timeout=5.0)
-            return resp.status_code == 200
+            if resp.status_code != 200:
+                return False
+            data = resp.json()
+            nonce = data.get("nonce")
+            if nonce and self._last_nonce and nonce != self._last_nonce:
+                logger.warning("Cloud instance restarted (nonce changed: %s → %s)", self._last_nonce, nonce)
+                self._readiness = BackendReadiness.COLD
+                self._caught_up_cursor = -1
+            if nonce:
+                self._last_nonce = nonce
+            return True
         except Exception:
             return False
 

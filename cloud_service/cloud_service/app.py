@@ -27,8 +27,12 @@ app = FastAPI(title="HALO Cloud Cognitive Service", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict:
-    return {"status": "ok"}
+async def health(session_mgr=Depends(get_session_manager)) -> dict:
+    return {
+        "status": "ok",
+        "nonce": session_mgr.nonce,
+        "sessions": session_mgr.active_arm_ids,
+    }
 
 
 @app.post("/decide", dependencies=[Depends(verify_api_key)])

@@ -22,6 +22,15 @@ class _FakeSessionManager:
         self._agent = agent
         self._vlm_fn = vlm_fn
         self._sessions = {}
+        self._nonce = "test-nonce-abc123"
+
+    @property
+    def nonce(self):
+        return self._nonce
+
+    @property
+    def active_arm_ids(self):
+        return list(self._sessions.keys())
 
     @property
     def vlm_fn(self):
@@ -93,7 +102,10 @@ def client(mock_agent, mock_vlm_fn):
 def test_health(client):
     resp = client.get("/health")
     assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
+    data = resp.json()
+    assert data["status"] == "ok"
+    assert data["nonce"] == "test-nonce-abc123"
+    assert isinstance(data["sessions"], list)
 
 
 def test_decide_empty_commands(client, mock_agent):
