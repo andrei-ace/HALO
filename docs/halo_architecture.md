@@ -645,6 +645,168 @@ Connects HALO runtime to MuJoCo sim server via 2-channel ZMQ.
 
 ---
 
+## 17) Cognitive backend switching (`halo/cognitive/`)
+
+Transparent proxy layer that routes planner (LLM) and perception (VLM) calls through a **Switchboard** to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini Live API / remote HTTP). Split-brain prevention via **LeaseManager**, context continuity via **ContextStore**, and ADK-native event compaction with cross-backend sync.
+
+PlannerService and TargetPerceptionService call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-in replacements — they are unaware of which backend is active.
+
+### 17.1 Component overview
+
+| File | Role |
+|---|---|
+| `config.py` | `BackendType`, `BackendReadiness`, `CognitiveConfig`, `LocalConfig`, `CloudConfig`, `RemoteCloudConfig`, `CompactionConfig` |
+| `backend.py` | `CognitiveBackend` protocol (decide + vlm_scene + health_check), `WarmableBackend` extension (warm_up + readiness + caught_up_cursor) |
+| `switchboard.py` | Transparent proxy, retry logic, failure counting, failover/failback, health loop, event journal loop, compaction sync |
+| `lease.py` | `LeaseManager` + `Lease` — epoch-monotonic grants with UUID token + TTL; `CommandRouter` rejects stale epoch/token |
+| `context_store.py` | `ContextStore` (append-only journal), `ContextEntry`, `ContextSnapshot`, `CognitiveState` for handoff |
+| `compactor.py` | `MessageHistory` (UUID-tracked parallel message list), `CompactionResult` for cross-backend sync |
+| `local_backend.py` | `LocalCognitiveBackend` — wraps PlannerAgent (ADK + LiteLLM/Ollama) + Ollama VLM |
+| `cloud_backend.py` | `CloudCognitiveBackend` — Gemini Live API, ADK compaction, audio I/O |
+| `remote_backend.py` | `RemoteCognitiveBackend` — HTTP client to Cloud Run cognitive service |
+| `live_session.py` | `LivePlannerSession` — Gemini Live API session management |
+| `audio_io.py` | Audio capture/playback for voice interaction with cloud backend |
+
+### 17.2 Failover flow
+
+When the active backend fails 3 consecutive times (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically fails over to the alternate backend.
+
+```mermaid
+sequenceDiagram
+    participant PS as PlannerService
+    participant SB as Switchboard
+    participant Active as Active Backend (cloud)
+    participant Standby as Standby Backend (local)
+    participant LM as LeaseManager
+    participant CS as ContextStore
+    participant Bus as EventBus
+
+    PS->>SB: decide(snapshot)
+    SB->>Active: decide() — attempt 1
+    Active-->>SB: error
+    SB->>Active: decide() — attempt 2 (after 0.5s)
+    Active-->>SB: error
+    SB->>Active: decide() — attempt 3 (after 1.0s)
+    Active-->>SB: error (3 retries exhausted)
+
+    Note over SB: consecutive_failures reaches 3
+
+    SB->>CS: take_snapshot(epoch)
+    SB->>CS: build_cognitive_state(epoch, snapshot)
+    SB->>CS: get_entries_after(-1)
+    SB->>Standby: warm_up(state, journal_entries)
+    SB->>LM: revoke(old_epoch)
+    SB->>LM: grant("local") → new epoch + token
+    SB->>Active: reset_loop_state()
+    SB->>Standby: reset_loop_state()
+    SB->>Bus: publish(BACKEND_SWITCHED)
+
+    Note over SB: Replay original call on new backend
+
+    SB->>Standby: decide(snapshot)
+    Standby-->>SB: commands
+    SB->>SB: stamp epoch + lease_token on commands
+    SB-->>PS: commands
+```
+
+### 17.3 Failback flow (warm-up handoff)
+
+A background health loop (every 5 s) checks whether the preferred backend has recovered. Failback uses a graduated warm-up protocol to ensure seamless context transfer before switching.
+
+```mermaid
+sequenceDiagram
+    participant HL as Health Loop
+    participant SB as Switchboard
+    participant Preferred as Preferred Backend (cloud)
+    participant CS as ContextStore
+
+    Note over SB: Currently on fallback (local)
+
+    HL->>Preferred: health_check()
+    Preferred-->>HL: healthy ✓
+
+    alt readiness = COLD / FAILED
+        HL->>CS: build_cognitive_state(epoch, snapshot)
+        HL->>CS: get_entries_after(-1)
+        HL->>Preferred: warm_up(full state + all journal entries)
+        Note over Preferred: readiness → WARMING
+    else readiness = WARMING
+        HL->>CS: get_entries_after(caught_up_cursor)
+        HL->>Preferred: warm_up(null state, incremental batch ≤20)
+        Note over Preferred: readiness → READY (when caught up)
+    else readiness = READY
+        HL->>HL: check cursor parity
+        alt cursor behind
+            HL->>Preferred: warm_up(catchup batch)
+        else cursor caught up
+            HL->>SB: switch_to(preferred, "recovered and warmed up")
+            Note over SB: Full switch_to() protocol (see §17.2)
+        end
+    end
+```
+
+### 17.4 ADK compaction and cross-backend sync
+
+The cloud backend uses ADK-native event compaction to keep session context bounded. When compaction occurs, the summary is propagated to the inactive local backend so failback starts with concise context.
+
+```mermaid
+sequenceDiagram
+    participant CB as CloudBackend
+    participant ADK as ADK Session
+    participant MH as MessageHistory
+    participant SB as Switchboard
+    participant LB as LocalBackend
+
+    Note over CB: After ~20 events on cloud session
+
+    CB->>ADK: decide() returns response
+    CB->>CB: _detect_compaction(session_events)
+    Note over CB: Finds compaction boundary in ADK events
+
+    CB->>MH: apply_compaction(up_to_msg_id, summary)
+    Note over MH: Replace old records with single summary record
+
+    CB->>SB: on_compaction(CompactionResult)
+
+    SB->>LB: agent.reset_session()
+    SB->>LB: agent.inject_handoff_context(summary)
+    SB->>LB: msg_history.clear()
+
+    SB->>CS: append(entry_type="compaction", summary)
+    Note over CS: Journal records compaction event
+```
+
+### 17.5 Lease protocol
+
+The `LeaseManager` prevents split-brain — only one backend may issue commands at a time.
+
+- **Epoch**: monotonically increasing integer, incremented on every `grant()`
+- **Token**: UUID string, unique per grant — prevents replayed commands from a prior epoch that happen to share the same epoch number
+- **TTL**: 30 s default, renewed on every successful `decide()` / `vlm_scene()` call
+- **Validation**: `CommandRouter` checks both `epoch` and `lease_token` on every command when a `LeaseManager` is active; commands with missing or stale values are rejected
+
+Lifecycle: `grant(holder) → renew(epoch) → revoke(epoch) → grant(new_holder)`
+
+### 17.6 ContextStore journal
+
+Append-only journal (bounded to 200 entries) that captures what the planner knows and has decided, enabling context transfer across backend switches.
+
+**Entry types:**
+
+| Type | When recorded | Effect on tracked state |
+|---|---|---|
+| `decision` | After successful `decide()` with reasoning | Clears `pending_operator_instruction` |
+| `scene` | After successful `vlm_scene()` | Updates `known_scene_handles`, `last_scene_description` |
+| `event` | Runtime events (SKILL_STARTED/SUCCEEDED/FAILED, SAFETY_REFLEX, TARGET_ACQUIRED, PERCEPTION_FAILURE) | — |
+| `operator` | Operator instruction received | Sets `pending_operator_instruction` |
+| `compaction` | ADK compaction detected | — |
+
+**Handoff**: `build_cognitive_state()` produces a `CognitiveState` with journal-derived context (recent decisions, events, goal summary) plus snapshot-derived runtime state (skill phase, outcome, held object) — everything a new backend needs to resume without calling back to the edge runtime.
+
+**Cursor-based sync**: `get_entries_after(cursor)` enables incremental catch-up. `WarmableBackend.caught_up_cursor` tracks how far the standby backend has consumed, enabling bounded batch warm-up during failback.
+
+---
+
 ## Appendix A — Naming conventions (stable)
 
 - `PlannerService`
