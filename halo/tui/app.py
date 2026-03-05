@@ -110,11 +110,7 @@ _DATA = dict(
         ("ControlService", "RUNNING", "bright_green"),
         ("Safety", "OK", "yellow"),
     ],
-    target_info=[
-        ("Target", "cube-1"),
-        ("Distance", "9 cm"),
-        ("Confidence", "86%"),
-    ],
+    backend="local",
     events=[
         ("14:32:06", "SKILL_STARTED run-9"),
         ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
@@ -168,7 +164,7 @@ _EMPTY_DATA = dict(
         ("ControlService", "—", "#9e9e9e"),
         ("Safety", "—", "#9e9e9e"),
     ],
-    target_info=[],
+    backend="",
     events=[],
 )
 
@@ -299,8 +295,8 @@ def _snap_to_panel_data(snap: object, base: dict) -> dict:
     return data
 
 
-def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
-    """Return (service_rows, target_info_str) from a PlannerSnapshot."""
+def _derive_services(snap: object) -> list[tuple[str, str, str]]:
+    """Return service_rows from a PlannerSnapshot."""
     rows: list[tuple[str, str, str]] = []
 
     perc = getattr(snap, "perception", None)
@@ -332,19 +328,7 @@ def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
         color = "red" if reflex or state == "FAULT" else "bright_green"
         rows.append(("Safety", f"{state} (REFLEX)" if reflex else state, color))
 
-    target = getattr(snap, "target", None)
-    target_info: list[tuple[str, str]] = []
-    if target is not None:
-        handle = getattr(target, "handle", "")
-        dist_cm = int(getattr(target, "distance_m", 0) * 100)
-        conf = int(getattr(target, "confidence", 0) * 100)
-        target_info = [
-            ("Target", handle or "—"),
-            ("Distance", f"{dist_cm} cm"),
-            ("Confidence", f"{conf}%"),
-        ]
-
-    return rows, target_info
+    return rows
 
 
 # ── Panel widgets ─────────────────────────────────────────────────
@@ -661,7 +645,6 @@ class TalkPanel(Container):
 
 class SystemPanel(Container):
     _SERVICE_NAMES = ("TargetPerception", "SkillRunner", "ControlService", "Safety")
-    _TARGET_LABELS = ("Target", "Distance", "Confidence")
 
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -678,31 +661,26 @@ class SystemPanel(Container):
         t.append(status, style=f"bold {color}")
         return t
 
-    @classmethod
-    def _target_texts(cls, target_info: list[tuple[str, str]]) -> list[Text]:
-        values = dict(target_info)
-        texts = []
-        for label in cls._TARGET_LABELS:
-            value = values.get(label)
-            t = Text()
-            t.append("  ")  # match "● " column
-            t.append(f"{label:<16}  ", style="bold white")
-            t.append(value if value else "—", style="white" if value else "#9e9e9e")
-            texts.append(t)
-        return texts
+    @staticmethod
+    def _backend_text(backend: str) -> Text:
+        t = Text()
+        t.append("  ")  # match "● " column
+        t.append(f"{'Backend':<16}  ", style="bold white")
+        label = backend.upper() if backend else "—"
+        color = "bright_cyan" if label == "CLOUD" else "bright_green" if label == "LOCAL" else "#9e9e9e"
+        t.append(label, style=f"bold {color}")
+        return t
 
     def compose(self) -> ComposeResult:
         for name, status, color in self._data["services"]:
             yield Static(self._service_text(name, status, color), id=f"sys-svc-{name}")
-        for label, text in zip(self._TARGET_LABELS, self._target_texts(self._data["target_info"])):
-            yield Static(text, id=f"sys-tgt-{label}")
+        yield Static(self._backend_text(self._data.get("backend", "")), id="sys-backend")
 
-    def refresh_live(self, services: list[tuple[str, str, str]], target_info: list[tuple[str, str]]) -> None:
+    def refresh_live(self, services: list[tuple[str, str, str]], *, backend: str = "") -> None:
         """Update content in-place — no DOM churn."""
         for name, status, color in services:
             self.query_one(f"#sys-svc-{name}", Static).update(self._service_text(name, status, color))
-        for label, text in zip(self._TARGET_LABELS, self._target_texts(target_info)):
-            self.query_one(f"#sys-tgt-{label}", Static).update(text)
+        self.query_one("#sys-backend", Static).update(self._backend_text(backend))
 
 
 class EventsPanel(VerticalScroll):
@@ -1410,9 +1388,12 @@ class HALOApp(App):
         """Refresh all live panels from the latest snapshot every 2 s."""
         try:
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
-            services, target_info = _derive_services(snap)
+            services = _derive_services(snap)
             panel_data = _snap_to_panel_data(snap, self._panel_data)
-            self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
+            backend = ""
+            if self._cognitive_stack is not None:
+                backend = self._cognitive_stack.switchboard.active_type.value
+            self.query_one("#system-panel", SystemPanel).refresh_live(services, backend=backend)
             self.query_one("#planner-panel", PlannerPanel).refresh_live(panel_data)
             inp = self.query_one("#planner-input", Input)
             typing_active = self.focused is inp and bool(inp.value)
