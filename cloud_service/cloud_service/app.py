@@ -47,10 +47,15 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
         session.pending_handoff = None
     commands = await session.agent.decide(snapshot, operator_cmd=operator_cmd, epoch=epoch)
     reasoning = session.agent.last_reasoning
+    compaction = session.agent.last_compaction
+    compacted = compaction is not None
+    if compacted:
+        logger.info("Session compacted for arm_id=%s: %d messages summarized", arm_id, compaction.compacted_count)
 
     return {
         "commands": [command_envelope_to_dict(c) for c in commands],
         "reasoning": reasoning,
+        "compacted": compacted,
     }
 
 

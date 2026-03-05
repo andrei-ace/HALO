@@ -18,6 +18,7 @@ import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from halo.cognitive.backend import WarmableBackend
+from halo.cognitive.compactor import CompactionResult
 from halo.cognitive.config import BackendReadiness, BackendType, CognitiveConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
@@ -80,8 +81,8 @@ class Switchboard:
             BackendType.LOCAL: local,
             BackendType.CLOUD: cloud,
         }
-        self._lease_mgr = lease_mgr or LeaseManager()
-        self._context_store = context_store or ContextStore()
+        self._lease_mgr = lease_mgr if lease_mgr is not None else LeaseManager()
+        self._context_store = context_store if context_store is not None else ContextStore()
         self._bus = bus
         self._snapshot_fn = snapshot_fn
         self._arm_id = arm_id
@@ -99,6 +100,12 @@ class Switchboard:
         # Grant initial lease to the configured active backend
         self._active_type: BackendType = config.active
         self._lease_mgr.grant(self._active_type)
+
+        # Wire compaction callback on cloud backend (if it supports it)
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+
+        if isinstance(cloud, CloudCognitiveBackend):
+            cloud.set_on_compaction(self._sync_compaction_to_inactive)
 
     @property
     def active_backend(self) -> CognitiveBackend:
@@ -546,6 +553,39 @@ class Switchboard:
         except asyncio.CancelledError:
             if self._bus is not None:
                 self._bus.unsubscribe(self._arm_id, queue)
+
+    async def _sync_compaction_to_inactive(self, result: CompactionResult) -> None:
+        """Propagate compaction summary to the inactive backend.
+
+        After ADK compacts the cloud session, this resets the local backend's
+        session and injects the compaction summary so that if a failback occurs,
+        the local model starts with a concise context instead of nothing.
+        """
+        inactive_type = BackendType.LOCAL if self._active_type == BackendType.CLOUD else BackendType.CLOUD
+        inactive = self._backends.get(inactive_type)
+        if inactive is None:
+            return
+
+        try:
+            from halo.cognitive.local_backend import LocalCognitiveBackend
+
+            if isinstance(inactive, LocalCognitiveBackend):
+                await inactive.agent.reset_session()
+                await inactive.agent.inject_handoff_context(
+                    f"[Compaction summary from cloud backend]\n{result.summary}"
+                )
+                inactive.agent.msg_history.clear()
+        except Exception:
+            logger.debug("Failed to sync compaction to inactive backend", exc_info=True)
+
+        # Record compaction in context store
+        self._context_store.append(
+            epoch=self._lease_mgr.current_epoch,
+            backend=self._active_type,
+            entry_type="compaction",
+            summary=f"Session compacted: {result.compacted_count} messages → summary",
+            data={"up_to_msg_id": result.up_to_msg_id, "retained_count": result.retained_count},
+        )
 
     def _on_success(self) -> None:
         """Reset consecutive failure counter and renew lease TTL on success."""

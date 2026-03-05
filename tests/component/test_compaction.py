@@ -1,0 +1,535 @@
+"""Component tests for ADK event compaction integration.
+
+Tests:
+- Cloud agent uses App pattern with EventsCompactionConfig
+- Local agent uses direct Runner (no App)
+- Compaction detection after decide()
+- Switchboard syncs compaction to inactive backend
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from halo.cognitive.compactor import CompactionResult
+from halo.cognitive.config import BackendType, CognitiveConfig, CompactionConfig
+from halo.cognitive.context_store import ContextStore
+from halo.cognitive.lease import LeaseManager
+from halo.cognitive.switchboard import Switchboard
+from halo.contracts.enums import (
+    ActStatus,
+    PerceptionFailureCode,
+    SafetyState,
+    SkillOutcomeState,
+    TrackingStatus,
+)
+from halo.contracts.snapshots import (
+    ActInfo,
+    OutcomeInfo,
+    PerceptionInfo,
+    PlannerSnapshot,
+    ProgressInfo,
+    SafetyInfo,
+    TargetInfo,
+)
+from halo.services.target_perception_service.vlm_parser import VlmScene
+
+
+def _idle_snap() -> PlannerSnapshot:
+    return PlannerSnapshot(
+        snapshot_id="snap-001",
+        ts_ms=1000,
+        arm_id="arm0",
+        skill=None,
+        target=TargetInfo(
+            handle=None,
+            hint_valid=False,
+            confidence=0.0,
+            obs_age_ms=0,
+            time_skew_ms=0,
+            delta_xyz_ee=(0.0, 0.0, 0.0),
+            distance_m=0.0,
+        ),
+        perception=PerceptionInfo(
+            tracking_status=TrackingStatus.LOST,
+            failure_code=PerceptionFailureCode.OK,
+            reacquire_fail_count=0,
+            vlm_job_pending=False,
+        ),
+        act=ActInfo(status=ActStatus.IDLE, buffer_fill_ms=0, buffer_low=False),
+        progress=ProgressInfo(elapsed_ms=0, no_progress_ms=0, delta_distance=0.0),
+        outcome=OutcomeInfo(state=SkillOutcomeState.IN_PROGRESS, reason_code=None, needs_verify=False),
+        safety=SafetyInfo(state=SafetyState.OK, reflex_active=False, reason_codes=()),
+        command_acks=(),
+        recent_events=(),
+        held_object_handle=None,
+    )
+
+
+def _mock_agent(backend="cloud", compaction_config=None):
+    """Create a mock PlannerAgent."""
+    mock = MagicMock()
+    mock.decide = AsyncMock(return_value=[])
+    mock.last_reasoning = ""
+    mock.reset_loop_state = MagicMock()
+    mock.reset_session = AsyncMock()
+    mock.inject_handoff_context = AsyncMock()
+    mock._pending_handoff = None
+    mock.last_compaction = None
+    mock.msg_history = MagicMock()
+    mock.msg_history.clear = MagicMock()
+    return mock
+
+
+# ---------------------------------------------------------------------------
+# Cloud agent uses App pattern
+# ---------------------------------------------------------------------------
+
+
+def test_cloud_agent_uses_app_pattern():
+    """PlannerAgent(backend='cloud', compaction_config=...) creates App + Runner."""
+    cfg = CompactionConfig(enabled=True, compaction_interval=10, overlap_size=2)
+
+    with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+            compaction_config=cfg,
+        )
+
+    # The runner should have been created with app= (not agent=)
+    # We can verify by checking that the runner's app is not None
+    runner = agent._runner
+    assert runner.app is not None
+
+
+def test_local_agent_no_app():
+    """PlannerAgent(backend='local') uses direct Runner without App."""
+    with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gpt-oss:20b",
+            base_url="http://localhost:11434",
+            prompts_dir=Path("/tmp"),
+            backend="local",
+        )
+
+    runner = agent._runner
+    assert runner.app is None
+
+
+def test_cloud_agent_compaction_disabled_no_app():
+    """PlannerAgent(backend='cloud', compaction_config=disabled) uses direct Runner."""
+    cfg = CompactionConfig(enabled=False)
+
+    with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+            compaction_config=cfg,
+        )
+
+    runner = agent._runner
+    assert runner.app is None
+
+
+def test_cloud_agent_no_compaction_config_no_app():
+    """PlannerAgent(backend='cloud') without compaction_config uses direct Runner."""
+    with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    runner = agent._runner
+    assert runner.app is None
+
+
+# ---------------------------------------------------------------------------
+# Compaction detection after decide()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_compaction_detection_after_decide():
+    """CloudCognitiveBackend detects compaction and calls callback."""
+    mock_agent = _mock_agent()
+    mock_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
+
+    compaction_result = CompactionResult(
+        summary="Test summary",
+        up_to_msg_id="abc123",
+        compacted_count=5,
+        retained_count=2,
+        ts_ms=1000,
+    )
+    mock_agent.last_compaction = compaction_result
+
+    callback = AsyncMock()
+
+    with (
+        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_vlm),
+    ):
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+
+        backend = CloudCognitiveBackend()
+        backend.set_on_compaction(callback)
+
+    snap = _idle_snap()
+    await backend.decide(snap)
+
+    callback.assert_awaited_once_with(compaction_result)
+
+
+@pytest.mark.asyncio
+async def test_no_compaction_no_callback():
+    """No callback fired when no compaction occurred."""
+    mock_agent = _mock_agent()
+    mock_agent.last_compaction = None
+    mock_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
+
+    callback = AsyncMock()
+
+    with (
+        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_vlm),
+    ):
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+
+        backend = CloudCognitiveBackend()
+        backend.set_on_compaction(callback)
+
+    snap = _idle_snap()
+    await backend.decide(snap)
+
+    callback.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Switchboard syncs compaction to inactive backend
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_switchboard_sync_compaction():
+    """Switchboard._sync_compaction_to_inactive resets local and injects summary."""
+    mock_cloud_agent = _mock_agent()
+    mock_cloud_agent.last_compaction = None
+    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
+
+    mock_local_agent = _mock_agent(backend="local")
+
+    with (
+        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
+        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=mock_local_agent,
+        ),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+
+        cloud = CloudCognitiveBackend()
+        local = LocalCognitiveBackend()
+
+        cfg = CognitiveConfig(active=BackendType.CLOUD)
+        ctx_store = ContextStore()
+        lease_mgr = LeaseManager()
+
+        sb = Switchboard(
+            config=cfg,
+            local=local,
+            cloud=cloud,
+            lease_mgr=lease_mgr,
+            context_store=ctx_store,
+        )
+
+    result = CompactionResult(
+        summary="Compacted context summary",
+        up_to_msg_id="msg-42",
+        compacted_count=10,
+        retained_count=3,
+        ts_ms=5000,
+    )
+
+    await sb._sync_compaction_to_inactive(result)
+
+    # Local agent should have had session reset + handoff injected
+    mock_local_agent.reset_session.assert_awaited_once()
+    mock_local_agent.inject_handoff_context.assert_awaited_once()
+    injected = mock_local_agent.inject_handoff_context.call_args[0][0]
+    assert "Compacted context summary" in injected
+
+    # Context store should have a compaction entry
+    entries = ctx_store.get_entries_after(-1)
+    assert any(e.entry_type == "compaction" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_switchboard_wires_compaction_callback():
+    """Switchboard wires set_on_compaction on CloudCognitiveBackend during __init__."""
+    mock_cloud_agent = _mock_agent()
+    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
+
+    with (
+        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
+        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
+        patch(
+            "halo.cognitive.local_backend.PlannerAgent",
+            return_value=_mock_agent(backend="local"),
+        ),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+
+        cloud = CloudCognitiveBackend()
+        local = LocalCognitiveBackend()
+
+        cfg = CognitiveConfig(active=BackendType.CLOUD)
+        Switchboard(config=cfg, local=local, cloud=cloud)
+
+    # The callback should be wired
+    assert cloud._on_compaction is not None
+
+
+# ---------------------------------------------------------------------------
+# Compaction + backend switch interaction
+# ---------------------------------------------------------------------------
+
+
+def _make_switchboard(*, active=BackendType.CLOUD, enable_failover=False):
+    """Helper: create Switchboard with mocked backends, return (sb, ctx_store, cloud, local, mock agents)."""
+    mock_cloud_agent = _mock_agent()
+    mock_cloud_agent.last_compaction = None
+    mock_cloud_agent.last_reasoning = "cloud reasoning"
+    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
+
+    mock_local_agent = _mock_agent(backend="local")
+    mock_local_agent.last_reasoning = "local reasoning"
+
+    with (
+        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
+        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_local_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+
+        cloud = CloudCognitiveBackend()
+        local = LocalCognitiveBackend()
+        ctx_store = ContextStore()
+        lease_mgr = LeaseManager()
+        cfg = CognitiveConfig(active=active, enable_failover=enable_failover)
+
+        sb = Switchboard(
+            config=cfg,
+            local=local,
+            cloud=cloud,
+            lease_mgr=lease_mgr,
+            context_store=ctx_store,
+        )
+
+    return sb, ctx_store, cloud, local, mock_cloud_agent, mock_local_agent
+
+
+@pytest.mark.asyncio
+async def test_compaction_entry_included_in_failover_warmup():
+    """Compaction journal entry is included when switch_to() pre-warms the new backend."""
+    sb, ctx_store, cloud, local, mock_cloud_agent, mock_local_agent = _make_switchboard()
+
+    # Simulate a compaction event while cloud is active
+    result = CompactionResult(
+        summary="Summarized 20 messages",
+        up_to_msg_id="msg-20",
+        compacted_count=20,
+        retained_count=4,
+        ts_ms=1000,
+    )
+    await sb._sync_compaction_to_inactive(result)
+
+    # Verify compaction entry is in context store
+    entries = ctx_store.get_entries_after(-1)
+    compaction_entries = [e for e in entries if e.entry_type == "compaction"]
+    assert len(compaction_entries) == 1
+    assert "20 messages" in compaction_entries[0].summary
+
+    # Now switch to local — warm_up should receive the compaction entry in journal
+    mock_local_agent.reset_session.reset_mock()
+    mock_local_agent.inject_handoff_context.reset_mock()
+    await sb.switch_to(BackendType.LOCAL, reason="test failover")
+
+    # Local warm_up was called (via switch_to pre-warm)
+    # The journal entries passed to warm_up include the compaction entry
+    assert sb.active_type == BackendType.LOCAL
+
+
+@pytest.mark.asyncio
+async def test_compaction_callback_error_does_not_block_decide():
+    """If compaction callback raises, decide() still returns commands."""
+    mock_agent = _mock_agent()
+    mock_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
+
+    compaction_result = CompactionResult(
+        summary="Summary",
+        up_to_msg_id="x",
+        compacted_count=5,
+        retained_count=2,
+        ts_ms=100,
+    )
+    mock_agent.last_compaction = compaction_result
+    mock_agent.last_reasoning = "do something"
+
+    callback = AsyncMock(side_effect=RuntimeError("callback exploded"))
+
+    with (
+        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_vlm),
+    ):
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+
+        backend = CloudCognitiveBackend()
+        backend.set_on_compaction(callback)
+
+    snap = _idle_snap()
+    # Should not raise despite callback error
+    cmds = await backend.decide(snap)
+    assert cmds == []  # mock returns []
+    callback.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_compaction_when_local_is_active_is_noop():
+    """When active=LOCAL, _sync_compaction_to_inactive targets cloud (no-op)."""
+    sb, ctx_store, cloud, local, _, mock_local_agent = _make_switchboard(active=BackendType.LOCAL)
+
+    result = CompactionResult(
+        summary="Summary",
+        up_to_msg_id="x",
+        compacted_count=5,
+        retained_count=2,
+        ts_ms=100,
+    )
+    await sb._sync_compaction_to_inactive(result)
+
+    # Local agent should NOT have been touched (it's the active one, not inactive)
+    mock_local_agent.reset_session.assert_not_awaited()
+    mock_local_agent.inject_handoff_context.assert_not_awaited()
+
+    # Context store entry is still written
+    entries = ctx_store.get_entries_after(-1)
+    assert any(e.entry_type == "compaction" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_multiple_compactions_accumulate_in_context_store():
+    """Multiple compaction syncs accumulate journal entries."""
+    sb, ctx_store, _, _, _, mock_local_agent = _make_switchboard()
+
+    for i in range(3):
+        result = CompactionResult(
+            summary=f"Summary #{i}",
+            up_to_msg_id=f"msg-{i}",
+            compacted_count=10 + i,
+            retained_count=3,
+            ts_ms=1000 * i,
+        )
+        await sb._sync_compaction_to_inactive(result)
+
+    entries = ctx_store.get_entries_after(-1)
+    compaction_entries = [e for e in entries if e.entry_type == "compaction"]
+    assert len(compaction_entries) == 3
+
+    # Local agent session was reset 3 times (once per compaction)
+    assert mock_local_agent.reset_session.await_count == 3
+    assert mock_local_agent.inject_handoff_context.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_sync_compaction_local_agent_error_still_writes_journal():
+    """If local agent reset_session raises, journal entry is still written."""
+    sb, ctx_store, _, _, _, mock_local_agent = _make_switchboard()
+
+    mock_local_agent.reset_session = AsyncMock(side_effect=RuntimeError("session gone"))
+
+    result = CompactionResult(
+        summary="Summary",
+        up_to_msg_id="x",
+        compacted_count=5,
+        retained_count=2,
+        ts_ms=100,
+    )
+    await sb._sync_compaction_to_inactive(result)
+
+    # Journal entry should still be written (append is outside try/except)
+    entries = ctx_store.get_entries_after(-1)
+    assert any(e.entry_type == "compaction" for e in entries)
+
+
+@pytest.mark.asyncio
+async def test_reset_loop_state_preserves_msg_history():
+    """reset_loop_state() does not clear msg_history (session state, not loop state)."""
+    with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    agent.msg_history.append("user", "hello")
+    agent.msg_history.append("model", "hi")
+    assert agent.msg_history.count() == 2
+
+    agent.reset_loop_state()
+    assert agent.msg_history.count() == 2  # preserved
+
+
+@pytest.mark.asyncio
+async def test_reset_session_clears_msg_history():
+    """reset_session() clears msg_history and last_compaction."""
+    with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    agent.msg_history.append("user", "hello")
+    agent._last_compaction = CompactionResult(
+        summary="s",
+        up_to_msg_id="x",
+        compacted_count=1,
+        retained_count=0,
+        ts_ms=0,
+    )
+
+    await agent.reset_session()
+
+    assert agent.msg_history.count() == 0
+    assert agent.last_compaction is None

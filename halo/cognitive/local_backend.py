@@ -88,6 +88,10 @@ class LocalCognitiveBackend:
             return False
 
     @property
+    def agent(self) -> PlannerAgent:
+        return self._agent
+
+    @property
     def last_reasoning(self) -> str:
         return self._agent.last_reasoning
 

@@ -11,9 +11,10 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
-from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig
+from halo.cognitive.compactor import CompactionResult
+from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CompactionConfig
 from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
@@ -58,6 +59,7 @@ class CloudCognitiveBackend:
         config: CloudConfig | None = None,
         prompts_dir: Path | None = None,
         run_logger: RunLogger | None = None,
+        compaction_config: CompactionConfig | None = None,
     ) -> None:
         cfg = config or CloudConfig()
         self._config = cfg
@@ -69,8 +71,10 @@ class CloudCognitiveBackend:
             base_url="",  # unused for cloud backend
             prompts_dir=self._prompts_dir,
             backend="cloud",
+            compaction_config=compaction_config,
         )
         self._ready = False
+        self._on_compaction: Callable[[CompactionResult], Awaitable[None]] | None = None
 
         # VLM: standard Gemini API
         from halo.services.target_perception_service.vlm_fn import make_vlm_fn
@@ -94,7 +98,15 @@ class CloudCognitiveBackend:
         epoch: int | None = None,
     ) -> list[CommandEnvelope]:
         try:
-            return await self._agent.decide(snap, operator_cmd=operator_cmd)
+            commands = await self._agent.decide(snap, operator_cmd=operator_cmd)
+            # Check for ADK compaction after successful decide
+            compaction = self._agent.last_compaction
+            if compaction is not None and self._on_compaction is not None:
+                try:
+                    await self._on_compaction(compaction)
+                except Exception:
+                    logger.debug("Compaction callback failed", exc_info=True)
+            return commands
         except Exception as exc:
             self._maybe_quarantine(exc)
             raise
@@ -128,6 +140,13 @@ class CloudCognitiveBackend:
     @property
     def last_reasoning(self) -> str:
         return self._agent.last_reasoning
+
+    @property
+    def agent(self) -> PlannerAgent:
+        return self._agent
+
+    def set_on_compaction(self, callback: Callable[[CompactionResult], Awaitable[None]] | None) -> None:
+        self._on_compaction = callback
 
     def reset_loop_state(self) -> None:
         self._agent.reset_loop_state()

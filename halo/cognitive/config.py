@@ -54,10 +54,20 @@ class RemoteCloudConfig:
 
 
 @dataclass(frozen=True)
+class CompactionConfig:
+    """Configuration for ADK event compaction on cloud backend."""
+
+    enabled: bool = True
+    compaction_interval: int = 20  # events between compaction runs
+    overlap_size: int = 4  # recent events kept uncompacted
+
+
+@dataclass(frozen=True)
 class CognitiveConfig:
     active: BackendType = BackendType.LOCAL
     local: LocalConfig = field(default_factory=LocalConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
+    compaction: CompactionConfig = field(default_factory=CompactionConfig)
     enable_failover: bool = False
     health_check_interval_s: float = 5.0
     startup_cloud_wait_s: float = 10.0  # max seconds to wait for cloud at startup

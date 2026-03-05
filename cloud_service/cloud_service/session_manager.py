@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from halo.cognitive.config import BackendReadiness
+from halo.cognitive.config import BackendReadiness, CompactionConfig
 from halo.cognitive.context_store import ContextEntry, ContextStore
 from halo.contracts.serde import cognitive_state_from_dict, context_entry_from_dict
 from halo.services.planner_service.agent import PlannerAgent
@@ -99,6 +99,7 @@ class SessionManager:
             base_url=self._ollama_base_url,
             prompts_dir=self._prompts_dir,
             backend=self._backend,
+            compaction_config=CompactionConfig() if self._backend == "cloud" else None,
         )
         session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
         session.touch()

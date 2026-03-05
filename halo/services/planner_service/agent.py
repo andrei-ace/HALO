@@ -13,6 +13,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from halo.cognitive.compactor import CompactionResult, MessageHistory
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.events import EventType
 from halo.contracts.snapshots import PlannerSnapshot
@@ -143,6 +144,7 @@ class PlannerAgent:
         base_url: str,
         prompts_dir: Path,
         backend: str = "local",
+        compaction_config: object | None = None,
     ) -> None:
         system_prompt = _load_prompts(prompts_dir)
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
@@ -166,15 +168,47 @@ class PlannerAgent:
             before_model_callback=_deprecate_old_snapshots,
         )
         self._session_service = InMemorySessionService()
-        self._runner = Runner(
-            agent=self._agent,
-            app_name=_APP_NAME,
-            session_service=self._session_service,
-        )
+
+        # Cloud backend: use App pattern for ADK event compaction
+        if backend == "cloud" and compaction_config is not None:
+            from halo.cognitive.config import CompactionConfig
+
+            cfg = compaction_config if isinstance(compaction_config, CompactionConfig) else CompactionConfig()
+            if cfg.enabled:
+                from google.adk.apps import App
+                from google.adk.apps.app import EventsCompactionConfig
+
+                app = App(
+                    name=_APP_NAME,
+                    root_agent=self._agent,
+                    events_compaction_config=EventsCompactionConfig(
+                        compaction_interval=cfg.compaction_interval,
+                        overlap_size=cfg.overlap_size,
+                    ),
+                )
+                self._runner = Runner(
+                    app=app,
+                    session_service=self._session_service,
+                )
+            else:
+                self._runner = Runner(
+                    agent=self._agent,
+                    app_name=_APP_NAME,
+                    session_service=self._session_service,
+                )
+        else:
+            self._runner = Runner(
+                agent=self._agent,
+                app_name=_APP_NAME,
+                session_service=self._session_service,
+            )
+
         self._session_created = False
         self._last_reasoning: str = ""
         self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
         self._pending_handoff: str | None = None
+        self._msg_history = MessageHistory()
+        self._last_compaction: CompactionResult | None = None
 
     async def _ensure_session(self) -> None:
         """Create the ADK session on first use (requires async)."""
@@ -190,6 +224,15 @@ class PlannerAgent:
     def last_reasoning(self) -> str:
         """Final LLM text from the most recent decide() call (empty if none)."""
         return self._last_reasoning
+
+    @property
+    def msg_history(self) -> MessageHistory:
+        return self._msg_history
+
+    @property
+    def last_compaction(self) -> CompactionResult | None:
+        """Non-None when the most recent decide() triggered ADK compaction."""
+        return self._last_compaction
 
     def reset_loop_state(self) -> None:
         """Clear the loop-detection history (e.g. on new operator instruction)."""
@@ -212,6 +255,8 @@ class PlannerAgent:
                 pass
             self._session_created = False
         self._cmd_streak.clear()
+        self._msg_history.clear()
+        self._last_compaction = None
 
     async def decide(
         self,
@@ -272,6 +317,24 @@ class PlannerAgent:
 
         message = types.Content(role="user", parts=parts)
 
+        # Track user message in parallel history
+        user_text = "\n\n".join(text_parts)
+        user_msg_id = self._msg_history.append("user", user_text)
+
+        # Snapshot session event count before run (for compaction detection)
+        pre_event_count = 0
+        if self._session_created:
+            try:
+                session = await self._session_service.get_session(
+                    app_name=_APP_NAME,
+                    user_id=_USER_ID,
+                    session_id=_THREAD_ID,
+                )
+                if session:
+                    pre_event_count = len(session.events)
+            except Exception:
+                pass
+
         # Run the agent and extract the final response text.
         last_text = ""
         async for event in self._runner.run_async(
@@ -285,6 +348,15 @@ class PlannerAgent:
                         last_text = part.text
 
         self._last_reasoning = last_text
+
+        # Track model response
+        if last_text:
+            self._msg_history.append("model", last_text)
+
+        # Detect ADK compaction: check for EventCompaction in new session events
+        self._last_compaction = None
+        if self._backend == "cloud" and self._session_created:
+            self._last_compaction = await self._detect_compaction(pre_event_count, user_msg_id)
 
         commands = list(self._ctx.commands)
 
@@ -315,6 +387,40 @@ class PlannerAgent:
                 return []
 
         return commands
+
+    async def _detect_compaction(self, pre_event_count: int, last_user_msg_id: str) -> CompactionResult | None:
+        """Check session events for a new EventCompaction marker.
+
+        ADK appends a compaction event at the end of ``run_async()`` when
+        ``EventsCompactionConfig`` triggers.  We detect it by comparing
+        event counts before and after, then looking for the ``compaction``
+        field on new events.
+        """
+        try:
+            session = await self._session_service.get_session(
+                app_name=_APP_NAME,
+                user_id=_USER_ID,
+                session_id=_THREAD_ID,
+            )
+            if session is None:
+                return None
+
+            new_events = session.events[pre_event_count:]
+            for ev in new_events:
+                compaction = ev.actions.compaction if ev.actions else None
+                if compaction is None:
+                    continue
+                # Extract summary from compacted_content
+                summary_text = ""
+                if compaction.compacted_content and compaction.compacted_content.parts:
+                    for part in compaction.compacted_content.parts:
+                        if hasattr(part, "text") and part.text:
+                            summary_text += part.text
+                if summary_text:
+                    return self._msg_history.apply_compaction(last_user_msg_id, summary_text)
+        except Exception:
+            logging.getLogger(__name__).debug("Compaction detection failed", exc_info=True)
+        return None
 
 
 def make_decide_fn(

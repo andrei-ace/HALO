@@ -67,6 +67,7 @@ def make_cognitive_stack(
         cloud = CloudCognitiveBackend(
             config=cfg.cloud,
             run_logger=run_logger,
+            compaction_config=cfg.compaction,
         )
 
     switchboard = Switchboard(
