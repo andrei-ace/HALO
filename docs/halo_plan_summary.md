@@ -1,7 +1,7 @@
 # HALO Project Plan (Planner + Target Perception + ACT Skill Runner)
 
 Date: 2026-02-23
-Scope: HALO — three-phase sim strategy: (1) MuJoCo + robosuite (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, smooth continuous control with low-frequency reasoning.
+Scope: HALO — three-phase sim strategy: (1) MuJoCo + SO-101 (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, smooth continuous control with low-frequency reasoning.
 
 ---
 
@@ -126,7 +126,7 @@ Define and monitor explicit budgets early so tuning is measurable:
 - Wrist camera capture → ACT observation availability: target budget per control profile
 - Planner tick cadence: **event-driven** (SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE, SCENE_DESCRIBED, TARGET_ACQUIRED, COMMAND_REJECTED) + **30 s watchdog** fallback. No fixed rate — LLM decide_fn latency is non-deterministic so ticks are serialized (next tick only starts after decide_fn returns).
 - Planner reaction latency: best-effort only (not in the control path)
-- Phase-specific freshness thresholds (e.g., stricter in ALIGN / DESCEND_GRASP than in TRANSIT)
+- Phase-specific freshness thresholds (e.g., stricter in VISUAL_ALIGN / EXECUTE_APPROACH than in MOVE_PREGRASP)
 
 
 ### EE-relative hints (recommended)
@@ -254,15 +254,18 @@ Planner starts the skill; SkillRunner runs the micro-state machine with fast suc
 This prevents pauses between approach→grasp for moving targets.
 
 ### Pick FSM states (implemented)
-- `RESET` (0) — initial state
-- `APPROACH_PREGRASP` (1) — move to pregrasp pose
-- `ALIGN` (2) — fine alignment
-- `DESCEND_GRASP` (3) — descend to grasp pose; grasp persistence timer starts when distance < threshold
-- `CLOSE` (4) — gripper close + dwell (`close_duration_ms`)
-- `VERIFY_GRASP` (6) — optional (configurable via `skip_verify_grasp`)
-- `LIFT` (5) — lift after grasp (`lift_duration_ms`)
-- `DONE` (11) — terminal state (outcome: SUCCESS or FAILURE with reason code)
-- Recovery: `RECOVER_RETRY_APPROACH` (20), `RECOVER_RETRY_DESCEND` (21), `RECOVER_REGRASP` (22)
+- `IDLE` (0) — initial state
+- `SELECT_GRASP` (1) — gates on `tracking_status == TRACKING` (v0: pass-through)
+- `PLAN_APPROACH` (2) — v0 pass-through
+- `MOVE_PREGRASP` (3) — move to pregrasp pose
+- `VISUAL_ALIGN` (4) — fine alignment (wrist camera active)
+- `EXECUTE_APPROACH` (5) — descend to grasp pose; grasp persistence timer starts when distance < threshold
+- `CLOSE_GRIPPER` (6) — gripper close + dwell (wrist camera active)
+- `VERIFY_GRASP` (7) — optional (configurable via `skip_verify_grasp`) (wrist camera active)
+- `LIFT` (8) — lift after grasp (wrist camera active)
+- `DONE` (9) — terminal state (outcome: SUCCESS or FAILURE with reason code)
+- Place reserved: `PLACE_*` (30–33)
+- Recovery: `RECOVER_RETRY_APPROACH` (50), `RECOVER_REGRASP` (51), `RECOVER_ABORT` (52)
 
 Each state has:
 - success predicates (distance thresholds, timer-based durations)
@@ -270,7 +273,7 @@ Each state has:
 - recovery: wait `recover_wait_ms`, increment reacquire counter, retry up to `max_reacquire_attempts`
 
 ### Moving target critical detail
-- `CLOSE` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, without waiting for planner. Distance bounce resets the persistence timer.
+- `CLOSE_GRIPPER` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, without waiting for planner. Distance bounce resets the persistence timer.
 - On phase transition, ControlService trims ACT buffer to `buffer_trim_ms` (~75 ms).
 
 ### Gripper timing / dwell modeling (important for real transfer)
@@ -396,7 +399,7 @@ Planner-grade fields only:
 
 ## 14) Build steps
 
-### Completed (v0 backbone — 219 tests passing)
+### Completed (630+ HALO tests + 116 mujoco_sim tests passing)
 
 1. ✅ Shared runtime state + event IDs + compact snapshot (`RuntimeStateStore`, `EventBus`, `CommandRouter`, `HALORuntime`).
 2. ✅ SkillRunner Pick FSM with deterministic phase transitions and fast success checks (`PickFSM`, `SkillRunnerService`).
@@ -405,21 +408,23 @@ Planner-grade fields only:
 5. ✅ PlannerService (event-driven, 30 s watchdog) + PlannerAgent (ADK ReAct, 5 tools, before_model_callback).
 6. ✅ TUI (mock + live modes) + RunLogger (JSONL session logs + VLM logging).
 7. ✅ Integration tests (Ollama-backed, auto-skip if unavailable).
+8. ✅ ZMQ bridge (`halo/bridge/`) — SimClient, SimSource, 2-channel protocol.
+9. ✅ MuJoCo + SO-101 sim (`mujoco_sim/`) — SO101Env, trajectory-planned teacher, grasp planner, HDF5 episodes, autonomous SimServer.
+10. ✅ Cognitive backend switching (`halo/cognitive/`) — Switchboard, LeaseManager, ContextStore, CompactionPlugin, failover/failback.
+11. ✅ Planner hardening — no auto-pick without operator instruction, ADK session reset on reconnect.
 
 ### Next steps
 
-1. MuJoCo + robosuite environment setup (pick-cube task) — `mujoco_sim/`.
-2. Analytic teacher controller (IK + motion generation) for demo episode generation.
-3. Real observe_fn wired to tracker + depth fusion (replace mock).
-4. ACT model training pipeline (dataset schema, chunked imitation learning).
-5. Closed-loop evaluation with FSM orchestrator + ACT-predicted actions.
-6. Iterate thresholds/profiles for moving targets (short horizons, strict freshness).
-7. Isaac Lab integration (GPU-accelerated parallel envs, domain randomization at scale) — `sim/`.
-8. Real SO-ARM101 hardware integration.
+1. Real observe_fn wired to tracker + depth fusion (replace mock).
+2. ACT model training pipeline (dataset schema, chunked imitation learning).
+3. Closed-loop evaluation with FSM orchestrator + ACT-predicted actions.
+4. Iterate thresholds/profiles for moving targets (short horizons, strict freshness).
+5. Isaac Lab integration (GPU-accelerated parallel envs, domain randomization at scale) — `sim/`.
+6. Real SO-ARM101 hardware integration.
 
 ## Sim bootstrapping for HALO: Teacher demos → ACT (teleop-aligned)
 
-> **Note:** This section describes the general sim bootstrapping strategy. Phase 1 uses MuJoCo + robosuite (`mujoco_sim/`). Phase 2 will use Isaac Lab (`sim/`) for GPU-accelerated parallel envs and domain randomization at scale.
+> **Note:** This section describes the general sim bootstrapping strategy. Phase 1 uses raw MuJoCo + SO-101 (`mujoco_sim/`). Phase 2 will use Isaac Lab (`sim/`) for GPU-accelerated parallel envs and domain randomization at scale.
 
 ### Target task (v0)
 **Pick cube from table → place into bin** (single cube, single bin, no clutter at first).
@@ -521,65 +526,50 @@ Each skill outputs actions in the ACT action space at 10 Hz:
 
 ### Phase IDs (stable labels for training)
 Use a small, fixed enum:
-- `0 RESET`
-- `1 APPROACH_PREGRASP`
-- `2 ALIGN`
-- `3 DESCEND_GRASP`
-- `4 CLOSE`
-- `5 LIFT`
-- `6 VERIFY_GRASP`
-- `7 TRANSIT_PREPLACE`
-- `8 DESCEND_PLACE`
-- `9 OPEN`
-- `10 RETREAT`
-- `11 DONE`
+- `0 IDLE`
+- `1 SELECT_GRASP`
+- `2 PLAN_APPROACH`
+- `3 MOVE_PREGRASP`
+- `4 VISUAL_ALIGN`
+- `5 EXECUTE_APPROACH`
+- `6 CLOSE_GRIPPER`
+- `7 VERIFY_GRASP`
+- `8 LIFT`
+- `9 DONE`
+Place reserved:
+- `30–33 PLACE_*`
 Recovery:
-- `20 RECOVER_RETRY_APPROACH`
-- `21 RECOVER_RETRY_DESCEND`
-- `22 RECOVER_REGRASP`
+- `50 RECOVER_RETRY_APPROACH`
+- `51 RECOVER_REGRASP`
+- `52 RECOVER_ABORT`
 
 ### FSM transitions (v0)
-**RESET**
-- open gripper, go home, randomize cube pose → `APPROACH_PREGRASP`
+**IDLE** → `SELECT_GRASP` (on skill start)
 
-**APPROACH_PREGRASP**
-- target: cube_pose + z_pregrasp → reached? `ALIGN` else timeout/collision → `RECOVER_RETRY_APPROACH`
+**SELECT_GRASP** → `PLAN_APPROACH` (when `tracking_status == TRACKING`; 10 s timeout → PERCEPTION_LOST)
 
-**ALIGN**
-- optional yaw align → `DESCEND_GRASP`
+**PLAN_APPROACH** → `MOVE_PREGRASP` (v0 pass-through)
 
-**DESCEND_GRASP**
-- target: cube_pose + z_grasp → reached? `CLOSE` else → `RECOVER_RETRY_DESCEND`
+**MOVE_PREGRASP** → `VISUAL_ALIGN` (position reached) or `RECOVER_RETRY_APPROACH` (timeout/no progress)
 
-**CLOSE**
-- close + short dwell (`gripper_settle_dwell_ms`) → `LIFT`
+**VISUAL_ALIGN** → `EXECUTE_APPROACH` (aligned) or `RECOVER_RETRY_APPROACH` (timeout)
 
-**LIFT**
-- lift Δz_lift → `VERIFY_GRASP`
+**EXECUTE_APPROACH** → `CLOSE_GRIPPER` (distance < threshold held for `grasp_persistence_ms`) or `RECOVER_RETRY_APPROACH` (timeout)
 
-**VERIFY_GRASP**
-- if cube height > threshold + stable N steps → `TRANSIT_PREPLACE`
-- else → `RECOVER_REGRASP`
+**CLOSE_GRIPPER** → `VERIFY_GRASP` (dwell complete)
 
-**TRANSIT_PREPLACE**
-- target: bin_pose + z_preplace → `DESCEND_PLACE`
+**VERIFY_GRASP** → `LIFT` (grasp confirmed) or `RECOVER_REGRASP` (grasp failed)
 
-**DESCEND_PLACE**
-- target: bin_pose + z_place → `OPEN`
+**LIFT** → `DONE` (lift complete)
 
-**OPEN**
-- open + short dwell (configurable) → `RETREAT`
+**DONE** — terminal state (outcome: SUCCESS or FAILURE with reason code)
 
-**RETREAT**
-- retreat up → `DONE`
-
-**DONE**
-- mark success → end episode
+Place phases (30–33) and recovery (50–52) follow the same pattern.
 
 Recovery:
-- `RECOVER_RETRY_APPROACH`: retreat up, replan approach → `APPROACH_PREGRASP`
-- `RECOVER_RETRY_DESCEND`: retreat up, re-approach/descend → `APPROACH_PREGRASP` or `DESCEND_GRASP`
-- `RECOVER_REGRASP`: open, retreat, re-approach → `APPROACH_PREGRASP`
+- `RECOVER_RETRY_APPROACH` (50): retreat, retry → `MOVE_PREGRASP` (if retries remain)
+- `RECOVER_REGRASP` (51): open, retreat → `MOVE_PREGRASP` (if retries remain)
+- `RECOVER_ABORT` (52): terminal failure
 
 ---
 
