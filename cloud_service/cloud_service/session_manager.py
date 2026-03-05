@@ -67,7 +67,7 @@ class SessionManager:
             self._vlm_fn = self._vlm_fn_factory()
         return self._vlm_fn
 
-    def get_or_create(self, arm_id: str, client_session_id: str | None = None) -> ArmSession:
+    async def get_or_create(self, arm_id: str, client_session_id: str | None = None) -> ArmSession:
         """Get existing session or create a new one for the given arm_id.
 
         If *client_session_id* is provided and differs from the stored one,
@@ -79,7 +79,7 @@ class SessionManager:
                 old_sid = session.client_session_id[:8]
                 new_sid = client_session_id[:8]
                 logger.info("New client session for arm_id=%s (%s → %s), resetting", arm_id, old_sid, new_sid)
-                self.reset_session(arm_id)
+                await self.reset_session(arm_id)
                 session = self._sessions.get(arm_id)  # reset_session keeps the session
                 if session is not None:
                     session.client_session_id = client_session_id
@@ -107,7 +107,7 @@ class SessionManager:
         logger.info("Created new session for arm_id=%s (total=%d)", arm_id, len(self._sessions))
         return session
 
-    def warm_up_session(
+    async def warm_up_session(
         self,
         arm_id: str,
         state_dict: dict | None,
@@ -118,7 +118,7 @@ class SessionManager:
 
         Returns the session with updated readiness and cursor.
         """
-        session = self.get_or_create(arm_id, client_session_id=client_session_id)
+        session = await self.get_or_create(arm_id, client_session_id=client_session_id)
 
         # Apply journal entries to the session's context store
         entries: list[ContextEntry] = []
@@ -158,11 +158,11 @@ class SessionManager:
         """Get session without creating a new one."""
         return self._sessions.get(arm_id)
 
-    def reset_session(self, arm_id: str) -> None:
-        """Reset a specific arm session."""
+    async def reset_session(self, arm_id: str) -> None:
+        """Reset a specific arm session (clears ADK conversation history)."""
         session = self._sessions.get(arm_id)
         if session is not None:
-            session.agent.reset_loop_state()
+            await session.agent.reset_session()
             session.readiness = BackendReadiness.COLD
             session.cursor = -1
             session.context_store = ContextStore()

@@ -41,7 +41,7 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     client_session_id = body.get("session_id")
     arm_id = snapshot.arm_id
 
-    session = session_mgr.get_or_create(arm_id, client_session_id=client_session_id)
+    session = await session_mgr.get_or_create(arm_id, client_session_id=client_session_id)
     if session.pending_handoff:
         await session.agent.inject_handoff_context(session.pending_handoff)
         session.pending_handoff = None
@@ -92,7 +92,7 @@ async def warm_up(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     # Read arm_id from top-level body, fall back to state, then default
     arm_id = body.get("arm_id") or (state_dict.get("last_arm_id") if state_dict else None) or "arm0"
 
-    session = session_mgr.warm_up_session(arm_id, state_dict, journal_dicts, client_session_id=client_session_id)
+    session = await session_mgr.warm_up_session(arm_id, state_dict, journal_dicts, client_session_id=client_session_id)
     return {
         "readiness": session.readiness,
         "cursor": session.cursor,

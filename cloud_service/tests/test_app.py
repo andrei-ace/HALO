@@ -36,7 +36,7 @@ class _FakeSessionManager:
     def vlm_fn(self):
         return self._vlm_fn
 
-    def get_or_create(self, arm_id, client_session_id=None):
+    async def get_or_create(self, arm_id, client_session_id=None):
         session = MagicMock()
         session.arm_id = arm_id
         session.agent = self._agent
@@ -48,13 +48,13 @@ class _FakeSessionManager:
     def get_session(self, arm_id):
         return None
 
-    def warm_up_session(self, arm_id, state_dict, journal_dicts, client_session_id=None):
+    async def warm_up_session(self, arm_id, state_dict, journal_dicts, client_session_id=None):
         session = MagicMock()
         session.readiness = "ready"
         session.cursor = len(journal_dicts) - 1 if journal_dicts else -1
         return session
 
-    def reset_session(self, arm_id):
+    async def reset_session(self, arm_id):
         self._agent.reset_loop_state()
 
 
@@ -251,6 +251,7 @@ def test_auth_required():
 def _make_test_session_mgr():
     """Create a SessionManager with mocked PlannerAgent creation."""
     from pathlib import Path
+    from unittest.mock import AsyncMock
 
     from cloud_service.session_manager import SessionManager
 
@@ -262,7 +263,7 @@ def _make_test_session_mgr():
     # Patch get_or_create to use mock agents instead of real PlannerAgent
     _orig = mgr.get_or_create
 
-    def _patched(arm_id, client_session_id=None):
+    async def _patched(arm_id, client_session_id=None):
         from cloud_service.session_manager import ArmSession
 
         if arm_id in mgr._sessions:
@@ -271,6 +272,7 @@ def _make_test_session_mgr():
             return session
         agent = MagicMock()
         agent.reset_loop_state = MagicMock()
+        agent.reset_session = AsyncMock()
         session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
         session.touch()
         mgr._sessions[arm_id] = session
@@ -280,10 +282,11 @@ def _make_test_session_mgr():
     return mgr
 
 
-def test_warm_up_routes_by_body_arm_id():
+@pytest.mark.asyncio
+async def test_warm_up_routes_by_body_arm_id():
     """SessionManager receives correct arm_id (not hardcoded arm0)."""
     mgr = _make_test_session_mgr()
-    session = mgr.warm_up_session("arm7", state_dict=None, journal_dicts=[])
+    session = await mgr.warm_up_session("arm7", state_dict=None, journal_dicts=[])
     assert session.arm_id == "arm7"
     assert mgr.get_session("arm7") is not None
     assert mgr.get_session("arm0") is None
@@ -295,10 +298,12 @@ def test_warm_up_endpoint_reads_body_arm_id(client):
     from unittest.mock import patch as _patch
 
     with _patch("cloud_service.deps._session_mgr") as patched_mgr:
+        from unittest.mock import AsyncMock
+
         session_mock = MagicMock()
         session_mock.readiness = "ready"
         session_mock.cursor = -1
-        patched_mgr.warm_up_session.return_value = session_mock
+        patched_mgr.warm_up_session = AsyncMock(return_value=session_mock)
 
         body = {"arm_id": "arm5", "state": None, "journal": []}
         resp = client.post("/warm-up", json=body)
@@ -308,7 +313,8 @@ def test_warm_up_endpoint_reads_body_arm_id(client):
         assert call_args[0][0] == "arm5" or call_args[1].get("arm_id") == "arm5"
 
 
-def test_reset_clears_pending_handoff():
+@pytest.mark.asyncio
+async def test_reset_clears_pending_handoff():
     """After reset_session, pending_handoff is cleared so stale context doesn't leak."""
     mgr = _make_test_session_mgr()
     state_dict = {
@@ -327,10 +333,10 @@ def test_reset_clears_pending_handoff():
         "last_skill_name": None,
         "last_outcome_state": None,
     }
-    session = mgr.warm_up_session("arm0", state_dict=state_dict, journal_dicts=[])
+    session = await mgr.warm_up_session("arm0", state_dict=state_dict, journal_dicts=[])
     assert session.pending_handoff is not None
 
     # reset_session (used internally by get_or_create on session mismatch) should clear it
-    mgr.reset_session("arm0")
+    await mgr.reset_session("arm0")
     session_after = mgr.get_session("arm0")
     assert session_after.pending_handoff is None

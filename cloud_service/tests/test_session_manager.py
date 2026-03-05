@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,7 +23,12 @@ def prompts_dir(tmp_path: Path) -> Path:
 def mgr(prompts_dir: Path) -> SessionManager:
     """SessionManager with mocked PlannerAgent creation."""
     with patch("cloud_service.session_manager.PlannerAgent") as mock_cls:
-        mock_cls.return_value = MagicMock(decide=MagicMock(), last_reasoning="", reset_loop_state=MagicMock())
+        mock_cls.return_value = MagicMock(
+            decide=MagicMock(),
+            last_reasoning="",
+            reset_loop_state=MagicMock(),
+            reset_session=AsyncMock(),
+        )
         yield SessionManager(
             model_name="test-model",
             prompts_dir=prompts_dir,
@@ -33,31 +38,40 @@ def mgr(prompts_dir: Path) -> SessionManager:
         )
 
 
-def test_get_or_create_new_session(mgr: SessionManager):
-    session = mgr.get_or_create("arm0")
+@pytest.mark.asyncio
+async def test_get_or_create_new_session(mgr: SessionManager):
+    session = await mgr.get_or_create("arm0")
     assert isinstance(session, ArmSession)
     assert session.arm_id == "arm0"
     assert mgr.session_count == 1
 
 
-def test_get_or_create_returns_existing(mgr: SessionManager):
-    s1 = mgr.get_or_create("arm0")
-    s2 = mgr.get_or_create("arm0")
+@pytest.mark.asyncio
+async def test_get_or_create_returns_existing(mgr: SessionManager):
+    s1 = await mgr.get_or_create("arm0")
+    s2 = await mgr.get_or_create("arm0")
     assert s1 is s2
     assert mgr.session_count == 1
 
 
-def test_multiple_sessions(mgr: SessionManager):
-    mgr.get_or_create("arm0")
-    mgr.get_or_create("arm1")
-    mgr.get_or_create("arm2")
+@pytest.mark.asyncio
+async def test_multiple_sessions(mgr: SessionManager):
+    await mgr.get_or_create("arm0")
+    await mgr.get_or_create("arm1")
+    await mgr.get_or_create("arm2")
     assert mgr.session_count == 3
 
 
-def test_eviction_at_capacity(prompts_dir: Path):
+@pytest.mark.asyncio
+async def test_eviction_at_capacity(prompts_dir: Path):
     """When at max_sessions, LRU session is evicted."""
     with patch("cloud_service.session_manager.PlannerAgent") as mock_cls:
-        mock_cls.return_value = MagicMock(decide=MagicMock(), last_reasoning="", reset_loop_state=MagicMock())
+        mock_cls.return_value = MagicMock(
+            decide=MagicMock(),
+            last_reasoning="",
+            reset_loop_state=MagicMock(),
+            reset_session=AsyncMock(),
+        )
         # Use a long idle timeout so idle eviction doesn't interfere
         mgr = SessionManager(
             model_name="test-model",
@@ -66,19 +80,20 @@ def test_eviction_at_capacity(prompts_dir: Path):
             max_sessions=4,
             idle_timeout_s=600.0,
         )
-        mgr.get_or_create("arm0")
-        mgr.get_or_create("arm1")
-        mgr.get_or_create("arm2")
-        mgr.get_or_create("arm3")
+        await mgr.get_or_create("arm0")
+        await mgr.get_or_create("arm1")
+        await mgr.get_or_create("arm2")
+        await mgr.get_or_create("arm3")
         assert mgr.session_count == 4
         # At capacity (4). Creating arm4 should evict arm0 (LRU)
-        mgr.get_or_create("arm4")
+        await mgr.get_or_create("arm4")
         assert mgr.session_count == 4
         assert mgr.get_session("arm0") is None
         assert mgr.get_session("arm4") is not None
 
 
-def test_warm_up_session(mgr: SessionManager):
+@pytest.mark.asyncio
+async def test_warm_up_session(mgr: SessionManager):
     state_dict = {
         "ts_ms": 100,
         "epoch": 1,
@@ -116,13 +131,14 @@ def test_warm_up_session(mgr: SessionManager):
         },
     ]
 
-    session = mgr.warm_up_session("arm0", state_dict, journal)
+    session = await mgr.warm_up_session("arm0", state_dict, journal)
     assert session.readiness == "ready"
     assert session.cursor == 1
     assert session.context_store._active_target_handle == "cube"
 
 
-def test_warm_up_incremental(mgr: SessionManager):
+@pytest.mark.asyncio
+async def test_warm_up_incremental(mgr: SessionManager):
     """Warm-up with only new journal entries (incremental)."""
     # First warm-up with 2 entries
     journal1 = [
@@ -145,7 +161,7 @@ def test_warm_up_incremental(mgr: SessionManager):
             "data": {},
         },
     ]
-    session = mgr.warm_up_session("arm0", None, journal1)
+    session = await mgr.warm_up_session("arm0", None, journal1)
     assert session.cursor == 1
 
     # Incremental warm-up with new entries
@@ -160,13 +176,14 @@ def test_warm_up_incremental(mgr: SessionManager):
             "data": {},
         },
     ]
-    session = mgr.warm_up_session("arm0", None, journal2)
+    session = await mgr.warm_up_session("arm0", None, journal2)
     assert session.cursor == 2
 
 
-def test_reset_session(mgr: SessionManager):
-    mgr.get_or_create("arm0")
-    mgr.reset_session("arm0")
+@pytest.mark.asyncio
+async def test_reset_session(mgr: SessionManager):
+    await mgr.get_or_create("arm0")
+    await mgr.reset_session("arm0")
     session = mgr.get_session("arm0")
     assert session is not None
     assert session.readiness == "cold"
