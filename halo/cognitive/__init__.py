@@ -66,8 +66,6 @@ def make_cognitive_stack(
     else:
         cloud = CloudCognitiveBackend(
             config=cfg.cloud,
-            audio_capture=audio_capture,
-            audio_playback=audio_playback,
             run_logger=run_logger,
         )
 

@@ -8,8 +8,43 @@ FastAPI service that runs the HALO planner (ADK ReAct agent) and VLM (Gemini) on
 |----------|--------|-------------|
 | `/decide` | POST | Planner decision — snapshot JSON in, commands JSON out |
 | `/vlm/scene` | POST | VLM scene analysis — JPEG image + metadata in, VlmScene JSON out |
+| `/warm-up` | POST | Warm up session with CognitiveState + journal entries |
+| `/state/{arm_id}` | GET | Session readiness and cursor for a specific arm |
 | `/health` | GET | Health check |
-| `/reset` | POST | Reset planner session state |
+
+## Quick start: local testing against Gemini
+
+1. **Get a Gemini API key** at https://aistudio.google.com/apikey
+
+2. **Create your `.env` file:**
+   ```bash
+   cp cloud_service/.env.example cloud_service/.env
+   # Edit .env and paste your GOOGLE_API_KEY
+   ```
+
+3. **One-command smoke test** (verifies health, warm-up, decide, state):
+   ```bash
+   GOOGLE_API_KEY=<your-key> make smoke-cloud-service
+   ```
+
+4. **Two-terminal workflow** (full TUI + cloud planner + MuJoCo sim):
+   ```bash
+   # Terminal 1: start the cloud service
+   GOOGLE_API_KEY=<your-key> make run-cloud-service
+
+   # Terminal 2: start the MuJoCo sim server
+   make sim-server
+
+   # Terminal 3: connect TUI to cloud service + sim
+   make tui-live-cloud
+   ```
+
+5. **Test commands:**
+   ```bash
+   make test-cloud-service                              # unit tests (no key needed)
+   GOOGLE_API_KEY=<key> make smoke-cloud-service         # smoke test
+   GOOGLE_API_KEY=<key> make test-cloud-service-integration  # integration tests
+   ```
 
 ## Local development
 

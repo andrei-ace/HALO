@@ -34,13 +34,13 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.used_tools.add(name)
         return None
 
-    def start_skill(skill_name: str, target_handle: str, options: dict | None = None) -> str:
+    def start_skill(skill_name: str, target_handle: str, options: str = "") -> str:
         """Start a named skill on the arm.
 
         Args:
             skill_name: Skill to run. One of: PICK.
             target_handle: Target object handle string (from perception).
-            options: Optional key/value overrides for the skill.
+            options: Optional JSON string of key/value overrides for the skill.
         """
         if err := _once("start_skill"):
             return err
@@ -49,6 +49,14 @@ def build_tools(ctx: AgentContext) -> list:
         except Exception:
             allowed = ", ".join(s.value for s in SkillName)
             return f"REJECTED: invalid skill_name {skill_name!r}. Expected one of [{allowed}]."
+        opts: dict = {}
+        if options:
+            import json
+
+            try:
+                opts = json.loads(options)
+            except (json.JSONDecodeError, TypeError):
+                pass
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
@@ -57,7 +65,7 @@ def build_tools(ctx: AgentContext) -> list:
             payload=StartSkillPayload(
                 skill_name=skill,
                 target_handle=target_handle,
-                options=options or {},
+                options=opts,
             ),
             precondition_snapshot_id=ctx.snapshot_id,
             epoch=ctx.epoch,

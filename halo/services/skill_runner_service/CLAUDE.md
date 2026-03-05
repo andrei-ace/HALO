@@ -31,7 +31,7 @@ SELECT_GRASP → PLAN_APPROACH → MOVE_PREGRASP → VISUAL_ALIGN → EXECUTE_AP
 Recovery: RECOVER_RETRY_APPROACH ────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Note: SELECT_GRASP and PLAN_APPROACH are v0 pass-throughs (immediate transition). They exist as placeholders for future grasp planning and motion planning extensions.
+Note: SELECT_GRASP gates on `tracking_status == TRACKING` (10 s timeout → `PERCEPTION_LOST`). PLAN_APPROACH remains a v0 pass-through (immediate transition).
 
 ### Wrist Camera Gating
 
@@ -43,9 +43,10 @@ _WRIST_ACTIVE_PHASES = {VISUAL_ALIGN, EXECUTE_APPROACH, CLOSE_GRIPPER, VERIFY_GR
 
 ### advance() Check Order (per tick)
 
-1. **Timeout** → fail (NO_PROGRESS / NO_GRASP)
-2. **Target loss** (no_target_tolerance_ms exceeded) → RECOVER_RETRY_APPROACH
-3. **Forward progress** (distance thresholds) → next phase
+1. **SELECT_GRASP**: waits for `tracking_status == TRACKING`; timeout → `PERCEPTION_LOST`
+2. **Timeout** → fail (NO_PROGRESS / NO_GRASP)
+3. **Target loss** (no_target_tolerance_ms exceeded) → RECOVER_RETRY_APPROACH
+4. **Forward progress** (distance thresholds) → next phase
 
 Returns old phase on transition, None if stayed. **One transition per tick maximum.**
 
@@ -68,6 +69,8 @@ Returns old phase on transition, None if stayed. **One transition per tick maxim
 5. Update progress (elapsed_ms, delta_distance)
 6. If active and `needs_chunk()`: call `chunk_fn` → `push_fn`
 
+In sim mode, `_tick_sim()` defers `start_pick_fn` until FSM exits SELECT_GRASP. Before trigger: `advance()` with fresh snapshot from `get_latest_runtime_snapshot`. After trigger: syncs FSM from `sim_phase_fn`.
+
 ## Config Defaults
 
 | Parameter | Default | Notes |
@@ -77,7 +80,7 @@ Returns old phase on transition, None if stayed. **One transition per tick maxim
 | `execute_approach_threshold_m` | 0.05 | VISUAL_ALIGN → EXECUTE_APPROACH |
 | `grasp_distance_threshold_m` | 0.01 | Grasp trigger distance |
 | `grasp_persistence_ms` | 300 | Grasp stability requirement |
-| `select_grasp_timeout_ms` | 5000 | |
+| `select_grasp_timeout_ms` | 10000 | Tracking gate timeout |
 | `plan_approach_timeout_ms` | 5000 | |
 | `move_pregrasp_timeout_ms` | 10000 | 10 s max approach |
 | `visual_align_timeout_ms` | 5000 | |

@@ -445,6 +445,15 @@ class TargetPerceptionService:
                     failure_code=PerceptionFailureCode.REACQUIRE_FAILED,
                     target=None,
                 )
+            elif self._last_obs is not None:
+                # Brief tracker loss — hold last-known-good position with
+                # degraded confidence so the TUI bbox stays stable.
+                held = dataclasses.replace(self._last_obs, confidence=0.5, hint_valid=True)
+                await self._publish_state(
+                    target=held,
+                    tracking_status=TrackingStatus.RELOCALIZING,
+                    failure_code=PerceptionFailureCode.OK,
+                )
             else:
                 await self._publish_state(
                     target=None,

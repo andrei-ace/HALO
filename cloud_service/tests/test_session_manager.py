@@ -173,15 +173,6 @@ def test_reset_session(mgr: SessionManager):
     assert session.cursor == -1
 
 
-def test_reset_all(mgr: SessionManager):
-    mgr.get_or_create("arm0")
-    mgr.get_or_create("arm1")
-    mgr.reset_all()
-    for arm_id in ["arm0", "arm1"]:
-        s = mgr.get_session(arm_id)
-        assert s.readiness == "cold"
-
-
 def test_get_session_nonexistent(mgr: SessionManager):
     assert mgr.get_session("nonexistent") is None
 

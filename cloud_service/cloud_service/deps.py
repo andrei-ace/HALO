@@ -26,6 +26,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     global _session_mgr, _config  # noqa: PLW0603
 
     _config = ServiceConfig.from_env()
+    if _config.backend == "cloud" and not _config.google_api_key:
+        raise RuntimeError(
+            "GOOGLE_API_KEY not set. Required for cloud backend. Get a key at https://aistudio.google.com/apikey"
+        )
     logger.info(
         "Starting cognitive service (backend=%s, planner=%s, vlm=%s)",
         _config.backend,

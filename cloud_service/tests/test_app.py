@@ -36,7 +36,7 @@ class _FakeSessionManager:
     def vlm_fn(self):
         return self._vlm_fn
 
-    def get_or_create(self, arm_id):
+    def get_or_create(self, arm_id, client_session_id=None):
         session = MagicMock()
         session.arm_id = arm_id
         session.agent = self._agent
@@ -48,16 +48,13 @@ class _FakeSessionManager:
     def get_session(self, arm_id):
         return None
 
-    def warm_up_session(self, arm_id, state_dict, journal_dicts):
+    def warm_up_session(self, arm_id, state_dict, journal_dicts, client_session_id=None):
         session = MagicMock()
         session.readiness = "ready"
         session.cursor = len(journal_dicts) - 1 if journal_dicts else -1
         return session
 
     def reset_session(self, arm_id):
-        self._agent.reset_loop_state()
-
-    def reset_all(self):
         self._agent.reset_loop_state()
 
 
@@ -219,19 +216,6 @@ def test_state_endpoint_nonexistent(client):
     assert data["readiness"] == "cold"
 
 
-def test_reset(client, mock_agent):
-    resp = client.post("/reset")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
-    mock_agent.reset_loop_state.assert_called_once()
-
-
-def test_reset_arm(client, mock_agent):
-    resp = client.post("/reset/arm0")
-    assert resp.status_code == 200
-    assert resp.json() == {"status": "ok"}
-
-
 def test_auth_required():
     """When cloud_api_key is set, requests without auth are rejected."""
     mock_agent = MagicMock()
@@ -278,7 +262,7 @@ def _make_test_session_mgr():
     # Patch get_or_create to use mock agents instead of real PlannerAgent
     _orig = mgr.get_or_create
 
-    def _patched(arm_id):
+    def _patched(arm_id, client_session_id=None):
         from cloud_service.session_manager import ArmSession
 
         if arm_id in mgr._sessions:
@@ -287,7 +271,7 @@ def _make_test_session_mgr():
             return session
         agent = MagicMock()
         agent.reset_loop_state = MagicMock()
-        session = ArmSession(arm_id=arm_id, agent=agent)
+        session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
         session.touch()
         mgr._sessions[arm_id] = session
         return session
@@ -325,7 +309,7 @@ def test_warm_up_endpoint_reads_body_arm_id(client):
 
 
 def test_reset_clears_pending_handoff():
-    """After reset, pending_handoff is cleared so stale context doesn't leak."""
+    """After reset_session, pending_handoff is cleared so stale context doesn't leak."""
     mgr = _make_test_session_mgr()
     state_dict = {
         "ts_ms": 100,
@@ -346,7 +330,7 @@ def test_reset_clears_pending_handoff():
     session = mgr.warm_up_session("arm0", state_dict=state_dict, journal_dicts=[])
     assert session.pending_handoff is not None
 
-    # Reset should clear it
+    # reset_session (used internally by get_or_create on session mismatch) should clear it
     mgr.reset_session("arm0")
     session_after = mgr.get_session("arm0")
     assert session_after.pending_handoff is None

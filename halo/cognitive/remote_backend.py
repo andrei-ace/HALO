@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
+import uuid
+from typing import TYPE_CHECKING
 
 import httpx
 import numpy as np
@@ -21,6 +24,9 @@ from halo.contracts.serde import (
 )
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.target_perception_service.vlm_parser import VlmScene
+
+if TYPE_CHECKING:
+    from halo.tui.run_logger import RunLogger
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +56,16 @@ class RemoteCognitiveBackend:
     Cloud Run is a future milestone.
     """
 
-    def __init__(self, config: RemoteCloudConfig | None = None, arm_id: str = "arm0") -> None:
+    def __init__(
+        self,
+        config: RemoteCloudConfig | None = None,
+        arm_id: str = "arm0",
+        run_logger: RunLogger | None = None,
+    ) -> None:
         cfg = config or RemoteCloudConfig()
         self._config = cfg
         self._arm_id = arm_id
+        self._run_logger = run_logger
         api_key = cfg.api_key or os.environ.get("HALO_CLOUD_API_KEY", "")
         headers = {}
         if api_key:
@@ -67,6 +79,7 @@ class RemoteCognitiveBackend:
         self._readiness = BackendReadiness.COLD
         self._caught_up_cursor = -1
         self._last_nonce: str | None = None
+        self._session_id: str = uuid.uuid4().hex
 
     @property
     def backend_type(self) -> str:
@@ -78,7 +91,7 @@ class RemoteCognitiveBackend:
         operator_cmd: str | None = None,
         epoch: int | None = None,
     ) -> list[CommandEnvelope]:
-        body: dict = {"snapshot": snapshot_to_dict(snap), "operator_cmd": operator_cmd}
+        body: dict = {"snapshot": snapshot_to_dict(snap), "operator_cmd": operator_cmd, "session_id": self._session_id}
         if epoch is not None:
             body["epoch"] = epoch
         resp = await self._client.post("/decide", json=body)
@@ -94,12 +107,14 @@ class RemoteCognitiveBackend:
         known_handles: list[str] | None = None,
         target_handle: str | None = None,
     ) -> VlmScene:
+        t0 = time.monotonic()
         jpeg_bytes = _encode_jpeg(image)
         metadata = json.dumps(
             {
                 "arm_id": arm_id,
                 "known_handles": known_handles or [],
                 "target_handle": target_handle,
+                "session_id": self._session_id,
             }
         )
         resp = await self._client.post(
@@ -108,7 +123,22 @@ class RemoteCognitiveBackend:
             data={"metadata": metadata},
         )
         resp.raise_for_status()
-        return vlm_scene_from_dict(resp.json())
+        scene = vlm_scene_from_dict(resp.json())
+
+        if self._run_logger is not None:
+            det_dicts = [{"handle": d.handle, "bbox": d.bbox} for d in scene.detections]
+            self._run_logger.log_vlm_inference(
+                arm_id=arm_id,
+                target_handle=target_handle or "",
+                model="remote",
+                raw_response={},
+                target_info=None,
+                inference_ms=int((time.monotonic() - t0) * 1000),
+                image=image,
+                detections=det_dicts,
+            )
+
+        return scene
 
     async def health_check(self) -> bool:
         try:
@@ -132,17 +162,9 @@ class RemoteCognitiveBackend:
         return self._last_reasoning
 
     def reset_loop_state(self) -> None:
-        """Clear local state only. Does NOT reset the remote session —
-        warm-up already establishes fresh context on the remote side.
-        Use reset_remote() for explicit operator-initiated resets."""
+        """Clear local state only — warm-up already establishes fresh context
+        on the remote side."""
         self._last_reasoning = ""
-
-    async def reset_remote(self) -> None:
-        """Explicitly reset the remote session (operator-initiated only)."""
-        try:
-            await self._client.post("/reset")
-        except Exception:
-            pass
 
     # -- WarmableBackend --
 
@@ -155,6 +177,7 @@ class RemoteCognitiveBackend:
         try:
             body: dict = {
                 "arm_id": self._arm_id,
+                "session_id": self._session_id,
                 "state": cognitive_state_to_dict(state) if state else None,
                 "journal": [context_entry_to_dict(e) for e in journal_entries],
             }

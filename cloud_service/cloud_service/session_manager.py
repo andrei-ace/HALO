@@ -28,6 +28,7 @@ class ArmSession:
     readiness: str = BackendReadiness.COLD
     last_active_ms: int = 0
     pending_handoff: str | None = None
+    client_session_id: str | None = None
 
     def touch(self) -> None:
         self.last_active_ms = int(time.monotonic() * 1000)
@@ -66,12 +67,30 @@ class SessionManager:
             self._vlm_fn = self._vlm_fn_factory()
         return self._vlm_fn
 
-    def get_or_create(self, arm_id: str) -> ArmSession:
-        """Get existing session or create a new one for the given arm_id."""
+    def get_or_create(self, arm_id: str, client_session_id: str | None = None) -> ArmSession:
+        """Get existing session or create a new one for the given arm_id.
+
+        If *client_session_id* is provided and differs from the stored one,
+        the session is auto-reset (new TUI client connected).
+        """
         if arm_id in self._sessions:
             session = self._sessions[arm_id]
-            session.touch()
-            return session
+            if client_session_id and session.client_session_id and client_session_id != session.client_session_id:
+                old_sid = session.client_session_id[:8]
+                new_sid = client_session_id[:8]
+                logger.info("New client session for arm_id=%s (%s → %s), resetting", arm_id, old_sid, new_sid)
+                self.reset_session(arm_id)
+                session = self._sessions.get(arm_id)  # reset_session keeps the session
+                if session is not None:
+                    session.client_session_id = client_session_id
+                    session.touch()
+                    return session
+                # fell through — create new below
+            else:
+                if client_session_id:
+                    session.client_session_id = client_session_id
+                session.touch()
+                return session
 
         self._evict_if_needed()
 
@@ -81,7 +100,7 @@ class SessionManager:
             prompts_dir=self._prompts_dir,
             backend=self._backend,
         )
-        session = ArmSession(arm_id=arm_id, agent=agent)
+        session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
         session.touch()
         self._sessions[arm_id] = session
         logger.info("Created new session for arm_id=%s (total=%d)", arm_id, len(self._sessions))
@@ -92,12 +111,13 @@ class SessionManager:
         arm_id: str,
         state_dict: dict | None,
         journal_dicts: list[dict],
+        client_session_id: str | None = None,
     ) -> ArmSession:
         """Warm up a session with CognitiveState and journal entries.
 
         Returns the session with updated readiness and cursor.
         """
-        session = self.get_or_create(arm_id)
+        session = self.get_or_create(arm_id, client_session_id=client_session_id)
 
         # Apply journal entries to the session's context store
         entries: list[ContextEntry] = []
@@ -147,11 +167,6 @@ class SessionManager:
             session.context_store = ContextStore()
             session.pending_handoff = None
             logger.info("Reset session for arm_id=%s", arm_id)
-
-    def reset_all(self) -> None:
-        """Reset all sessions."""
-        for arm_id in list(self._sessions):
-            self.reset_session(arm_id)
 
     @property
     def nonce(self) -> str:

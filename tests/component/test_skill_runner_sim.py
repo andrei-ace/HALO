@@ -4,6 +4,7 @@ import asyncio
 
 from halo.contracts.enums import PhaseId, SkillName
 from halo.contracts.events import EventType
+from halo.testing import make_perception, seed_store
 from halo.testing.mock_fns import LatencyProfile, make_mock_sim_phase_fn, make_mock_start_pick_fn
 from halo.testing.runner import HeadlessRunner, RunnerConfig
 
@@ -30,6 +31,9 @@ async def test_sim_happy_path_pick(latency: LatencyProfile):
     runner = _runner(latency)
     await runner.start()
     try:
+        # Seed tracking status so FSM can exit SELECT_GRASP
+        await seed_store(runner.runtime, ARM, perception=make_perception())
+
         await runner.skill_runner_svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
         # Tick enough times to exhaust the default phase sequence
@@ -66,6 +70,9 @@ async def test_sim_abort(latency: LatencyProfile):
     )
     await runner.start()
     try:
+        # Seed tracking status so FSM can exit SELECT_GRASP
+        await seed_store(runner.runtime, ARM, perception=make_perception())
+
         await runner.skill_runner_svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
         await runner.skill_runner_svc.tick()
         await runner.skill_runner_svc.abort_skill()

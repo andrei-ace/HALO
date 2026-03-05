@@ -123,6 +123,9 @@ class ServerState:
         # Set on reset (home_qpos) and after trajectory completes (final endpoint).
         self.hold_target: np.ndarray | None = None
 
+        # Deferred pick planning — stored by handler, executed by main loop
+        self.pending_pick_target: str | None = None
+
         # Cached IDs (lazy init on first start_pick)
         self._ee_site_id: int | None = None
         self._arm_joint_ids: list[int] | None = None
@@ -188,13 +191,11 @@ def _handle_set_state(msg: dict, env: SO101Env) -> dict:
 
 
 def _handle_start_pick(msg: dict, env: SO101Env, server_state: ServerState | None) -> dict:
-    """Plan a pick trajectory for a specific target body and start executing it.
+    """Accept a pick request and defer planning to the main loop.
 
-    Uses the same pipeline as PickTeacher: grasp planning → keyframes →
-    waypoints → trajectory. The trajectory is stored in server_state and
-    sampled by the autonomous physics loop.
-
-    Requires ``target_body`` field in *msg* (e.g. ``"green_cube"``).
+    The heavy planning (grasp eval, IK, ruckig) runs in ``execute_pending_pick``
+    called from the main loop, so the CommandRPC response returns immediately
+    and frame publication is not starved.
     """
     if server_state is None:
         return {"type": RESP_START_PICK_ERROR, "message": "server_state not available"}
@@ -202,6 +203,42 @@ def _handle_start_pick(msg: dict, env: SO101Env, server_state: ServerState | Non
     target_body = msg.get("target_body")
     if not target_body:
         return {"type": RESP_START_PICK_ERROR, "message": "start_pick requires 'target_body' field"}
+
+    # Validate target body before deferring
+    import mujoco as mj
+
+    from mujoco_sim.scene_info import GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME
+
+    known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
+    try:
+        _resolve_target_body(
+            requested_body=target_body,
+            known_bodies=known_bodies,
+            name_to_body_id=lambda name: mj.mj_name2id(env.mujoco_model, mj.mjtObj.mjOBJ_BODY, name),
+        )
+    except KeyError as exc:
+        logger.warning("start_pick rejected unknown target body: %s", exc)
+        return {"type": RESP_START_PICK_ERROR, "message": str(exc)}
+
+    # Defer — main loop will call execute_pending_pick() on next iteration
+    server_state.pending_pick_target = target_body
+    server_state.phase_id = 0
+    server_state.done = False
+    server_state.error = None
+
+    return {"type": RESP_START_PICK_OK, "target_body": target_body, "deferred": True}
+
+
+def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
+    """Run the heavy pick planning (called from the main loop, not the RPC handler).
+
+    On success, stores the trajectory in *server_state*. On failure, sets
+    ``server_state.error`` and ``server_state.done = True``.
+    """
+    target_body = server_state.pending_pick_target
+    server_state.pending_pick_target = None
+    if not target_body:
+        return
 
     try:
         import time
@@ -244,20 +281,20 @@ def _handle_start_pick(msg: dict, env: SO101Env, server_state: ServerState | Non
             )
         except KeyError as exc:
             logger.warning("start_pick rejected unknown target body: %s", exc)
-            return {"type": RESP_START_PICK_ERROR, "message": str(exc)}
+            server_state.error = str(exc)
+            server_state.done = True
+            return
 
         if resolved_target_body != target_body:
-            logger.info(
-                "start_pick: resolved requested target %r -> %r",
-                target_body,
-                resolved_target_body,
-            )
+            logger.info("start_pick: resolved requested target %r -> %r", target_body, resolved_target_body)
 
         # Look up half-sizes for this body
         try:
             target_half_sizes = scene_info.half_sizes_for_body(resolved_target_body)
         except KeyError as exc:
-            return {"type": RESP_START_PICK_ERROR, "message": str(exc)}
+            server_state.error = str(exc)
+            server_state.done = True
+            return
 
         # Read current state
         current_joints = np.array(data.qpos[:6], copy=True)
@@ -332,21 +369,10 @@ def _handle_start_pick(msg: dict, env: SO101Env, server_state: ServerState | Non
         server_state.done = False
         server_state.error = None
 
-        return {
-            "type": RESP_START_PICK_OK,
-            "duration": trajectory.total_duration,
-            "target_body": resolved_target_body,
-            "target_body_requested": target_body,
-            "target_body_resolved": resolved_target_body,
-        }
-
     except (GraspPlanningFailure, IKFailure) as exc:
         logger.warning("start_pick planning failed: %s", exc)
         server_state.error = str(exc)
-        return {
-            "type": RESP_START_PICK_ERROR,
-            "message": str(exc),
-        }
+        server_state.done = True
     except Exception as exc:
         logger.exception("start_pick unexpected error")
         server_state.error = str(exc)

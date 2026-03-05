@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
+import re
 from pathlib import Path
 
 from google.adk.agents import Agent
@@ -18,11 +20,22 @@ from halo.services.planner_service.service import DecideFn
 from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
 from halo.services.planner_service.tools import AgentContext, build_tools
 
+# Suppress the "non-text parts in the response" warning from google.genai.
+# ADK's internal _build_response_log accesses resp.text on responses that
+# contain function_call parts, triggering this harmless warning every call.
+logging.getLogger("google_genai.types").setLevel(logging.ERROR)
+
 _SNAPSHOT_PREFIX = "Current robot state:"
 _DEPRECATED_CONTENT = "[DEPRECATED - superseded by a more recent snapshot]"
 _THREAD_ID = "planner"  # single-thread; one conversation per PlannerAgent
 _APP_NAME = "halo"
 _USER_ID = "planner"
+
+
+_SNAPSHOT_BLOCK_RE = re.compile(
+    r"Current robot state:\s*```json\s*\n.*?```",
+    re.DOTALL,
+)
 
 
 def _deprecate_old_snapshots(
@@ -31,9 +44,10 @@ def _deprecate_old_snapshots(
 ):
     """ADK before_model_callback: enforce exactly-one-snapshot invariant.
 
-    Before every model call, replace the content of all but the most recent
-    "Current robot state:" user message with a deprecation notice so the LLM
-    only ever reasons about the latest snapshot and the context stays small.
+    Before every model call, strip the JSON snapshot block from all but the
+    most recent "Current robot state:" user message.  Everything else in the
+    message (operator instructions, event context) is preserved so the agent
+    keeps task context across ticks.
 
     Returns None to let the (modified) request proceed to the model.
     """
@@ -47,11 +61,18 @@ def _deprecate_old_snapshots(
     ]
     if len(indices) <= 1:
         return None
-    # Replace all but last snapshot with deprecation notice
     for i in indices[:-1]:
+        old_text = ""
+        for p in contents[i].parts:
+            t = getattr(p, "text", None)
+            if t:
+                old_text = t
+                break
+        # Strip the snapshot JSON block, keep everything else
+        replaced = _SNAPSHOT_BLOCK_RE.sub(_DEPRECATED_CONTENT, old_text).strip()
         contents[i] = types.Content(
             role="user",
-            parts=[types.Part.from_text(_DEPRECATED_CONTENT)],
+            parts=[types.Part.from_text(text=replaced or _DEPRECATED_CONTENT)],
         )
     return None
 
@@ -210,6 +231,7 @@ class PlannerAgent:
             operator_cmd: Optional natural-language instruction from the operator.
                           When provided it is appended to the snapshot message so
                           the agent can act on it in the context of the current state.
+                          Also resets loop detection.
             epoch: Optional lease epoch to stamp on generated commands.
         """
         await self._ensure_session()
@@ -236,7 +258,7 @@ class PlannerAgent:
         if operator_cmd:
             text_parts.append(f"Operator: {operator_cmd}")
 
-        parts: list = [types.Part.from_text("\n\n".join(text_parts))]
+        parts: list = [types.Part.from_text(text="\n\n".join(text_parts))]
 
         # Cloud backend: attach the VLM scene image so Gemini can see what
         # the VLM analysed.  Local (Ollama) skips this — it doesn't support

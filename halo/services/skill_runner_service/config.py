@@ -16,7 +16,7 @@ class SkillRunnerConfig:
     grasp_persistence_ms: int = 300
 
     # Per-phase timeouts
-    select_grasp_timeout_ms: int = 5_000
+    select_grasp_timeout_ms: int = 10_000  # waits for tracking to establish
     plan_approach_timeout_ms: int = 5_000
     move_pregrasp_timeout_ms: int = 10_000
     visual_align_timeout_ms: int = 5_000

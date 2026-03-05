@@ -321,7 +321,7 @@ async def test_tick_publishes_skill_failed_on_timeout(rt: HALORuntime):
     assert any(e.type == EventType.SKILL_FAILED for e in events)
 
     failed = next(e for e in events if e.type == EventType.SKILL_FAILED)
-    assert failed.data.get("failure_code") == SkillFailureCode.NO_PROGRESS.value
+    assert failed.data.get("failure_code") == SkillFailureCode.PERCEPTION_LOST.value
 
 
 # --- abort_skill ---
@@ -405,7 +405,7 @@ async def test_outcome_info_updated_in_store_on_failure(rt: HALORuntime):
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.outcome.state == SkillOutcomeState.FAILURE
-    assert snap.outcome.reason_code == SkillFailureCode.NO_PROGRESS
+    assert snap.outcome.reason_code == SkillFailureCode.PERCEPTION_LOST
     assert snap.held_object_handle is None
 
 
@@ -474,10 +474,11 @@ def _make_sim_svc(
 async def test_sim_mode_phase_transitions(rt: HALORuntime):
     """Sim mode syncs phases from sim_phase_fn."""
     svc = _make_sim_svc(rt)
+    await _seed_store(rt, distance_m=0.5)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
-    # Tick through all sim phases
-    for _ in range(5):
+    # Tick through all sim phases (+1 for SELECT_GRASP→PLAN_APPROACH via advance)
+    for _ in range(7):
         await svc.tick()
 
     events = rt.bus.get_recent_events(ARM)
@@ -493,10 +494,12 @@ async def test_sim_mode_publishes_phase_events(rt: HALORuntime):
             (int(PhaseId.EXECUTE_APPROACH), False),
         ],
     )
+    await _seed_store(rt, distance_m=0.5)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
-    await svc.tick()  # MOVE_PREGRASP (transition from SELECT_GRASP)
-    await svc.tick()  # EXECUTE_APPROACH (transition from MOVE_PREGRASP)
+    await svc.tick()  # SELECT_GRASP→PLAN_APPROACH (advance, tracking OK) + triggers sim pick
+    await svc.tick()  # MOVE_PREGRASP (sync from sim)
+    await svc.tick()  # EXECUTE_APPROACH (sync from sim)
 
     events = rt.bus.get_recent_events(ARM)
     exits = [e for e in events if e.type == EventType.PHASE_EXIT]
@@ -511,8 +514,10 @@ async def test_sim_mode_updates_act_info(rt: HALORuntime):
         rt,
         phase_sequence=[(int(PhaseId.MOVE_PREGRASP), False)],
     )
+    await _seed_store(rt, distance_m=0.5)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    await svc.tick()
+    await svc.tick()  # SELECT_GRASP→PLAN_APPROACH + trigger sim pick
+    await svc.tick()  # sync MOVE_PREGRASP from sim
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.act.status == ActStatus.RUNNING
@@ -533,8 +538,34 @@ async def test_sim_mode_rejects_both_modes(rt: HALORuntime):
 async def test_sim_mode_start_pick_error_fails_skill(rt: HALORuntime):
     """Sim mode: start_pick_fn returning error emits SKILL_FAILED."""
     svc = _make_sim_svc(rt, start_pick_success=False)
+    await _seed_store(rt, distance_m=0.5)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
-    # start_skill should have failed due to start_pick_error
+    # First tick: SELECT_GRASP→PLAN_APPROACH, triggers start_pick_fn which returns error
+    await svc.tick()
+
     events = rt.bus.get_recent_events(ARM)
     assert any(e.type == EventType.SKILL_FAILED for e in events)
+
+
+async def test_sim_mode_deferred_planning_failure(rt: HALORuntime):
+    """Sim mode: done=True with early phase_id (deferred GraspPlanningFailure) emits SKILL_FAILED."""
+    # Simulate what happens when execute_pending_pick fails:
+    # server sets done=True, phase_id stays at 0 (IDLE).
+    svc = _make_sim_svc(
+        rt,
+        phase_sequence=[
+            (int(PhaseId.IDLE), True),  # done=True but phase never advanced
+        ],
+    )
+    await _seed_store(rt, distance_m=0.5)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    # Tick 1: SELECT_GRASP→PLAN_APPROACH (advance, tracking OK) + triggers sim pick
+    await svc.tick()
+    # Tick 2: sim_phase_fn returns (0, True) — deferred planning failure
+    await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_FAILED for e in events)
+    assert not any(e.type == EventType.SKILL_SUCCEEDED for e in events)

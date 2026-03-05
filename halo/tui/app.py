@@ -1159,44 +1159,11 @@ class HALOApp(App):
             self.set_interval(2.0, self._poll_system_panel)
             self._event_queue = self._runtime.bus.subscribe(self._arm_id, maxsize=0)  # type: ignore[union-attr]
             self.run_worker(self._listen_events(), name="event_listener")
-        # Cognitive stack: start switchboard + cloud wait (before agent/perception)
+        # Cognitive stack: start switchboard (non-blocking)
         if self._cognitive_stack is not None:
-            import time as _time
-
             sb = self._cognitive_stack.switchboard
             await sb.start()
-            cfg = self._cognitive_stack.config
-            from halo.cognitive.config import BackendType
-
-            if cfg.active == BackendType.CLOUD:
-                deadline = _time.monotonic() + cfg.startup_cloud_wait_s
-                cloud_ready = False
-                cloud_be = sb.active_backend
-                from halo.cognitive.backend import WarmableBackend
-
-                # For warmable backends, use warm_up() as the probe — it hits
-                # authenticated endpoints, so broken auth is caught immediately
-                # rather than being masked by an open /health endpoint.
-                while _time.monotonic() < deadline:
-                    try:
-                        if isinstance(cloud_be, WarmableBackend):
-                            cloud_ready = await cloud_be.warm_up(state=None, journal_entries=[])
-                        else:
-                            cloud_ready = await cloud_be.health_check()
-                        if cloud_ready:
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(1.0)
-                if not cloud_ready:
-                    import logging as _logging
-
-                    _logging.getLogger(__name__).warning(
-                        "Cloud not ready within %.0fs, falling back to local",
-                        cfg.startup_cloud_wait_s,
-                    )
-                    await sb.switch_to(BackendType.LOCAL, reason="cloud startup timeout")
-        # Start agent processor (after cloud wait so backend is resolved)
+        # Start agent processor
         if self._runtime and self._agent:
             self._agent_queue = asyncio.Queue()
             self.run_worker(self._agent_processor_loop(), name="agent_processor")
@@ -1210,15 +1177,52 @@ class HALOApp(App):
             self._cmd_route_queue = self._runtime.bus.subscribe(self._arm_id, maxsize=0)  # type: ignore[union-attr]
             self.run_worker(self._route_commands(), name="cmd_router")
         if self._perception_svc is not None:
-            # Start the service so it listens for planner commands,
-            # but don't set a tracking target — the planner decides when.
             await self._perception_svc.start()  # type: ignore[union-attr]
-            # Run a single scene analysis on startup via the service.
-            await self._perception_svc.request_refresh(reason="startup")  # type: ignore[union-attr]
+        # Cloud wait + initial scene analysis in background so UI renders immediately
+        self.run_worker(self._startup_cloud_and_perception(), name="startup_backend")
         # Live backend: voice command polling + audio panel updates
         if self._live_backend is not None:
             self.run_worker(self._poll_voice_commands(), name="voice_cmd_poll")
             self.set_interval(0.5, self._poll_audio_panel)
+
+    async def _startup_cloud_and_perception(self) -> None:
+        """Background: wait for cloud backend, fall back to local, then DESCRIBE_SCENE."""
+        import logging as _logging
+        import time as _time
+
+        log = _logging.getLogger(__name__)
+
+        if self._cognitive_stack is not None:
+            sb = self._cognitive_stack.switchboard
+            cfg = self._cognitive_stack.config
+            from halo.cognitive.backend import WarmableBackend
+            from halo.cognitive.config import BackendType
+
+            if cfg.active == BackendType.CLOUD:
+                deadline = _time.monotonic() + cfg.startup_cloud_wait_s
+                cloud_ready = False
+                cloud_be = sb.active_backend
+                while _time.monotonic() < deadline:
+                    try:
+                        if isinstance(cloud_be, WarmableBackend):
+                            cloud_ready = await cloud_be.warm_up(state=None, journal_entries=[])
+                        else:
+                            cloud_ready = await cloud_be.health_check()
+                        if cloud_ready:
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1.0)
+                if not cloud_ready:
+                    log.warning(
+                        "Cloud not ready within %.0fs, falling back to local",
+                        cfg.startup_cloud_wait_s,
+                    )
+                    await sb.switch_to(BackendType.LOCAL, reason="cloud startup timeout")
+
+        # Initial scene analysis
+        if self._perception_svc is not None:
+            await self._perception_svc.request_refresh(reason="startup")  # type: ignore[union-attr]
 
     async def on_unmount(self) -> None:
         if self._cognitive_stack is not None:
@@ -1501,7 +1505,7 @@ class HALOApp(App):
     def _with_task_context(self, system_msg: str) -> str:
         """Append the last operator instruction so the agent keeps task context."""
         if self._last_operator_msg:
-            return f"{system_msg}\nOperator task: {self._last_operator_msg}"
+            return f"{system_msg}\nOperator task (act on it now): {self._last_operator_msg}"
         return system_msg
 
     _AGENT_WAKE_EVENTS = frozenset(
@@ -1750,19 +1754,16 @@ def _take_screenshot(path: str = "halo_tui.svg") -> None:
 
 def _run_live(args: list[str]) -> None:
     """Start the TUI wired to a real HALORuntime + PlannerAgent."""
-    from pathlib import Path
 
     from halo.runtime.runtime import HALORuntime
-    from halo.services.planner_service.agent import PlannerAgent
-    from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.service import TargetPerceptionService
     from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
     from halo.services.target_perception_service.video_source import VideoSource
 
-    # Parse --arm, --model, --vlm-model, --base-url, --source, --backend, --cloud-url from args
+    # Parse CLI args — model defaults come from config dataclasses, not here
     arm_id = "arm0"
-    model = "gpt-oss:20b"
-    vlm_model = "qwen2.5vl:3b"
+    model: str | None = None
+    vlm_model: str | None = None
     base_url = "http://localhost:11434"
     source_type = "videoloop"
     backend = "local"
@@ -1784,35 +1785,34 @@ def _run_live(args: list[str]) -> None:
         elif arg == "--cloud-url" and i + 1 < len(args):
             cloud_url = args[i + 1]
 
-    # Apply cloud defaults when backend is cloud and user didn't override models
-    if backend == "cloud":
-        if model == "gpt-oss:20b":
-            model = "gemini-2.5-flash"
-        if vlm_model == "qwen2.5vl:3b":
-            vlm_model = "gemini-2.5-flash"
-
     run_logger = RunLogger(_RUNS_DIR, arm_id)
 
     live_backend = None
     cognitive_stack = None
 
+    # Build cognitive stack — all paths go through Switchboard
+    from halo.cognitive import make_cognitive_stack
+    from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
+    from halo.cognitive.lease import LeaseManager
+
+    # Build local config with CLI overrides (or defaults from LocalConfig)
+    local_kwargs: dict = {"base_url": base_url}
+    if model:
+        local_kwargs["planner_model"] = model
+    if vlm_model:
+        local_kwargs["vlm_model"] = vlm_model
+    local_cfg = LocalConfig(**local_kwargs)
+
     if cloud_url:
-        # Remote cloud backend — thin HTTP client to Cloud Run via Switchboard
-        from halo.cognitive import make_cognitive_stack
-        from halo.cognitive.config import BackendType, CognitiveConfig, LocalConfig, RemoteCloudConfig
-        from halo.cognitive.lease import LeaseManager
+        from halo.cognitive.config import RemoteCloudConfig
         from halo.cognitive.remote_backend import RemoteCognitiveBackend
 
-        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url), arm_id=arm_id)
+        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url), arm_id=arm_id, run_logger=run_logger)
         lease_mgr = LeaseManager()
         runtime = HALORuntime(lease_manager=lease_mgr)
         runtime.register_arm(arm_id)
         stack = make_cognitive_stack(
-            config=CognitiveConfig(
-                active=BackendType.CLOUD,
-                local=LocalConfig(base_url=base_url, planner_model=model, vlm_model=vlm_model),
-                enable_failover=True,
-            ),
+            config=CognitiveConfig(active=BackendType.CLOUD, local=local_cfg, enable_failover=True),
             cloud_backend=remote,
             lease_mgr=lease_mgr,
             bus=runtime.bus,
@@ -1820,56 +1820,22 @@ def _run_live(args: list[str]) -> None:
             run_logger=run_logger,
             arm_id=arm_id,
         )
-        agent = stack.switchboard
-        vlm_fn = stack.switchboard.vlm_scene
-        cognitive_stack = stack
     elif backend == "cloud":
-        # Gemini Live API — bidirectional audio + text via Switchboard
-        from halo.cognitive import make_cognitive_stack
-        from halo.cognitive.audio_io import make_audio_components
+        cloud_kwargs: dict = {}
+        if model:
+            cloud_kwargs["planner_model"] = model
+        if vlm_model:
+            cloud_kwargs["vlm_model"] = vlm_model
+        cloud_cfg = CloudConfig(**cloud_kwargs)
+
         from halo.cognitive.cloud_backend import CloudCognitiveBackend
-        from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
-        from halo.cognitive.lease import LeaseManager
 
-        cloud_cfg = CloudConfig(planner_model=model, vlm_model=vlm_model)
-
-        # Set up audio (graceful degradation if sounddevice not installed)
-        def _audio_stub(pcm: bytes) -> None:
-            if live_backend is not None:
-                live_backend._session.on_audio_chunk(pcm)
-
-        audio = make_audio_components(
-            on_audio=_audio_stub,
-            input_sample_rate=cloud_cfg.input_sample_rate,
-            output_sample_rate=cloud_cfg.output_sample_rate,
-        )
-
-        if not audio.available:
-            # Fall back to text-only mode
-            cloud_cfg = CloudConfig(
-                planner_model=model,
-                vlm_model=vlm_model,
-                audio_enabled=False,
-                response_modalities=("TEXT",),
-            )
-
-        cloud_be = CloudCognitiveBackend(
-            config=cloud_cfg,
-            audio_capture=audio.capture,
-            audio_playback=audio.playback,
-            run_logger=run_logger,
-        )
-
+        cloud_be = CloudCognitiveBackend(config=cloud_cfg, run_logger=run_logger)
         lease_mgr = LeaseManager()
         runtime = HALORuntime(lease_manager=lease_mgr)
         runtime.register_arm(arm_id)
         stack = make_cognitive_stack(
-            config=CognitiveConfig(
-                active=BackendType.CLOUD,
-                local=LocalConfig(base_url=base_url),
-                cloud=cloud_cfg,
-                enable_failover=True,
-            ),
+            config=CognitiveConfig(active=BackendType.CLOUD, local=local_cfg, cloud=cloud_cfg, enable_failover=True),
             cloud_backend=cloud_be,
             lease_mgr=lease_mgr,
             bus=runtime.bus,
@@ -1877,22 +1843,20 @@ def _run_live(args: list[str]) -> None:
             run_logger=run_logger,
             arm_id=arm_id,
         )
-        agent = stack.switchboard
-        vlm_fn = stack.switchboard.vlm_scene
-        live_backend = cloud_be
-        cognitive_stack = stack
     else:
         runtime = HALORuntime()
         runtime.register_arm(arm_id)
-
-        prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
-        agent = PlannerAgent(model, base_url, prompts_dir)
-
-        vlm_fn = make_ollama_vlm_fn(
-            base_url=base_url,
-            model=vlm_model,
+        stack = make_cognitive_stack(
+            config=CognitiveConfig(active=BackendType.LOCAL, local=local_cfg, enable_failover=False),
+            bus=runtime.bus,
+            snapshot_fn=runtime.get_latest_runtime_snapshot,
             run_logger=run_logger,
+            arm_id=arm_id,
         )
+
+    agent = stack.switchboard
+    vlm_fn = stack.switchboard.vlm_scene
+    cognitive_stack = stack
 
     if source_type == "mujoco":
         from halo.bridge.sim_source import SimSource
@@ -1950,6 +1914,17 @@ def _run_live(args: list[str]) -> None:
         live_backend=live_backend,
         cognitive_stack=cognitive_stack,
     ).run()
+
+    # After TUI exits, suppress all output — stray log messages from asyncio
+    # cleanup, health-check threads, etc. are terminal noise.
+    import logging as _logging
+    import os
+    import sys
+
+    _logging.disable(_logging.CRITICAL)
+    _devnull = open(os.devnull, "w")  # noqa: SIM115
+    sys.stdout = _devnull
+    sys.stderr = _devnull
 
     video_source.stop()
 

@@ -6,6 +6,7 @@ from halo.contracts.enums import (
     PhaseId,
     SkillFailureCode,
     SkillOutcomeState,
+    TrackingStatus,
 )
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.services.skill_runner_service.config import SkillRunnerConfig
@@ -101,8 +102,10 @@ class PickFSM:
 
         if phase == PhaseId.SELECT_GRASP:
             if elapsed >= self._config.select_grasp_timeout_ms:
-                return self._fail(now_ms, SkillFailureCode.NO_PROGRESS)
-            # v0: immediate pass-through (grasp planning is a future extension)
+                return self._fail(now_ms, SkillFailureCode.PERCEPTION_LOST)
+            # Gate on tracking: wait for tracker to establish before proceeding
+            if perception.tracking_status != TrackingStatus.TRACKING:
+                return None
             return self._transition(now_ms, PhaseId.PLAN_APPROACH)
 
         elif phase == PhaseId.PLAN_APPROACH:

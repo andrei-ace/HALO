@@ -38,7 +38,7 @@ make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 
 - **LLM**: LiteLlm with `ollama_chat` provider (local Ollama, `gpt-oss:20b` default)
 - **Session**: InMemorySessionService (conversation persists across ticks in memory)
-- **before_model_callback** (`_deprecate_old_snapshots`): replaces all but the latest "Current robot state:" message with a deprecation notice — enforces exactly-one-snapshot invariant
+- **before_model_callback** (`_deprecate_old_snapshots`): strips only the JSON snapshot block (via regex) from deprecated messages, preserving operator instructions and other text so the agent keeps task context across ticks — enforces exactly-one-snapshot invariant
 - **Loop detection** (MAX_LOOP_RETRIES=4): tracks consecutive identical commands across ticks; rejects batch on streak >= 4
 - `decide(snap, operator_cmd=None)`: main entry point. Formats snapshot as JSON user message, optionally appends operator instruction, runs agent via Runner.run_async, returns accumulated commands
 - `reset_loop_state()`: called when operator sends new instruction
@@ -68,7 +68,7 @@ Converts PlannerSnapshot to plain dict. Key conversions:
 
 ## Prompts
 
-Loaded from `halo/configs/planner/`:
+Loaded from `configs/planner/`:
 - `system_prompt.md` — core agent instructions
 - `skills/pick.md` — PICK skill reference
 - `skills/place.md` — PLACE skill reference

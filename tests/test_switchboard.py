@@ -76,7 +76,7 @@ def _make_switchboard(
     local = _make_mock_backend("local")
     cloud = _make_mock_backend("cloud")
     config = CognitiveConfig(active=active, enable_failover=enable_failover)
-    sb = Switchboard(config=config, local=local, cloud=cloud)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
     return sb, local, cloud
 
 
@@ -209,20 +209,16 @@ async def test_success_resets_failure_counter():
     sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
     snap = _idle_snap()
 
-    # Fail twice
-    local.decide = AsyncMock(side_effect=RuntimeError("fail"))
-    await sb.decide(snap)
-    await sb.decide(snap)
-
-    # Then succeed
+    # Succeed — should stay on local
     local.decide = AsyncMock(return_value=[])
     await sb.decide(snap)
+    assert sb.active_type == BackendType.LOCAL
+    assert sb._consecutive_failures == 0
 
-    # Fail twice more — should not trigger switch (counter was reset)
+    # One failure triggers immediate failover (retries exhausted → switch)
     local.decide = AsyncMock(side_effect=RuntimeError("fail"))
     await sb.decide(snap)
-    await sb.decide(snap)
-    assert sb.active_type == BackendType.LOCAL
+    assert sb.active_type == BackendType.CLOUD
 
 
 @pytest.mark.asyncio
@@ -230,9 +226,8 @@ async def test_vlm_failure_also_counts():
     sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
     local.vlm_scene = AsyncMock(side_effect=RuntimeError("VLM down"))
 
-    for _ in range(CONSECUTIVE_FAILURES_BEFORE_SWITCH):
-        await sb.vlm_scene("arm0", b"img")
-
+    # Single call with retries exhausted triggers immediate failover
+    await sb.vlm_scene("arm0", b"img")
     assert sb.active_type == BackendType.CLOUD
 
 
@@ -303,7 +298,7 @@ async def test_failback_sends_full_warmup_when_cold():
     local = _make_warmable_mock_backend("local")
     cloud = _make_warmable_mock_backend("cloud")
     config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
 
     # Simulate: switched to cloud (local is preferred but failed)
     await sb.switch_to(BackendType.CLOUD, reason="test failover")
@@ -330,7 +325,7 @@ async def test_failback_sends_incremental_when_warming():
     local = _make_warmable_mock_backend("local")
     cloud = _make_warmable_mock_backend("cloud")
     config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
 
     await sb.switch_to(BackendType.CLOUD, reason="test")
 
@@ -353,7 +348,7 @@ async def test_failback_switches_when_ready():
     local = _make_warmable_mock_backend("local")
     cloud = _make_warmable_mock_backend("cloud")
     config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
 
     await sb.switch_to(BackendType.CLOUD, reason="test")
     assert sb.active_type == BackendType.CLOUD
@@ -390,7 +385,14 @@ async def test_failback_warmup_with_snapshot_fn():
     snap = _idle_snap()
     snapshot_fn = AsyncMock(return_value=snap)
     config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, snapshot_fn=snapshot_fn)
+    sb = Switchboard(
+        config=config,
+        local=local,
+        cloud=cloud,
+        snapshot_fn=snapshot_fn,
+        max_retries=1,
+        retry_delays=(0.0,),
+    )
 
     await sb.switch_to(BackendType.CLOUD, reason="test")
 
@@ -465,7 +467,7 @@ async def test_rewarm_active_on_cold_detection():
     local = _make_warmable_mock_backend("local")
     cloud = _make_warmable_mock_backend("cloud")
     config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
 
     # Cloud is active and drops to COLD (e.g. instance restart)
     type(cloud).readiness = PropertyMock(return_value=BackendReadiness.COLD)
@@ -489,7 +491,7 @@ async def test_rewarm_active_skips_when_ready():
     local = _make_warmable_mock_backend("local")
     cloud = _make_warmable_mock_backend("cloud")
     config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
 
     type(cloud).readiness = PropertyMock(return_value=BackendReadiness.READY)
 

@@ -96,6 +96,8 @@ class SkillRunnerService:
         self._skill_start_ms: int = 0
         self._last_distance_m: float | None = None
 
+        self._sim_pick_triggered: bool = False  # sim mode: True after start_pick_fn called
+
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
 
@@ -160,6 +162,7 @@ class SkillRunnerService:
         self._active_target_handle = target_handle
         self._skill_start_ms = now_ms
         self._last_distance_m = None
+        self._sim_pick_triggered = False
 
         store = self._runtime.store
         await store.update_skill(
@@ -192,20 +195,10 @@ class SkillRunnerService:
             {"phase_id": int(PhaseId.SELECT_GRASP)},
         )
 
-        # In sim mode, trigger trajectory planning on the server
-        if self._sim_mode and self._start_pick_fn is not None:
-            try:
-                resp = await self._start_pick_fn(self._arm_id, target_handle)
-                if resp.get("type") == "start_pick_error":
-                    logger.warning("start_pick_fn returned error: %s", resp.get("message"))
-                    old_phase = self._fsm.phase
-                    self._fsm.fail(now_ms, SkillFailureCode.NO_GRASP)
-                    await self._handle_transition(old_phase)
-            except BridgeTransportError:
-                logger.warning("start_pick_fn bridge transport failed, aborting skill")
-                old_phase = self._fsm.phase
-                self._fsm.abort(now_ms)
-                await self._handle_transition(old_phase)
+        # In sim mode, trigger trajectory planning on the server.
+        # Note: start_pick_fn is NOT called here — it's deferred until the
+        # FSM exits SELECT_GRASP (which gates on tracking_status == TRACKING).
+        # The _tick_sim loop calls _maybe_trigger_sim_pick() on that transition.
 
     async def abort_skill(self) -> None:
         """Abort the current skill run (idempotent if not active)."""
@@ -254,24 +247,50 @@ class SkillRunnerService:
     # --- Sim mode tick ---
 
     async def _tick_sim(self) -> PhaseId | None:
-        """Sim-mode tick: read phase from sim_phase_fn, sync FSM, update progress."""
+        """Sim-mode tick: read phase from sim_phase_fn, sync FSM, update progress.
+
+        Before the sim pick is triggered, the FSM stays in SELECT_GRASP and
+        uses advance() to gate on tracking_status == TRACKING.  Once tracking
+        is confirmed the FSM transitions to PLAN_APPROACH, start_pick_fn is
+        called, and subsequent ticks sync the FSM from sim telemetry.
+        """
         if not self._fsm.is_active:
             return None
 
         now_ms = int(time.monotonic() * 1000)
 
-        # Read phase from sim server telemetry
-        if self._sim_phase_fn is not None:
-            phase_id, done = self._sim_phase_fn()
+        # Phase 1: waiting for tracking (FSM in SELECT_GRASP / PLAN_APPROACH)
+        if not self._sim_pick_triggered:
+            snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
+
+            old_phase = self._fsm.advance(now_ms, snap.target, snap.perception, snap.act)
+            if old_phase is not None:
+                await self._handle_transition(old_phase)
+
+            # FSM advanced past SELECT_GRASP → trigger sim pick
+            if self._fsm.phase.value >= PhaseId.PLAN_APPROACH.value and self._fsm.phase != PhaseId.DONE:
+                await self._trigger_sim_pick(now_ms)
         else:
-            return self._fsm.phase
+            # Phase 2: sim pick running — sync FSM from sim telemetry
+            if self._sim_phase_fn is not None:
+                phase_id, done = self._sim_phase_fn()
+            else:
+                return self._fsm.phase
 
-        # Sync FSM phase from sim
-        sim_phase = PhaseId(phase_id) if not done else PhaseId.DONE
-        old_phase = self._fsm.sync_phase(now_ms, sim_phase)
+            if done and phase_id < PhaseId.LIFT.value:
+                # Deferred planning failure — sim signalled done before
+                # reaching LIFT (e.g. GraspPlanningFailure in execute_pending_pick).
+                logger.warning("Sim done=True with early phase_id=%d — treating as NO_GRASP failure", phase_id)
+                old_phase = self._fsm.phase
+                self._fsm.fail(now_ms, SkillFailureCode.NO_GRASP)
+                await self._handle_transition(old_phase)
+                return self._fsm.phase
 
-        if old_phase is not None:
-            await self._handle_transition(old_phase)
+            sim_phase = PhaseId(phase_id) if not done else PhaseId.DONE
+            old_phase = self._fsm.sync_phase(now_ms, sim_phase)
+
+            if old_phase is not None:
+                await self._handle_transition(old_phase)
 
         # Update progress (no delta_distance in sim mode)
         elapsed_ms = now_ms - self._skill_start_ms
@@ -288,6 +307,24 @@ class SkillRunnerService:
         )
 
         return self._fsm.phase
+
+    async def _trigger_sim_pick(self, now_ms: int) -> None:
+        """Call start_pick_fn on the sim server. Fails the skill on error."""
+        if self._start_pick_fn is None or self._active_target_handle is None:
+            return
+        self._sim_pick_triggered = True
+        try:
+            resp = await self._start_pick_fn(self._arm_id, self._active_target_handle)
+            if resp.get("type") == "start_pick_error":
+                logger.warning("start_pick_fn returned error: %s", resp.get("message"))
+                old_phase = self._fsm.phase
+                self._fsm.fail(now_ms, SkillFailureCode.NO_GRASP)
+                await self._handle_transition(old_phase)
+        except BridgeTransportError:
+            logger.warning("start_pick_fn bridge transport failed, aborting skill")
+            old_phase = self._fsm.phase
+            self._fsm.abort(now_ms)
+            await self._handle_transition(old_phase)
 
     # --- Shared transition handling ---
 

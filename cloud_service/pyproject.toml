@@ -20,6 +20,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.28", "ruff>=0.8"]
 
+[tool.hatch.build.targets.wheel]
+packages = ["cloud_service"]
+
 [tool.uv.sources]
 halo = { workspace = true }
 
@@ -32,3 +35,4 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"

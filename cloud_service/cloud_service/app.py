@@ -5,8 +5,6 @@ Endpoints:
     POST /vlm/scene      — VLM scene analysis (JPEG image → VlmScene JSON)
     POST /warm-up        — warm-up session with state + journal
     GET  /state/{arm_id} — session readiness and cursor
-    POST /reset/{arm_id} — reset specific arm session
-    POST /reset          — reset default (arm0) session (backward compat)
     GET  /health         — health check
 """
 
@@ -40,9 +38,10 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     snapshot = snapshot_from_dict(body["snapshot"])
     operator_cmd = body.get("operator_cmd")
     epoch = body.get("epoch")
+    client_session_id = body.get("session_id")
     arm_id = snapshot.arm_id
 
-    session = session_mgr.get_or_create(arm_id)
+    session = session_mgr.get_or_create(arm_id, client_session_id=client_session_id)
     if session.pending_handoff:
         await session.agent.inject_handoff_context(session.pending_handoff)
         session.pending_handoff = None
@@ -84,10 +83,11 @@ async def warm_up(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     """Warm up a session with CognitiveState + journal entries."""
     state_dict = body.get("state")
     journal_dicts = body.get("journal", [])
+    client_session_id = body.get("session_id")
     # Read arm_id from top-level body, fall back to state, then default
     arm_id = body.get("arm_id") or (state_dict.get("last_arm_id") if state_dict else None) or "arm0"
 
-    session = session_mgr.warm_up_session(arm_id, state_dict, journal_dicts)
+    session = session_mgr.warm_up_session(arm_id, state_dict, journal_dicts, client_session_id=client_session_id)
     return {
         "readiness": session.readiness,
         "cursor": session.cursor,
@@ -105,17 +105,3 @@ async def get_state(arm_id: str, session_mgr=Depends(get_session_manager)) -> di
         "cursor": session.cursor,
         "exists": True,
     }
-
-
-@app.post("/reset/{arm_id}", dependencies=[Depends(verify_api_key)])
-async def reset_arm(arm_id: str, session_mgr=Depends(get_session_manager)) -> dict:
-    """Reset a specific arm session."""
-    session_mgr.reset_session(arm_id)
-    return {"status": "ok"}
-
-
-@app.post("/reset", dependencies=[Depends(verify_api_key)])
-async def reset(session_mgr=Depends(get_session_manager)) -> dict:
-    """Reset the default arm0 session (backward compat)."""
-    session_mgr.reset_session("arm0")
-    return {"status": "ok"}

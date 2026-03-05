@@ -19,8 +19,12 @@ make install           # install deps + MuJoCo (uv sync --extra dev --extra sim)
 make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
 make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
-make tui-live-videoloop # launch TUI with video loop source (requires Ollama)
-make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + MuJoCo; run make install-sim first)
+make tui-live              # launch TUI with local Ollama + MuJoCo sim
+make tui-live-cloud        # launch TUI via cloud service HTTP (set HALO_CLOUD_URL)
+make tui-live-cloud-local  # launch TUI with direct Gemini API (requires GOOGLE_API_KEY)
+make run-cloud-service     # run cloud_service (requires GOOGLE_API_KEY)
+make test-cloud-service    # run cloud_service unit tests
+make smoke-cloud-service   # smoke test against Gemini (requires GOOGLE_API_KEY)
 make generate-episodes # generate teacher episodes (EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0; requires make install-sim)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
@@ -52,9 +56,9 @@ All v0 backbone services are implemented and tested:
 
 The TUI supports multiple modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
-- **Live local** (`make tui-live-videoloop` or `make tui-live-mujoco`): Ollama planner + VLM.
-- **Live cloud** (`make tui-live-cloud`): Gemini Live API (bidirectional audio + text) via Switchboard. Requires `GOOGLE_API_KEY`.
-- **Live remote cloud** (`make tui-live-remote-cloud`): HTTP client to Cloud Run via Switchboard. Requires `HALO_CLOUD_URL`.
+- **Live local** (`make tui-live`): Ollama planner + VLM + MuJoCo sim.
+- **Live cloud** (`make tui-live-cloud`): HTTP client to cloud service via Switchboard. Set `HALO_CLOUD_URL` for remote.
+- **Live cloud local** (`make tui-live-cloud-local`): Direct Gemini API via Switchboard. Requires `GOOGLE_API_KEY`.
 
 All cloud modes use the Switchboard with LeaseManager for split-brain prevention, automatic failover (3 consecutive failures → switch), and warm-up handoff on failback. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
 

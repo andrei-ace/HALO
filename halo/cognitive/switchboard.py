@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 
 CONSECUTIVE_FAILURES_BEFORE_SWITCH = 3
 _CATCHUP_BATCH_SIZE = 20
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_DELAYS = (0.5, 1.0, 2.0)
+
+# Errors that should immediately fail over without retrying
+_NO_RETRY_KEYWORDS = ("429", "RESOURCE_EXHAUSTED", "quota")
+
+
+def _is_non_retryable(exc: Exception) -> bool:
+    """Return True if the error should skip retries and fail over immediately."""
+    msg = str(exc).lower()
+    return any(kw.lower() in msg for kw in _NO_RETRY_KEYWORDS)
+
 
 _JOURNALED_EVENT_TYPES = frozenset(
     {
@@ -60,6 +72,8 @@ class Switchboard:
         bus: EventBus | None = None,
         snapshot_fn: Callable[[str], Awaitable[PlannerSnapshot | None]] | None = None,
         arm_id: str = "arm0",
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        retry_delays: tuple[float, ...] = DEFAULT_RETRY_DELAYS,
     ) -> None:
         self._config = config
         self._backends: dict[str, CognitiveBackend] = {
@@ -71,6 +85,10 @@ class Switchboard:
         self._bus = bus
         self._snapshot_fn = snapshot_fn
         self._arm_id = arm_id
+
+        # Retry config
+        self._max_retries = max_retries
+        self._retry_delays = retry_delays
 
         # Health tracking
         self._consecutive_failures: int = 0
@@ -106,46 +124,94 @@ class Switchboard:
         snap: PlannerSnapshot,
         operator_cmd: str | None = None,
     ) -> list[CommandEnvelope]:
-        """Delegate to active backend.decide(). Track failures for failover."""
-        try:
-            commands = await self.active_backend.decide(
-                snap,
-                operator_cmd=operator_cmd,
+        """Delegate to active backend.decide() with retry on transient errors."""
+        # Record operator instruction eagerly so it survives failover
+        if operator_cmd:
+            self._context_store.append(
                 epoch=self._lease_mgr.current_epoch,
+                backend=self._active_type,
+                entry_type="operator",
+                summary=operator_cmd,
             )
-            self._on_success()
 
-            # Stamp lease_token on all returned commands
-            from dataclasses import replace as _dc_replace
-
-            token = self._lease_mgr.current_token
-            if token is not None:
-                commands = [_dc_replace(c, lease_token=token) for c in commands]
-
-            # Record decision in context store
-            reasoning = self.active_backend.last_reasoning
-            if reasoning:
-                self._context_store.append(
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                commands = await self.active_backend.decide(
+                    snap,
+                    operator_cmd=operator_cmd,
                     epoch=self._lease_mgr.current_epoch,
-                    backend=self._active_type,
-                    entry_type="decision",
-                    summary=reasoning,
                 )
+                self._on_success()
 
-            # Record operator instruction
-            if operator_cmd:
-                self._context_store.append(
+                # Stamp epoch + lease_token on all returned commands
+                from dataclasses import replace as _dc_replace
+
+                epoch = self._lease_mgr.current_epoch
+                token = self._lease_mgr.current_token
+                if token is not None:
+                    commands = [_dc_replace(c, epoch=epoch, lease_token=token) for c in commands]
+
+                # Record decision in context store
+                reasoning = self.active_backend.last_reasoning
+                if reasoning:
+                    self._context_store.append(
+                        epoch=self._lease_mgr.current_epoch,
+                        backend=self._active_type,
+                        entry_type="decision",
+                        summary=reasoning,
+                    )
+
+                return commands
+            except Exception as exc:
+                last_exc = exc
+                if _is_non_retryable(exc):
+                    logger.info("decide() non-retryable error on %s: %s", self._active_type, exc)
+                    break
+                delay = self._retry_delays[min(attempt, len(self._retry_delays) - 1)]
+                logger.info(
+                    "decide() attempt %d/%d on %s: %s — retry in %.0fs",
+                    attempt + 1,
+                    self._max_retries,
+                    self._active_type,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+        else:
+            logger.warning("decide() failed after %d retries on %s: %s", self._max_retries, self._active_type, last_exc)
+        # Force immediate failover — retries exhausted or non-retryable
+        old_type = self._active_type
+        self._consecutive_failures = CONSECUTIVE_FAILURES_BEFORE_SWITCH - 1
+        await self._on_failure()
+
+        # If we switched, replay the call on the new backend
+        if self._active_type != old_type:
+            try:
+                commands = await self.active_backend.decide(
+                    snap,
+                    operator_cmd=operator_cmd,
                     epoch=self._lease_mgr.current_epoch,
-                    backend=self._active_type,
-                    entry_type="operator",
-                    summary=operator_cmd,
                 )
+                self._on_success()
+                from dataclasses import replace as _dc_replace
 
-            return commands
-        except Exception:
-            logger.exception("decide() failed on %s backend", self._active_type)
-            await self._on_failure()
-            return []
+                epoch = self._lease_mgr.current_epoch
+                token = self._lease_mgr.current_token
+                if token is not None:
+                    commands = [_dc_replace(c, epoch=epoch, lease_token=token) for c in commands]
+                reasoning = self.active_backend.last_reasoning
+                if reasoning:
+                    self._context_store.append(
+                        epoch=self._lease_mgr.current_epoch,
+                        backend=self._active_type,
+                        entry_type="decision",
+                        summary=reasoning,
+                    )
+                return commands
+            except Exception as replay_exc:
+                logger.warning("decide() replay on %s also failed: %s", self._active_type, replay_exc)
+        return []
 
     async def vlm_scene(
         self,
@@ -154,27 +220,67 @@ class Switchboard:
         known_handles: list[str] | None = None,
         target_handle: str | None = None,
     ) -> VlmScene:
-        """Delegate to active backend.vlm_scene(). Track failures for failover."""
-        try:
-            scene = await self.active_backend.vlm_scene(arm_id, image, known_handles, target_handle=target_handle)
-            self._on_success()
+        """Delegate to active backend.vlm_scene() with retry on transient errors."""
+        last_exc: Exception | None = None
+        for attempt in range(self._max_retries):
+            try:
+                scene = await self.active_backend.vlm_scene(arm_id, image, known_handles, target_handle=target_handle)
+                self._on_success()
 
-            # Record scene in context store
-            if scene.scene:
-                handles = [d.handle for d in scene.detections]
-                self._context_store.append(
-                    epoch=self._lease_mgr.current_epoch,
-                    backend=self._active_type,
-                    entry_type="scene",
-                    summary=scene.scene,
-                    data={"handles": handles},
+                # Record scene in context store
+                if scene.scene:
+                    handles = [d.handle for d in scene.detections]
+                    self._context_store.append(
+                        epoch=self._lease_mgr.current_epoch,
+                        backend=self._active_type,
+                        entry_type="scene",
+                        summary=scene.scene,
+                        data={"handles": handles},
+                    )
+
+                return scene
+            except Exception as exc:
+                last_exc = exc
+                if _is_non_retryable(exc):
+                    logger.info("vlm_scene() non-retryable error on %s: %s", self._active_type, exc)
+                    break
+                delay = self._retry_delays[min(attempt, len(self._retry_delays) - 1)]
+                logger.info(
+                    "vlm_scene() attempt %d/%d on %s: %s — retry in %.0fs",
+                    attempt + 1,
+                    self._max_retries,
+                    self._active_type,
+                    exc,
+                    delay,
                 )
+                await asyncio.sleep(delay)
+        else:
+            logger.warning(
+                "vlm_scene() failed after %d retries on %s: %s", self._max_retries, self._active_type, last_exc
+            )
+        # Force immediate failover — retries exhausted or non-retryable
+        old_type = self._active_type
+        self._consecutive_failures = CONSECUTIVE_FAILURES_BEFORE_SWITCH - 1
+        await self._on_failure()
 
-            return scene
-        except Exception:
-            logger.exception("vlm_scene() failed on %s backend", self._active_type)
-            await self._on_failure()
-            return VlmScene(scene="", detections=[])
+        # If we switched, replay the call on the new backend
+        if self._active_type != old_type:
+            try:
+                scene = await self.active_backend.vlm_scene(arm_id, image, known_handles, target_handle=target_handle)
+                self._on_success()
+                if scene.scene:
+                    handles = [d.handle for d in scene.detections]
+                    self._context_store.append(
+                        epoch=self._lease_mgr.current_epoch,
+                        backend=self._active_type,
+                        entry_type="scene",
+                        summary=scene.scene,
+                        data={"handles": handles},
+                    )
+                return scene
+            except Exception as replay_exc:
+                logger.warning("vlm_scene() replay on %s also failed: %s", self._active_type, replay_exc)
+        return VlmScene(scene="", detections=[])
 
     @property
     def last_reasoning(self) -> str:
@@ -241,7 +347,13 @@ class Switchboard:
         self._backends[old_type].reset_loop_state()
         new_backend.reset_loop_state()
 
-        # 6. Publish event
+        # 6. Publish event + log to run logger
+        switch_data = {
+            "from": old_type,
+            "to": target,
+            "reason": reason,
+            "epoch": self._lease_mgr.current_epoch,
+        }
         if self._bus is not None:
             from halo.contracts.events import EventEnvelope, EventType
 
@@ -249,13 +361,8 @@ class Switchboard:
                 event_id=f"switch-{self._lease_mgr.current_epoch}",
                 type=EventType.BACKEND_SWITCHED,
                 ts_ms=int(time.monotonic() * 1000),
-                arm_id="system",
-                data={
-                    "from": old_type,
-                    "to": target,
-                    "reason": reason,
-                    "epoch": self._lease_mgr.current_epoch,
-                },
+                arm_id=self._arm_id,
+                data=switch_data,
             )
             await self._bus.publish(event)
 
@@ -331,7 +438,7 @@ class Switchboard:
             entries = self._context_store.get_entries_after(-1)
             await backend.warm_up(state=state, journal_entries=entries)
         except Exception:
-            logger.exception("Re-warm of active backend failed")
+            logger.debug("Re-warm of active backend failed", exc_info=True)
 
     async def _check_failback(self) -> None:
         """If we're on the fallback backend and the preferred one is healthy, switch back.

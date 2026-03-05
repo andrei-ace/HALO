@@ -13,7 +13,7 @@ from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.planner_service.agent import PlannerAgent
-from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
+from halo.services.target_perception_service.vlm_fn import make_vlm_fn
 from halo.services.target_perception_service.vlm_parser import VlmScene
 
 if TYPE_CHECKING:
@@ -39,7 +39,8 @@ class LocalCognitiveBackend:
             prompts_dir=prompts_dir or _DEFAULT_PROMPTS_DIR,
             backend="local",
         )
-        self._vlm_fn = make_ollama_vlm_fn(
+        self._vlm_fn = make_vlm_fn(
+            provider="ollama",
             base_url=cfg.base_url,
             model=cfg.vlm_model,
             run_logger=run_logger,

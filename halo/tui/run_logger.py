@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+_EVENT_STRIP_KEYS = frozenset({"vlm_image"})
+
 
 class RunLogger:
     """Writes run artifacts to a per-session directory under *runs_dir*.
@@ -179,12 +181,15 @@ class RunLogger:
 
     def log_event(self, event: object) -> None:
         """Log an EventBus EventEnvelope to ``events.jsonl``."""
+        raw_data = getattr(event, "data", {}) or {}
+        # Strip large non-serializable values (e.g. numpy images)
+        data = {k: v for k, v in raw_data.items() if k not in _EVENT_STRIP_KEYS}
         entry: dict[str, Any] = {
             "event_id": getattr(event, "event_id", ""),
             "type": str(getattr(event, "type", "")),
             "ts_ms": getattr(event, "ts_ms", 0),
             "arm_id": getattr(event, "arm_id", ""),
-            "data": getattr(event, "data", {}),
+            "data": data,
             "ts": datetime.now(timezone.utc).isoformat(),
         }
         self._events_file.write(json.dumps(entry, default=str) + "\n")
