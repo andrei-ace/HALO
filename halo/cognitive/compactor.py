@@ -1,7 +1,7 @@
 """MessageHistory — UUID-tracked message list for compaction detection and cross-backend sync.
 
-ADK handles the actual compaction via ``App`` + ``EventsCompactionConfig``.
-This module provides:
+ADK handles the actual compaction via ``CompactionPlugin`` (see
+``halo/cognitive/compaction_plugin.py``).  This module provides:
 
 - ``MessageRecord``: a UUID-tagged message (user or model)
 - ``MessageHistory``: parallel tracking alongside ADK sessions

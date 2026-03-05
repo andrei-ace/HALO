@@ -62,6 +62,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         vlm_fn_factory=_vlm_factory,
         backend=_config.backend,
         ollama_base_url=_config.ollama_base_url,
+        compaction_interval=_config.compaction_interval,
+        compaction_overlap=_config.compaction_overlap,
     )
 
     logger.info("Cognitive service ready (backend=%s)", _config.backend)

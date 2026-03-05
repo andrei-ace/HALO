@@ -1515,8 +1515,27 @@ class HALOApp(App):
                 if self._run_logger:
                     try:
                         self._run_logger.log_event(evt)
-                    except Exception:
-                        pass
+                    except Exception as _log_err:
+                        import logging as _lg
+
+                        _lg.getLogger("halo.tui").debug(
+                            "log_event error for %s: %s",
+                            getattr(evt, "type", "?"),
+                            _log_err,
+                        )
+                    # Also write compaction summary to run.jsonl
+                    evt_type_str = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
+                    if evt_type_str == "SESSION_COMPACTED":
+                        try:
+                            data = getattr(evt, "data", {}) or {}
+                            self._run_logger.log_compaction(
+                                compacted_count=data.get("compacted_count", 0),
+                                retained_count=data.get("retained_count", 0),
+                                summary=data.get("summary", ""),
+                                backend=data.get("backend", ""),
+                            )
+                        except Exception:
+                            pass
                 try:
                     await events_panel.append_event(evt)
                 except Exception:

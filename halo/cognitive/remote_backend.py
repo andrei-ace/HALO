@@ -7,11 +7,12 @@ import logging
 import os
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 import httpx
 import numpy as np
 
+from halo.cognitive.compactor import CompactionResult
 from halo.cognitive.config import BackendReadiness, BackendType, RemoteCloudConfig
 from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import CommandEnvelope
@@ -80,6 +81,7 @@ class RemoteCognitiveBackend:
         self._caught_up_cursor = -1
         self._last_nonce: str | None = None
         self._session_id: str = uuid.uuid4().hex
+        self._on_compaction: Callable[[CompactionResult], Awaitable[None]] | None = None
 
     @property
     def backend_type(self) -> str:
@@ -98,6 +100,23 @@ class RemoteCognitiveBackend:
         resp.raise_for_status()
         data = resp.json()
         self._last_reasoning = data.get("reasoning", "")
+
+        # Notify Switchboard of compaction (it publishes SESSION_COMPACTED
+        # to EventBus, syncs to inactive backend, and the TUI logs it)
+        if data.get("compacted") and self._on_compaction is not None:
+            c = data.get("compaction", {})
+            result = CompactionResult(
+                summary=c.get("summary", ""),
+                up_to_msg_id=c.get("up_to_msg_id", ""),
+                compacted_count=c.get("compacted_count", 0),
+                retained_count=c.get("retained_count", 0),
+                ts_ms=int(time.monotonic() * 1000),
+            )
+            try:
+                await self._on_compaction(result)
+            except Exception:
+                logger.debug("Compaction callback failed", exc_info=True)
+
         return [command_envelope_from_dict(c) for c in data["commands"]]
 
     async def vlm_scene(
@@ -156,6 +175,9 @@ class RemoteCognitiveBackend:
             return True
         except Exception:
             return False
+
+    def set_on_compaction(self, callback: Callable[[CompactionResult], Awaitable[None]] | None) -> None:
+        self._on_compaction = callback
 
     @property
     def last_reasoning(self) -> str:

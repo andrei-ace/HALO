@@ -1,8 +1,8 @@
-"""Component tests for ADK event compaction integration.
+"""Component tests for CompactionPlugin integration.
 
 Tests:
-- Cloud agent uses App pattern with EventsCompactionConfig
-- Local agent uses direct Runner (no App)
+- Cloud agent uses CompactionPlugin with compaction enabled
+- Local agent uses CompactionPlugin (snapshot deprecation only)
 - Compaction detection after decide()
 - Switchboard syncs compaction to inactive backend
 """
@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from halo.cognitive.compaction_plugin import CompactionPlugin
 from halo.cognitive.compactor import CompactionResult
 from halo.cognitive.config import BackendType, CognitiveConfig, CompactionConfig
 from halo.cognitive.context_store import ContextStore
@@ -85,12 +86,12 @@ def _mock_agent(backend="cloud", compaction_config=None):
 
 
 # ---------------------------------------------------------------------------
-# Cloud agent uses App pattern
+# Cloud agent uses CompactionPlugin
 # ---------------------------------------------------------------------------
 
 
-def test_cloud_agent_uses_app_pattern():
-    """PlannerAgent(backend='cloud', compaction_config=...) creates App + Runner."""
+def test_cloud_agent_compaction_plugin_enabled():
+    """PlannerAgent(backend='cloud', compaction_config=...) creates plugin with compaction enabled."""
     cfg = CompactionConfig(enabled=True, compaction_interval=10, overlap_size=2)
 
     with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
@@ -104,14 +105,14 @@ def test_cloud_agent_uses_app_pattern():
             compaction_config=cfg,
         )
 
-    # The runner should have been created with app= (not agent=)
-    # We can verify by checking that the runner's app is not None
-    runner = agent._runner
-    assert runner.app is not None
+    assert isinstance(agent._compaction_plugin, CompactionPlugin)
+    assert agent._compaction_plugin.enabled is True
+    # All backends use App with plugins
+    assert agent._runner.app is not None
 
 
-def test_local_agent_no_app():
-    """PlannerAgent(backend='local') uses direct Runner without App."""
+def test_local_agent_plugin_deprecation_only():
+    """PlannerAgent(backend='local') uses CompactionPlugin without compaction."""
     with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
         from halo.services.planner_service.agent import PlannerAgent
 
@@ -122,12 +123,13 @@ def test_local_agent_no_app():
             backend="local",
         )
 
-    runner = agent._runner
-    assert runner.app is None
+    assert isinstance(agent._compaction_plugin, CompactionPlugin)
+    assert agent._compaction_plugin.enabled is False
+    assert agent._runner.app is not None
 
 
-def test_cloud_agent_compaction_disabled_no_app():
-    """PlannerAgent(backend='cloud', compaction_config=disabled) uses direct Runner."""
+def test_cloud_agent_compaction_disabled():
+    """PlannerAgent(backend='cloud', compaction_config=disabled) has plugin but compaction disabled."""
     cfg = CompactionConfig(enabled=False)
 
     with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
@@ -141,12 +143,12 @@ def test_cloud_agent_compaction_disabled_no_app():
             compaction_config=cfg,
         )
 
-    runner = agent._runner
-    assert runner.app is None
+    assert isinstance(agent._compaction_plugin, CompactionPlugin)
+    assert agent._compaction_plugin.enabled is False
 
 
-def test_cloud_agent_no_compaction_config_no_app():
-    """PlannerAgent(backend='cloud') without compaction_config uses direct Runner."""
+def test_cloud_agent_no_compaction_config():
+    """PlannerAgent(backend='cloud') without compaction_config has plugin but compaction disabled."""
     with patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
         from halo.services.planner_service.agent import PlannerAgent
 
@@ -157,8 +159,8 @@ def test_cloud_agent_no_compaction_config_no_app():
             backend="cloud",
         )
 
-    runner = agent._runner
-    assert runner.app is None
+    assert isinstance(agent._compaction_plugin, CompactionPlugin)
+    assert agent._compaction_plugin.enabled is False
 
 
 # ---------------------------------------------------------------------------

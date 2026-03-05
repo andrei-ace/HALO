@@ -49,6 +49,8 @@ class SessionManager:
         ollama_base_url: str = "http://localhost:11434",
         max_sessions: int = 16,
         idle_timeout_s: float = 600.0,
+        compaction_interval: int = 20,
+        compaction_overlap: int = 4,
     ) -> None:
         self._model_name = model_name
         self._prompts_dir = prompts_dir
@@ -57,6 +59,8 @@ class SessionManager:
         self._ollama_base_url = ollama_base_url
         self._max_sessions = max_sessions
         self._idle_timeout_ms = int(idle_timeout_s * 1000)
+        self._compaction_interval = compaction_interval
+        self._compaction_overlap = compaction_overlap
         self._sessions: dict[str, ArmSession] = {}
         self._vlm_fn: VlmFn | None = None  # shared VLM fn (created once)
         self._nonce: str = uuid.uuid4().hex  # unique per process lifetime
@@ -99,7 +103,12 @@ class SessionManager:
             base_url=self._ollama_base_url,
             prompts_dir=self._prompts_dir,
             backend=self._backend,
-            compaction_config=CompactionConfig() if self._backend == "cloud" else None,
+            compaction_config=CompactionConfig(
+                compaction_interval=self._compaction_interval,
+                overlap_size=self._compaction_overlap,
+            )
+            if self._backend == "cloud"
+            else None,
         )
         session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
         session.touch()

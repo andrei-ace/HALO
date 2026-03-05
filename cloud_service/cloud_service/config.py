@@ -18,6 +18,8 @@ class ServiceConfig:
     cloud_api_key: str = ""  # key clients must present in Authorization header
     ollama_base_url: str = "http://localhost:11434"
     prompts_dir: Path = _DEFAULT_PROMPTS_DIR
+    compaction_interval: int = 20  # invocations between compaction runs
+    compaction_overlap: int = 4  # recent invocations kept uncompacted
 
     @classmethod
     def from_env(cls) -> ServiceConfig:
@@ -29,4 +31,6 @@ class ServiceConfig:
             cloud_api_key=os.environ.get("HALO_CLOUD_API_KEY", ""),
             ollama_base_url=os.environ.get("HALO_OLLAMA_URL", "http://localhost:11434"),
             prompts_dir=Path(os.environ.get("HALO_PROMPTS_DIR", str(_DEFAULT_PROMPTS_DIR))),
+            compaction_interval=int(os.environ.get("HALO_COMPACTION_INTERVAL", "20")),
+            compaction_overlap=int(os.environ.get("HALO_COMPACTION_OVERLAP", "4")),
         )

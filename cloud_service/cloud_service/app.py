@@ -52,11 +52,19 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     if compacted:
         logger.info("Session compacted for arm_id=%s: %d messages summarized", arm_id, compaction.compacted_count)
 
-    return {
+    result: dict = {
         "commands": [command_envelope_to_dict(c) for c in commands],
         "reasoning": reasoning,
         "compacted": compacted,
     }
+    if compacted and compaction is not None:
+        result["compaction"] = {
+            "summary": compaction.summary,
+            "up_to_msg_id": compaction.up_to_msg_id,
+            "compacted_count": compaction.compacted_count,
+            "retained_count": compaction.retained_count,
+        }
+    return result
 
 
 @app.post("/vlm/scene", dependencies=[Depends(verify_api_key)])

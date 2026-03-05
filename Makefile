@@ -47,8 +47,10 @@ tui-live-cloud:
 		--cloud-url $(HALO_CLOUD_URL) \
 		--source mujoco
 
-CLOUD_PLANNER_MODEL ?= gemini-3.1-flash-lite-preview
-CLOUD_VLM_MODEL     ?= gemini-3.1-flash-lite-preview
+CLOUD_PLANNER_MODEL    ?= gemini-3.1-flash-lite-preview
+CLOUD_VLM_MODEL        ?= gemini-3.1-flash-lite-preview
+COMPACTION_INTERVAL    ?= 5
+COMPACTION_OVERLAP     ?= 1
 
 tui-live-cloud-local:
 	uv run python -m halo.tui.app --live \
@@ -86,6 +88,8 @@ run-local-service:
 	uv run --project cloud_service uvicorn cloud_service.app:app --host 0.0.0.0 --port 8080 --reload
 
 run-cloud-service:
+	HALO_COMPACTION_INTERVAL=$(COMPACTION_INTERVAL) \
+	HALO_COMPACTION_OVERLAP=$(COMPACTION_OVERLAP) \
 	uv run --project cloud_service uvicorn cloud_service.app:app --host 0.0.0.0 --port 8080 --reload
 
 test-cloud-service:

@@ -102,9 +102,7 @@ class Switchboard:
         self._lease_mgr.grant(self._active_type)
 
         # Wire compaction callback on cloud backend (if it supports it)
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
-
-        if isinstance(cloud, CloudCognitiveBackend):
+        if hasattr(cloud, "set_on_compaction"):
             cloud.set_on_compaction(self._sync_compaction_to_inactive)
 
     @property
@@ -574,7 +572,10 @@ class Switchboard:
                 await inactive.agent.inject_handoff_context(
                     f"[Compaction summary from cloud backend]\n{result.summary}"
                 )
-                inactive.agent.msg_history.clear()
+                try:
+                    inactive.agent.msg_history.apply_compaction(result.up_to_msg_id, result.summary)
+                except ValueError:
+                    inactive.agent.msg_history.clear()
         except Exception:
             logger.debug("Failed to sync compaction to inactive backend", exc_info=True)
 
@@ -586,6 +587,25 @@ class Switchboard:
             summary=f"Session compacted: {result.compacted_count} messages → summary",
             data={"up_to_msg_id": result.up_to_msg_id, "retained_count": result.retained_count},
         )
+
+        # Publish SESSION_COMPACTED event (filtered from planner history, like BACKEND_SWITCHED)
+        if self._bus is not None:
+            from halo.contracts.events import EventEnvelope, EventType
+
+            event = EventEnvelope(
+                event_id=f"compaction-{self._lease_mgr.current_epoch}-{result.up_to_msg_id[:8]}",
+                type=EventType.SESSION_COMPACTED,
+                ts_ms=result.ts_ms,
+                arm_id=self._arm_id,
+                data={
+                    "compacted_count": result.compacted_count,
+                    "retained_count": result.retained_count,
+                    "backend": self._active_type,
+                    "summary": result.summary,
+                    "up_to_msg_id": result.up_to_msg_id,
+                },
+            )
+            await self._bus.publish(event)
 
     def _on_success(self) -> None:
         """Reset consecutive failure counter and renew lease TTL on success."""

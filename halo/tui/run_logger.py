@@ -179,6 +179,26 @@ class RunLogger:
         self._file.write(json.dumps(entry, default=str) + "\n")
         self._file.flush()
 
+    def log_compaction(
+        self,
+        *,
+        compacted_count: int,
+        retained_count: int,
+        summary: str,
+        backend: str = "",
+    ) -> None:
+        """Log a SESSION_COMPACTED event to ``run.jsonl``."""
+        entry: dict[str, Any] = {
+            "kind": "compaction",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "compacted_count": compacted_count,
+            "retained_count": retained_count,
+            "summary": summary,
+            "backend": backend,
+        }
+        self._file.write(json.dumps(entry, default=str) + "\n")
+        self._file.flush()
+
     def log_event(self, event: object) -> None:
         """Log an EventBus EventEnvelope to ``events.jsonl``."""
         raw_data = getattr(event, "data", {}) or {}
