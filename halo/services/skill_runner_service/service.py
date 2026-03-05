@@ -155,7 +155,7 @@ class SkillRunnerService:
         now_ms = int(time.monotonic() * 1000)
 
         self._fsm = PickFSM(self._config)
-        self._fsm.start(now_ms)
+        self._fsm.start(now_ms, target_handle)
 
         self._skill_name = skill_name
         self._skill_run_id = skill_run_id

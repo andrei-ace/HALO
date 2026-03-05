@@ -55,7 +55,7 @@ def _started_fsm(cfg: SkillRunnerConfig | None = None) -> PickFSM:
     if cfg is None:
         cfg = _cfg()
     fsm = PickFSM(cfg)
-    fsm.start(T0)
+    fsm.start(T0, "obj-1")
     return fsm
 
 
@@ -91,7 +91,7 @@ def test_start_transitions_to_select_grasp():
 def test_start_raises_if_not_in_idle():
     fsm = _started_fsm()
     with pytest.raises(RuntimeError):
-        fsm.start(T0 + 100)
+        fsm.start(T0 + 100, "obj-1")
 
 
 # --- SELECT_GRASP -> PLAN_APPROACH -> MOVE_PREGRASP (v0: immediate) ---
@@ -102,6 +102,31 @@ def test_select_grasp_immediately_transitions():
     old = fsm.advance(T0 + 1, _target(), _perception(), _act())
     assert old == PhaseId.SELECT_GRASP
     assert fsm.phase == PhaseId.PLAN_APPROACH
+
+
+def test_select_grasp_stays_when_target_handle_mismatches():
+    """FSM stays in SELECT_GRASP when tracking a different object than requested."""
+    fsm = _started_fsm()
+    wrong_target = TargetInfo(
+        handle="wrong-obj",
+        hint_valid=True,
+        confidence=0.9,
+        obs_age_ms=10,
+        time_skew_ms=0,
+        delta_xyz_ee=(0.0, 0.0, 0.5),
+        distance_m=0.5,
+    )
+    old = fsm.advance(T0 + 1, wrong_target, _perception(), _act())
+    assert old is None
+    assert fsm.phase == PhaseId.SELECT_GRASP
+
+
+def test_select_grasp_stays_when_target_is_none():
+    """FSM stays in SELECT_GRASP when tracking but target info is None."""
+    fsm = _started_fsm()
+    old = fsm.advance(T0 + 1, None, _perception(), _act())
+    assert old is None
+    assert fsm.phase == PhaseId.SELECT_GRASP
 
 
 def test_plan_approach_immediately_transitions():
@@ -613,7 +638,7 @@ def test_wrist_camera_active_in_correct_phases():
     fsm = PickFSM(_cfg())
     assert not fsm.wrist_camera_active  # IDLE
 
-    fsm.start(T0)
+    fsm.start(T0, "obj-1")
     assert not fsm.wrist_camera_active  # SELECT_GRASP
 
     # Advance to VISUAL_ALIGN
