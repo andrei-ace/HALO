@@ -1902,6 +1902,16 @@ def _run_live(args: list[str]) -> None:
             sim_phase_fn=sim_phase_fn,
         )
 
+    # Redirect all logging to the run log directory so warnings/errors
+    # don't corrupt the Textual TUI display (which owns stdout/stderr).
+    import logging as _logging
+
+    _log_file = run_logger.run_dir / "tui.log" if run_logger.run_dir else _RUNS_DIR / "tui.log"
+    _file_handler = _logging.FileHandler(_log_file)
+    _file_handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    _logging.root.handlers = [_file_handler]
+    _logging.root.setLevel(_logging.DEBUG)
+
     HALOApp(
         runtime=runtime,
         agent=agent,
