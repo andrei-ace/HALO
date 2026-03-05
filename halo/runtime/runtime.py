@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from halo.contracts.commands import CommandAck, CommandEnvelope
+from halo.contracts.events import EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.runtime.command_router import CommandRouter
 from halo.runtime.event_bus import EventBus
@@ -51,6 +52,7 @@ class HALORuntime:
         one snapshot — the latest.
         """
         recent = self.bus.get_recent_events(arm_id)
+        recent = [e for e in recent if e.type != EventType.BACKEND_SWITCHED]
         return await self.store.build_and_cache_snapshot(arm_id, recent)
 
     async def submit_command(self, cmd: CommandEnvelope) -> CommandAck:

@@ -92,6 +92,7 @@ class Switchboard:
 
         # Health tracking
         self._consecutive_failures: int = 0
+        self._last_failure_reason: str = ""
         self._health_task: asyncio.Task | None = None
         self._journal_task: asyncio.Task | None = None
 
@@ -142,6 +143,14 @@ class Switchboard:
                     operator_cmd=operator_cmd,
                     epoch=self._lease_mgr.current_epoch,
                 )
+
+                # Detect empty responses (no reasoning, no commands)
+                reasoning = self.active_backend.last_reasoning
+                if not commands and not reasoning:
+                    logger.warning("decide() empty response on %s", self._active_type)
+                    await self._on_failure(reason="empty response (no reasoning, no commands)")
+                    return []
+
                 self._on_success()
 
                 # Stamp epoch + lease_token on all returned commands
@@ -152,8 +161,7 @@ class Switchboard:
                 if token is not None:
                     commands = [_dc_replace(c, epoch=epoch, lease_token=token) for c in commands]
 
-                # Record decision in context store
-                reasoning = self.active_backend.last_reasoning
+                # Record decision in context store (reasoning already fetched above)
                 if reasoning:
                     self._context_store.append(
                         epoch=self._lease_mgr.current_epoch,
@@ -183,7 +191,7 @@ class Switchboard:
         # Force immediate failover — retries exhausted or non-retryable
         old_type = self._active_type
         self._consecutive_failures = CONSECUTIVE_FAILURES_BEFORE_SWITCH - 1
-        await self._on_failure()
+        await self._on_failure(reason=str(last_exc) if last_exc else "unknown error")
 
         # If we switched, replay the call on the new backend
         if self._active_type != old_type:
@@ -261,7 +269,7 @@ class Switchboard:
         # Force immediate failover — retries exhausted or non-retryable
         old_type = self._active_type
         self._consecutive_failures = CONSECUTIVE_FAILURES_BEFORE_SWITCH - 1
-        await self._on_failure()
+        await self._on_failure(reason=str(last_exc) if last_exc else "unknown error")
 
         # If we switched, replay the call on the new backend
         if self._active_type != old_type:
@@ -409,9 +417,9 @@ class Switchboard:
                         # Check if preferred backend is healthy for failback
                         await self._check_failback()
                     else:
-                        await self._on_failure()
-                except Exception:
-                    await self._on_failure()
+                        await self._on_failure(reason="health check failed")
+                except Exception as exc:
+                    await self._on_failure(reason=f"health check error: {exc}")
         except asyncio.CancelledError:
             pass
 
@@ -542,14 +550,18 @@ class Switchboard:
     def _on_success(self) -> None:
         """Reset consecutive failure counter and renew lease TTL on success."""
         self._consecutive_failures = 0
+        self._last_failure_reason = ""
         self._lease_mgr.renew(self._lease_mgr.current_epoch)
 
-    async def _on_failure(self) -> None:
+    async def _on_failure(self, reason: str = "") -> None:
         """Increment failure counter and switch if threshold reached."""
+        if reason:
+            self._last_failure_reason = reason
         self._consecutive_failures += 1
         if self._config.enable_failover and self._consecutive_failures >= CONSECUTIVE_FAILURES_BEFORE_SWITCH:
             if self._active_type == BackendType.CLOUD:
                 target = BackendType.LOCAL
             else:
                 target = BackendType.CLOUD
-            await self.switch_to(target, reason=f"{self._consecutive_failures} consecutive failures")
+            switch_reason = f"{self._consecutive_failures} consecutive failures: {self._last_failure_reason}"
+            await self.switch_to(target, reason=switch_reason)

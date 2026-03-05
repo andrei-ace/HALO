@@ -498,3 +498,116 @@ async def test_rewarm_active_skips_when_ready():
     await sb._rewarm_active()
 
     cloud.warm_up.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Failure reason tracking
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_failure_reason_included_in_switch_event():
+    """BACKEND_SWITCHED event includes the descriptive failure reason."""
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
+    sb._bus = bus
+
+    local.decide = AsyncMock(side_effect=RuntimeError("Ollama timeout after 30s"))
+    snap = _idle_snap()
+
+    await sb.decide(snap)
+
+    # Should have switched — find the BACKEND_SWITCHED event
+    switch_calls = [c for c in bus.publish.call_args_list if c[0][0].type.value == "BACKEND_SWITCHED"]
+    assert len(switch_calls) == 1
+    event = switch_calls[0][0][0]
+    assert "Ollama timeout after 30s" in event.data["reason"]
+
+
+@pytest.mark.asyncio
+async def test_empty_response_triggers_failure():
+    """Empty decide() response (no reasoning, no commands) counts as failure."""
+    sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
+    local.decide = AsyncMock(return_value=[])
+    type(local).last_reasoning = PropertyMock(return_value="")
+    snap = _idle_snap()
+
+    result = await sb.decide(snap)
+
+    assert result == []
+    assert sb._consecutive_failures == 1
+    assert "empty response" in sb._last_failure_reason
+
+
+@pytest.mark.asyncio
+async def test_three_empty_responses_trigger_failover():
+    """Three consecutive empty responses trigger backend switch."""
+    bus = MagicMock()
+    bus.publish = AsyncMock()
+    sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
+    sb._bus = bus
+
+    local.decide = AsyncMock(return_value=[])
+    type(local).last_reasoning = PropertyMock(return_value="")
+    snap = _idle_snap()
+
+    for _ in range(CONSECUTIVE_FAILURES_BEFORE_SWITCH):
+        await sb.decide(snap)
+
+    assert sb.active_type == BackendType.CLOUD
+    switch_calls = [c for c in bus.publish.call_args_list if c[0][0].type.value == "BACKEND_SWITCHED"]
+    assert len(switch_calls) == 1
+    assert "empty response" in switch_calls[0][0][0].data["reason"]
+
+
+@pytest.mark.asyncio
+async def test_non_empty_reasoning_resets_failure_counter():
+    """A decide() with reasoning but no commands is a success (not empty)."""
+    sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
+    local.decide = AsyncMock(return_value=[])
+    type(local).last_reasoning = PropertyMock(return_value="Waiting for tracking to stabilize")
+    snap = _idle_snap()
+
+    await sb.decide(snap)
+
+    assert sb._consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
+# BACKEND_SWITCHED filtering from planner snapshots
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_backend_switched_filtered_from_snapshot():
+    """BACKEND_SWITCHED events should not appear in planner snapshot recent_events."""
+    from halo.contracts.events import EventEnvelope, EventType
+    from halo.runtime.runtime import HALORuntime
+
+    rt = HALORuntime()
+    rt.register_arm("arm0")
+
+    # Publish a BACKEND_SWITCHED event and a normal event
+    switch_event = EventEnvelope(
+        event_id="switch-1",
+        type=EventType.BACKEND_SWITCHED,
+        ts_ms=1000,
+        arm_id="arm0",
+        data={"from": "local", "to": "cloud", "reason": "test"},
+    )
+    normal_event = EventEnvelope(
+        event_id="skill-ok",
+        type=EventType.SKILL_SUCCEEDED,
+        ts_ms=1001,
+        arm_id="arm0",
+        data={"skill_name": "pick"},
+    )
+    await rt.bus.publish(switch_event)
+    await rt.bus.publish(normal_event)
+
+    snap = await rt.get_latest_runtime_snapshot("arm0")
+
+    event_types = [e.type for e in snap.recent_events]
+    assert EventType.BACKEND_SWITCHED not in event_types
+    assert EventType.SKILL_SUCCEEDED in event_types
