@@ -93,6 +93,9 @@ class LocalCognitiveBackend:
 
     def reset_loop_state(self) -> None:
         self._agent.reset_loop_state()
+        self._caught_up_cursor = -1
+        self._journal_buffer = []
+        self._state_context = []
 
     # -- WarmableBackend --
 

@@ -162,9 +162,12 @@ class RemoteCognitiveBackend:
         return self._last_reasoning
 
     def reset_loop_state(self) -> None:
-        """Clear local state only — warm-up already establishes fresh context
-        on the remote side."""
+        """Clear local state — warm-up already establishes fresh context
+        on the remote side. Reset readiness so the next failback goes through
+        full COLD warm-up instead of reusing stale session history."""
         self._last_reasoning = ""
+        self._readiness = BackendReadiness.COLD
+        self._caught_up_cursor = -1
 
     # -- WarmableBackend --
 

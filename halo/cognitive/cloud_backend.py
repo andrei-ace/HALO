@@ -131,6 +131,8 @@ class CloudCognitiveBackend:
 
     def reset_loop_state(self) -> None:
         self._agent.reset_loop_state()
+        self._ready = False
+        self._caught_up_cursor = -1
 
     # -- WarmableBackend --
 

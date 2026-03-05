@@ -102,6 +102,8 @@ class ControllableMockBackend:
 
     def reset_loop_state(self) -> None:
         self._reset_calls += 1
+        self._readiness = BackendReadiness.COLD
+        self._caught_up_cursor = -1
 
     # -- WarmableBackend protocol --
 
@@ -622,3 +624,63 @@ async def test_lease_token_validation_end_to_end(
     )
     ack_no_token = await runtime.submit_command(cmd_no_token)
     assert ack_no_token.status == CommandAckStatus.REJECTED_WRONG_EPOCH
+
+
+@pytest.mark.asyncio
+async def test_second_failback_requires_full_warmup(
+    switchboard: Switchboard,
+    cloud_backend: ControllableMockBackend,
+    local_backend: ControllableMockBackend,
+) -> None:
+    """After CLOUD→LOCAL→CLOUD→LOCAL→CLOUD, the second failback must do a full
+    COLD warm-up — not skip to READY with stale session history.
+
+    Bug: reset_loop_state() didn't reset readiness/cursor, so after the first
+    failback cycle cloud.readiness stayed READY, causing the second failback to
+    skip the full warm-up and reuse old session state.
+    """
+    # --- First cycle: CLOUD → LOCAL → CLOUD ---
+    await _trigger_failover_to_local(switchboard, cloud_backend)
+
+    cloud_backend._healthy = True
+    cloud_backend._readiness = BackendReadiness.COLD
+    cloud_backend._readiness_schedule = [BackendReadiness.READY]
+    await switchboard._check_failback()  # COLD → warm_up → READY
+    await switchboard._check_failback()  # READY + caught up → switch to CLOUD
+    assert switchboard.active_type == BackendType.CLOUD
+    first_cycle_warmup_count = len(cloud_backend._warmup_calls)
+    assert first_cycle_warmup_count >= 1
+
+    # At this point cloud._readiness is READY and _caught_up_cursor is set.
+    # switch_to() called reset_loop_state() — it MUST reset readiness to COLD.
+
+    # --- Second cycle: CLOUD fails again → LOCAL → CLOUD ---
+    cloud_backend._decide_raise = RuntimeError("cloud down again")
+    await switchboard.decide(_idle_snap())
+    assert switchboard.active_type == BackendType.LOCAL
+    cloud_backend._decide_raise = None
+
+    # Add new context during second LOCAL stint
+    switchboard.context_store.append(
+        epoch=switchboard.lease_manager.current_epoch,
+        backend="local",
+        entry_type="decision",
+        summary="new decision during second local stint",
+    )
+
+    # Cloud recovers — readiness MUST be COLD (not stale READY)
+    cloud_backend._healthy = True
+    assert cloud_backend.readiness == BackendReadiness.COLD, (
+        f"Expected COLD after reset_loop_state(), got {cloud_backend.readiness}"
+    )
+
+    # Failback should go through full COLD warm-up (with CognitiveState)
+    cloud_backend._readiness_schedule = [BackendReadiness.READY]
+    await switchboard._check_failback()  # COLD → full warm_up
+
+    # Find the warm_up call from the second cycle — it must have state (full warm-up)
+    second_cycle_calls = cloud_backend._warmup_calls[first_cycle_warmup_count:]
+    assert len(second_cycle_calls) >= 1
+    assert second_cycle_calls[0]["state"] is not None, (
+        "Second failback must do full COLD warm-up with CognitiveState, not incremental"
+    )
