@@ -1607,7 +1607,6 @@ class HALOApp(App):
 
             # Log interaction
             if self._run_logger:
-                token_usage = getattr(self._agent, "last_token_usage", None) or {}
                 self._run_logger.log_interaction(
                     arm_id=self._arm_id,
                     operator_msg=msg,
@@ -1616,7 +1615,6 @@ class HALOApp(App):
                     acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
                     reasoning=reasoning,
                     inference_ms=inference_ms,
-                    token_usage=token_usage,
                 )
 
             # Update thinking widget
