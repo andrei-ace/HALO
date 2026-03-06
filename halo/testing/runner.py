@@ -199,7 +199,7 @@ class HeadlessRunner:
 
         The CommandRouter only validates + acks commands; this task dispatches
         accepted START_SKILL/ABORT_SKILL commands to the SkillRunnerService.
-        TargetPerceptionService already listens for DESCRIBE_SCENE/TRACK_OBJECT.
+        TargetPerceptionService already listens for DESCRIBE_SCENE and SKILL_STARTED(TRACK).
 
         Rejected commands are also popped from ``_pending_commands`` to prevent
         unbounded growth in long-running sessions.
@@ -259,7 +259,7 @@ class HeadlessRunner:
 
         # Start command routing before planner (so we catch its startup command).
         # Always start — even without skill runner — to drain _pending_commands
-        # and prevent unbounded growth from DESCRIBE_SCENE / TRACK_OBJECT commands.
+        # and prevent unbounded growth from DESCRIBE_SCENE commands.
         self._cmd_route_queue = self.runtime.bus.subscribe(self._config.arm_id, maxsize=0)
         self._cmd_route_task = asyncio.create_task(self._route_commands(), name="cmd-route")
 

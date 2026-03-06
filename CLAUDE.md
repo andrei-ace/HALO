@@ -140,7 +140,7 @@ RuntimeStateStore → get_latest_runtime_snapshot() → PlannerService → async
 ### Key invariants to maintain
 1. SkillRunner reads `target_hint_vec` **directly from runtime state**, not through the Planner.
 2. Planner sees **exactly one** snapshot: the latest. Middleware must **replace** (not append) the prior snapshot in LLM context.
-3. Every mutating planner command carries a `command_id` (UUID) and `precondition_snapshot_id`; the router must enforce idempotency and reject stale preconditions. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = None` to avoid premature rejection.
+3. Every mutating planner command carries a `command_id` (UUID) and `precondition_snapshot_id`; the router must enforce idempotency and reject stale preconditions. Stateless commands (`describe_scene`) set `precondition_snapshot_id = None` to avoid premature rejection.
 4. VLM reacquire runs **asynchronously** — it is never on the critical path of the 10–30 Hz hint-publish loop.
 5. On phase transition, **trim the ACT buffer** to ~50–100 ms to avoid executing old-phase tail actions.
 6. When a `LeaseManager` is active, every command must carry both `epoch` and `lease_token`. Commands without them (or with stale values) are rejected by the `CommandRouter`.
@@ -171,7 +171,7 @@ Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`,
 - Perception failure codes: `OK`, `OCCLUDED`, `OUT_OF_VIEW`, `DEPTH_INVALID`, `MULTIPLE_CANDIDATES`, `CALIB_INVALID`, `TRACK_JUMP_REJECTED`, `REACQUIRE_FAILED`
 - Skill failure codes: `TIMEOUT`, `NO_PROGRESS`, `NO_GRASP`, `DROP_DETECTED`, `PLACE_MISS`, `PERCEPTION_LOST`, `UNSAFE_ABORT`
 - Safety reflex reasons: `JOINT_LIMIT`, `WORKSPACE_LIMIT`, `COLLISION_RISK`, `OVERCURRENT`, `ESTOP`
-- Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 VERIFY_GRASP`, `8 LIFT`, `9 DONE`, `30-33 PLACE_*`, `50-52 RECOVER_*`
+- Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 VERIFY_GRASP`, `8 LIFT`, `9 DONE`, `20 ACQUIRING`, `30-33 PLACE_*`, `50-52 RECOVER_*`
 
 ## Hardware (real SO-ARM101 phase — phase 3)
 

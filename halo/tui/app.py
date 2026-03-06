@@ -202,7 +202,6 @@ def _format_cmd(cmd: object) -> str:
         DescribeScenePayload,
         OverrideTargetPayload,
         StartSkillPayload,
-        TrackObjectPayload,
     )
 
     p = cmd.payload  # type: ignore[attr-defined]
@@ -214,8 +213,6 @@ def _format_cmd(cmd: object) -> str:
         return f"OVERRIDE_TARGET({p.target_handle})"
     if isinstance(p, DescribeScenePayload):
         return f"DESCRIBE_SCENE({p.reason})"
-    if isinstance(p, TrackObjectPayload):
-        return f"TRACK_OBJECT({p.target_handle})"
     return str(cmd.type)  # type: ignore[attr-defined]
 
 

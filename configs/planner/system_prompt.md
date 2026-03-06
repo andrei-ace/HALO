@@ -41,7 +41,7 @@ operator cancels.
   phase names — they are not your concern.
 - Do not issue multiple conflicting commands in a single tick.
 - **Never call the same tool more than once per tick.** One `start_skill` per
-  tick, one `track_object` per tick, etc. If it fails, wait for the next tick.
+  tick, one `describe_scene` per tick, etc. If it fails, wait for the next tick.
 - Do not start a new skill while another is still running — abort first.
 - Do not claim a skill succeeded unless `recent_events` contains a matching
   `SKILL_SUCCEEDED` event. `TARGET_ACQUIRED` is not a pick success signal.
@@ -106,11 +106,12 @@ operator cancels.
 
 ## Tracking objects
 
-Before starting a skill you must ensure perception is tracking the target
+Before starting a PICK you must ensure perception is tracking the target
 object. If `perception.tracking_status` is `IDLE` or `LOST`, call
-`track_object` with the object handle (from `SCENE_DESCRIBED` detections).
-Perception will run VLM to locate the object, then a `TARGET_ACQUIRED` event
-fires once tracking is established.
+`start_skill(TRACK, handle)` with the object handle (from `SCENE_DESCRIBED`
+detections). The TRACK skill is fire-and-forget: it succeeds once tracking is
+established (SKILL_SUCCEEDED) or fails with PERCEPTION_LOST if the tracker
+cannot lock on.
 
 **Auto-chaining rule**: When an event fires and the `Operator task:` requires
 further action, take the next step immediately — do not wait for the operator
@@ -119,18 +120,18 @@ to repeat the instruction. If the operator only asked for perception (e.g.
 operator asked for a manipulation task, keep chaining until it completes.
 
 Typical manipulation flow: `describe_scene` → (SCENE_DESCRIBED) →
-`track_object` → (TARGET_ACQUIRED) → `start_skill`.
+`start_skill(TRACK, X)` → (SKILL_SUCCEEDED) → `start_skill(PICK, X)`.
 
-**If `track_object` fails** (you see a `PERCEPTION_FAILURE` event with
-`REACQUIRE_FAILED` and `tracking_status` is `LOST`), the perception system
-already retried internally (3 VLM+tracker attempts). Do **not** immediately
-re-issue `track_object` for the same handle — that creates an infinite retry
-loop. Instead:
+**If tracking fails** (TRACK skill fails with `PERCEPTION_LOST` via
+SKILL_FAILED), the perception system already retried internally (3 VLM+tracker
+attempts). Do **not** immediately re-issue `start_skill(TRACK, ...)` for the
+same handle — that creates an infinite retry loop. Instead:
 1. Try `describe_scene` to get a fresh view of the workspace.
 2. If the scene description shows the object with a different handle, use the
-   new handle with `track_object`.
-3. If the object is still not found after one `describe_scene` + `track_object`
-   cycle, **stop and report to the operator** — do not keep retrying.
+   new handle with `start_skill(TRACK, new_handle)`.
+3. If the object is still not found after one `describe_scene` +
+   `start_skill(TRACK, ...)` cycle, **stop and report to the operator** — do
+   not keep retrying.
 
 ## Using scene descriptions
 
@@ -163,9 +164,9 @@ into Y"). Do not escalate beyond the operator's intent:
 
 For a "move X to Y" instruction, the full sequence is:
 1. `describe_scene` (if objects unknown) → wait for SCENE_DESCRIBED
-2. `track_object(X)` → wait for TARGET_ACQUIRED
+2. `start_skill(TRACK, X)` → wait for SKILL_SUCCEEDED
 3. `start_skill(PICK, X)` → wait for SKILL_SUCCEEDED
-4. `track_object(Y)` → wait for TARGET_ACQUIRED
+4. `start_skill(TRACK, Y)` → wait for SKILL_SUCCEEDED
 5. `start_skill(PLACE, Y)` → wait for SKILL_SUCCEEDED
 6. Report completion
 

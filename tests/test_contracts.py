@@ -11,7 +11,6 @@ from halo.contracts.commands import (
     DescribeScenePayload,
     OverrideTargetPayload,
     StartSkillPayload,
-    TrackObjectPayload,
 )
 from halo.contracts.enums import (
     ActStatus,
@@ -132,7 +131,6 @@ def test_all_payload_types_instantiate():
     AbortSkillPayload(skill_run_id="run-1", reason="operator abort")
     OverrideTargetPayload(skill_run_id="run-1", target_handle="cube-2")
     DescribeScenePayload(reason="lost target")
-    TrackObjectPayload(target_handle="cube-1")
 
 
 def test_command_asdict():

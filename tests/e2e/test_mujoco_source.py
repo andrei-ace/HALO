@@ -115,7 +115,7 @@ async def test_mujoco_tracker_vs_vlm_bbox(vlm_model: str, ollama_url: str):
         cube_handle = target_det["handle"]
         _log(f"Selected target: {cube_handle}")
 
-        # ── Step 2: issue track_object for the cube ────────────────────
+        # ── Step 2: set tracking target for the cube ────────────────────
         _log(f"STEP 2 — setting tracking target: {cube_handle}")
         runner.recorder.clear()
         t1 = time.monotonic()

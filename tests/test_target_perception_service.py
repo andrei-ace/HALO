@@ -5,7 +5,7 @@ import dataclasses
 
 import pytest
 
-from halo.contracts.enums import CommandType, PerceptionFailureCode, TrackingStatus
+from halo.contracts.enums import PerceptionFailureCode, TrackingStatus
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import TargetInfo
 from halo.runtime.runtime import HALORuntime
@@ -711,7 +711,8 @@ async def test_stop_cancels_vlm_task(rt: HALORuntime):
     await svc.stop()  # must cancel the VLM task and await it
 
     assert cancelled is True
-    assert svc._vlm_task is None
+    assert svc._vlm_track_task is None
+    assert svc._vlm_scene_task is None
 
 
 async def test_vlm_mismatch_emits_failure(rt: HALORuntime):
@@ -793,7 +794,7 @@ async def test_target_acquired_not_emitted_on_subsequent_ticks(rt: HALORuntime):
     assert len(acquired) == 1
 
 
-# ─── _drain_commands: TRACK_OBJECT ──────────────────────────────────────────
+# ─── _drain_commands: SKILL_STARTED(TRACK) ──────────────────────────────────
 
 
 async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
@@ -814,21 +815,21 @@ async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
     assert len(acquired_events) == 1
 
 
-async def test_drain_commands_handles_track_object(rt: HALORuntime):
-    """A COMMAND_ACCEPTED event for TRACK_OBJECT sets the tracking target."""
+async def test_drain_commands_handles_skill_started_track(rt: HALORuntime):
+    """A SKILL_STARTED event with skill_name=TRACK sets the tracking target."""
     svc = _make_svc(rt)
     await svc.start()
     await asyncio.sleep(0.02)
 
-    # Simulate a COMMAND_ACCEPTED event with TRACK_OBJECT payload data
+    # Simulate a SKILL_STARTED event for TRACK skill
     evt = EventEnvelope(
         event_id=rt.bus.make_event_id(),
-        type=EventType.COMMAND_ACCEPTED,
+        type=EventType.SKILL_STARTED,
         ts_ms=1000,
         arm_id=ARM,
         data={
-            "command_id": "cmd-track-1",
-            "command_type": CommandType.TRACK_OBJECT,
+            "skill_run_id": "run-track-1",
+            "skill_name": "TRACK",
             "target_handle": "mug-3",
         },
     )

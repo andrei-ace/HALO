@@ -22,6 +22,7 @@ class TrackingStatus(StrEnum):
 
 class SkillName(StrEnum):
     PICK = "PICK"
+    TRACK = "TRACK"
     PLACE = "PLACE"
 
 
@@ -37,6 +38,8 @@ class PhaseId(IntEnum):
     VERIFY_GRASP = 7
     LIFT = 8
     DONE = 9
+    # -- TRACK sub-phases --
+    ACQUIRING = 20
     # -- PLACE sub-phases (reserved, not used in milestone 1) --
     TRANSIT_PREPLACE = 30
     DESCEND_PLACE = 31
@@ -103,7 +106,6 @@ class CommandType(StrEnum):
     ABORT_SKILL = "ABORT_SKILL"
     OVERRIDE_TARGET = "OVERRIDE_TARGET"
     DESCRIBE_SCENE = "DESCRIBE_SCENE"
-    TRACK_OBJECT = "TRACK_OBJECT"
 
 
 class CommandAckStatus(StrEnum):

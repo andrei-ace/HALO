@@ -1,13 +1,14 @@
 # SkillRunnerService
 
-10-20 Hz service that owns the Pick skill FSM, schedules ACT action chunks, and publishes phase/skill lifecycle events.
+10-20 Hz service that owns skill FSMs (Pick, Track), schedules ACT action chunks, and publishes phase/skill lifecycle events.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `config.py` | `SkillRunnerConfig` — FSM thresholds, timeouts, buffer targets |
-| `fsm.py` | `PickFSM` — pure synchronous state machine (no asyncio, no I/O) |
+| `fsm.py` | `PickFSM` — pure synchronous state machine for PICK (no asyncio, no I/O) |
+| `track_fsm.py` | `TrackFSM` — pure FSM for TRACK skill (IDLE → ACQUIRING → DONE) |
 | `service.py` | `SkillRunnerService` — async orchestrator, event publisher, chunk scheduler |
 
 ## Key Types

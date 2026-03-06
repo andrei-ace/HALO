@@ -22,7 +22,7 @@ PlannerAgent(model_name="gpt-oss:20b", base_url="http://localhost:11434", prompt
 make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 ```
 
-## Tools (5 plain functions)
+## Tools (4 plain functions)
 
 | Tool | Command | Precondition |
 |------|---------|-------------|
@@ -30,7 +30,8 @@ make_decide_fn(...)  # convenience factory → PlannerAgent.decide
 | `abort_skill(skill_run_id, reason)` | ABORT_SKILL | snapshot_id |
 | `override_target(skill_run_id, target_handle)` | OVERRIDE_TARGET | snapshot_id |
 | `describe_scene(reason)` | DESCRIBE_SCENE | None (stateless) |
-| `track_object(target_handle)` | TRACK_OBJECT | None (stateless) |
+
+`start_skill` accepts PICK and TRACK as skill names. TRACK is fire-and-forget: succeeds once tracking is established.
 
 **One-tool-per-tick invariant**: each tool can fire at most once per tick. Second call is rejected.
 
