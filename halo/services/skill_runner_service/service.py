@@ -20,6 +20,7 @@ from halo.contracts.snapshots import ActInfo, OutcomeInfo, ProgressInfo, SkillIn
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.fsm import PickFSM
+from halo.services.skill_runner_service.track_fsm import TrackFSM
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +90,7 @@ class SkillRunnerService:
         self._start_pick_fn = start_pick_fn
         self._sim_phase_fn = sim_phase_fn
 
-        self._fsm: PickFSM = PickFSM(config)
+        self._fsm: PickFSM | TrackFSM = PickFSM(config)
         self._skill_name: SkillName | None = None
         self._skill_run_id: str | None = None
         self._active_target_handle: str | None = None
@@ -121,12 +122,13 @@ class SkillRunnerService:
         skill_run_id: str,
         target_handle: str,
     ) -> None:
-        """Begin a new Pick skill run. Resets the FSM."""
-        if skill_name != SkillName.PICK:
+        """Begin a new skill run. Resets the FSM."""
+        if skill_name not in (SkillName.PICK, SkillName.TRACK):
             await self._publish(
                 EventType.SKILL_FAILED,
                 {
                     "skill_run_id": skill_run_id,
+                    "skill_name": skill_name,
                     "reason": "unsupported_skill",
                     "failure_code": SkillFailureCode.UNSAFE_ABORT.value,
                 },
@@ -154,7 +156,10 @@ class SkillRunnerService:
             return
         now_ms = int(time.monotonic() * 1000)
 
-        self._fsm = PickFSM(self._config)
+        if skill_name == SkillName.TRACK:
+            self._fsm = TrackFSM(self._config)
+        else:
+            self._fsm = PickFSM(self._config)
         self._fsm.start(now_ms, target_handle)
 
         self._skill_name = skill_name
@@ -164,17 +169,18 @@ class SkillRunnerService:
         self._last_distance_m = None
         self._sim_pick_triggered = False
 
+        initial_phase = self._fsm.phase
         store = self._runtime.store
         await store.update_skill(
             self._arm_id,
-            SkillInfo(name=skill_name, skill_run_id=skill_run_id, phase=PhaseId.SELECT_GRASP),
+            SkillInfo(name=skill_name, skill_run_id=skill_run_id, phase=initial_phase),
         )
         await store.update_outcome(
             self._arm_id,
             OutcomeInfo(
                 state=SkillOutcomeState.IN_PROGRESS,
                 reason_code=None,
-                needs_verify=not self._config.skip_verify_grasp,
+                needs_verify=False if skill_name == SkillName.TRACK else not self._config.skip_verify_grasp,
             ),
         )
         await store.update_progress(
@@ -192,7 +198,7 @@ class SkillRunnerService:
         )
         await self._publish(
             EventType.PHASE_ENTER,
-            {"phase_id": int(PhaseId.SELECT_GRASP)},
+            {"phase_id": int(initial_phase)},
         )
 
         # In sim mode, trigger trajectory planning on the server.
@@ -232,6 +238,7 @@ class SkillRunnerService:
             EventType.SKILL_FAILED,
             {
                 "skill_run_id": self._skill_run_id,
+                "skill_name": self._skill_name,
                 "reason": "abort",
                 "failure_code": "UNSAFE_ABORT",
             },
@@ -239,10 +246,34 @@ class SkillRunnerService:
         self._active_target_handle = None
 
     async def tick(self) -> PhaseId | None:
-        """One runner tick. Dispatches to ACT or sim mode."""
+        """One runner tick. Dispatches to ACT, sim, or track mode."""
+        if isinstance(self._fsm, TrackFSM):
+            return await self._tick_track()
         if self._sim_mode:
             return await self._tick_sim()
         return await self._tick_act()
+
+    # --- Track mode tick ---
+
+    async def _tick_track(self) -> PhaseId | None:
+        """Track-mode tick: FSM advance only, no chunk scheduling."""
+        if not self._fsm.is_active:
+            return None
+
+        snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
+        now_ms = int(time.monotonic() * 1000)
+        old_phase = self._fsm.advance(now_ms, snap.target, snap.perception, snap.act)
+
+        if old_phase is not None:
+            await self._handle_transition(old_phase)
+
+        elapsed_ms = now_ms - self._skill_start_ms
+        await self._runtime.store.update_progress(
+            self._arm_id,
+            ProgressInfo(elapsed_ms=elapsed_ms, no_progress_ms=0, delta_distance=0.0),
+        )
+
+        return self._fsm.phase
 
     # --- Sim mode tick ---
 
@@ -344,7 +375,8 @@ class SkillRunnerService:
 
         if self._fsm.phase == PhaseId.DONE:
             if self._fsm.outcome == SkillOutcomeState.SUCCESS:
-                await store.update_held_object_handle(self._arm_id, self._active_target_handle)
+                if self._skill_name == SkillName.PICK:
+                    await store.update_held_object_handle(self._arm_id, self._active_target_handle)
                 await store.update_outcome(
                     self._arm_id,
                     OutcomeInfo(
@@ -355,7 +387,7 @@ class SkillRunnerService:
                 )
                 await self._publish(
                     EventType.SKILL_SUCCEEDED,
-                    {"skill_run_id": self._skill_run_id},
+                    {"skill_run_id": self._skill_run_id, "skill_name": self._skill_name},
                 )
             else:
                 await store.update_outcome(
@@ -370,6 +402,7 @@ class SkillRunnerService:
                     EventType.SKILL_FAILED,
                     {
                         "skill_run_id": self._skill_run_id,
+                        "skill_name": self._skill_name,
                         "failure_code": self._fsm.failure_code.value if self._fsm.failure_code else None,
                     },
                 )

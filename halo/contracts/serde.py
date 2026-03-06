@@ -13,7 +13,6 @@ from halo.contracts.commands import (
     DescribeScenePayload,
     OverrideTargetPayload,
     StartSkillPayload,
-    TrackObjectPayload,
 )
 from halo.contracts.enums import (
     ActStatus,
@@ -248,7 +247,6 @@ _PAYLOAD_BUILDERS: dict[str, type] = {
     CommandType.ABORT_SKILL: AbortSkillPayload,
     CommandType.OVERRIDE_TARGET: OverrideTargetPayload,
     CommandType.DESCRIBE_SCENE: DescribeScenePayload,
-    CommandType.TRACK_OBJECT: TrackObjectPayload,
 }
 
 
@@ -264,8 +262,6 @@ def command_envelope_to_dict(cmd: CommandEnvelope) -> dict:
         payload_dict = {"skill_run_id": p.skill_run_id, "target_handle": p.target_handle}
     elif isinstance(p, DescribeScenePayload):
         payload_dict = {"reason": p.reason}
-    elif isinstance(p, TrackObjectPayload):
-        payload_dict = {"target_handle": p.target_handle}
 
     d = {
         "command_id": cmd.command_id,
@@ -298,8 +294,6 @@ def command_envelope_from_dict(d: dict) -> CommandEnvelope:
         payload = OverrideTargetPayload(skill_run_id=raw["skill_run_id"], target_handle=raw["target_handle"])
     elif cmd_type == CommandType.DESCRIBE_SCENE:
         payload = DescribeScenePayload(reason=raw["reason"])
-    elif cmd_type == CommandType.TRACK_OBJECT:
-        payload = TrackObjectPayload(target_handle=raw["target_handle"])
     else:
         msg = f"Unknown command type: {cmd_type}"
         raise ValueError(msg)

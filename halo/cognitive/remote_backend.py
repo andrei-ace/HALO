@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -77,6 +78,7 @@ class RemoteCognitiveBackend:
             headers=headers,
         )
         self._last_reasoning = ""
+        self._last_token_usage: dict[str, int] = {}
         self._readiness = BackendReadiness.COLD
         self._caught_up_cursor = -1
         self._last_nonce: str | None = None
@@ -100,6 +102,7 @@ class RemoteCognitiveBackend:
         resp.raise_for_status()
         data = resp.json()
         self._last_reasoning = data.get("reasoning", "")
+        self._last_token_usage = data.get("token_usage") or {}
 
         # Notify Switchboard of compaction (it publishes SESSION_COMPACTED
         # to EventBus, syncs to inactive backend, and the TUI logs it)
@@ -110,7 +113,7 @@ class RemoteCognitiveBackend:
                 up_to_msg_id=c.get("up_to_msg_id", ""),
                 compacted_count=c.get("compacted_count", 0),
                 retained_count=c.get("retained_count", 0),
-                ts_ms=int(time.monotonic() * 1000),
+                ts_ms=int(time.time() * 1000),
             )
             try:
                 await self._on_compaction(result)
@@ -142,7 +145,9 @@ class RemoteCognitiveBackend:
             data={"metadata": metadata},
         )
         resp.raise_for_status()
-        scene = vlm_scene_from_dict(resp.json())
+        resp_data = resp.json()
+        vlm_token_usage = resp_data.get("token_usage") or {}
+        scene = dataclasses.replace(vlm_scene_from_dict(resp_data), token_usage=vlm_token_usage)
 
         if self._run_logger is not None:
             det_dicts = [{"handle": d.handle, "bbox": d.bbox} for d in scene.detections]
@@ -155,6 +160,7 @@ class RemoteCognitiveBackend:
                 inference_ms=int((time.monotonic() - t0) * 1000),
                 image=image,
                 detections=det_dicts,
+                token_usage=vlm_token_usage,
             )
 
         return scene
@@ -180,8 +186,16 @@ class RemoteCognitiveBackend:
         self._on_compaction = callback
 
     @property
+    def model_name(self) -> str:
+        return "remote"
+
+    @property
     def last_reasoning(self) -> str:
         return self._last_reasoning
+
+    @property
+    def last_token_usage(self) -> dict[str, int]:
+        return self._last_token_usage
 
     def reset_loop_state(self) -> None:
         """Clear local state — warm-up already establishes fresh context

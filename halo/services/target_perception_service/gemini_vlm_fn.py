@@ -22,7 +22,7 @@ _DEFAULT_PROMPT = Path(__file__).parents[3] / "configs" / "perception" / "scene_
 
 
 def make_gemini_vlm_fn(
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3.1-flash-lite-preview",
     api_key: str | None = None,
     prompt_path: Path = _DEFAULT_PROMPT,
     run_logger: RunLogger | None = None,

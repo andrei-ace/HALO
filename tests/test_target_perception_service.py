@@ -5,7 +5,7 @@ import dataclasses
 
 import pytest
 
-from halo.contracts.enums import CommandType, PerceptionFailureCode, TrackingStatus
+from halo.contracts.enums import PerceptionFailureCode, TrackingStatus
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import TargetInfo
 from halo.runtime.runtime import HALORuntime
@@ -711,7 +711,8 @@ async def test_stop_cancels_vlm_task(rt: HALORuntime):
     await svc.stop()  # must cancel the VLM task and await it
 
     assert cancelled is True
-    assert svc._vlm_task is None
+    assert svc._vlm_track_task is None
+    assert svc._vlm_scene_task is None
 
 
 async def test_vlm_mismatch_emits_failure(rt: HALORuntime):
@@ -793,7 +794,7 @@ async def test_target_acquired_not_emitted_on_subsequent_ticks(rt: HALORuntime):
     assert len(acquired) == 1
 
 
-# ─── _drain_commands: TRACK_OBJECT ──────────────────────────────────────────
+# ─── _drain_commands: SKILL_STARTED(TRACK) ──────────────────────────────────
 
 
 async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
@@ -814,21 +815,21 @@ async def test_track_object_does_not_emit_scene_described(rt: HALORuntime):
     assert len(acquired_events) == 1
 
 
-async def test_drain_commands_handles_track_object(rt: HALORuntime):
-    """A COMMAND_ACCEPTED event for TRACK_OBJECT sets the tracking target."""
+async def test_drain_commands_handles_skill_started_track(rt: HALORuntime):
+    """A SKILL_STARTED event with skill_name=TRACK sets the tracking target."""
     svc = _make_svc(rt)
     await svc.start()
     await asyncio.sleep(0.02)
 
-    # Simulate a COMMAND_ACCEPTED event with TRACK_OBJECT payload data
+    # Simulate a SKILL_STARTED event for TRACK skill
     evt = EventEnvelope(
         event_id=rt.bus.make_event_id(),
-        type=EventType.COMMAND_ACCEPTED,
+        type=EventType.SKILL_STARTED,
         ts_ms=1000,
         arm_id=ARM,
         data={
-            "command_id": "cmd-track-1",
-            "command_type": CommandType.TRACK_OBJECT,
+            "skill_run_id": "run-track-1",
+            "skill_name": "TRACK",
             "target_handle": "mug-3",
         },
     )
@@ -838,6 +839,116 @@ async def test_drain_commands_handles_track_object(rt: HALORuntime):
     assert svc._target_handle == "mug-3"
 
     await svc.stop()
+
+
+async def test_drain_commands_clears_on_track_failed(rt: HALORuntime):
+    """SKILL_FAILED for TRACK clears tracking target and _awaiting_acquisition."""
+    svc = _make_svc(rt)
+    await svc.start()
+    await svc.set_tracking_target("mug-3")
+    assert svc._awaiting_acquisition is True
+    await asyncio.sleep(0.02)
+
+    evt = EventEnvelope(
+        event_id=rt.bus.make_event_id(),
+        type=EventType.SKILL_FAILED,
+        ts_ms=1000,
+        arm_id=ARM,
+        data={"skill_run_id": "run-1", "skill_name": "TRACK", "failure_code": "PERCEPTION_LOST"},
+    )
+    await rt.bus.publish(evt)
+    await asyncio.sleep(0.1)
+
+    assert svc._target_handle is None
+    assert svc._awaiting_acquisition is False
+
+    await svc.stop()
+
+
+async def test_drain_commands_preserves_target_on_pick_failed(rt: HALORuntime):
+    """SKILL_FAILED for PICK preserves tracker so planner can retry without re-running TRACK."""
+    svc = _make_svc(rt)
+    await svc.start()
+    await svc.set_tracking_target("mug-3")
+    svc._awaiting_acquisition = False  # simulate already acquired
+    await asyncio.sleep(0.02)
+
+    evt = EventEnvelope(
+        event_id=rt.bus.make_event_id(),
+        type=EventType.SKILL_FAILED,
+        ts_ms=1000,
+        arm_id=ARM,
+        data={"skill_run_id": "run-1", "skill_name": "PICK", "failure_code": "NO_GRASP"},
+    )
+    await rt.bus.publish(evt)
+    await asyncio.sleep(0.1)
+
+    # Target and tracker preserved for PICK retry
+    assert svc._target_handle == "mug-3"
+    assert svc._awaiting_acquisition is False
+
+    await svc.stop()
+
+
+async def test_drain_commands_preserves_target_on_track_succeeded(rt: HALORuntime):
+    """SKILL_SUCCEEDED for TRACK keeps tracker alive (PICK needs it), only resets _awaiting_acquisition."""
+    svc = _make_svc(rt)
+    await svc.start()
+    await svc.set_tracking_target("mug-3")
+    assert svc._awaiting_acquisition is True
+    await asyncio.sleep(0.02)
+
+    evt = EventEnvelope(
+        event_id=rt.bus.make_event_id(),
+        type=EventType.SKILL_SUCCEEDED,
+        ts_ms=1000,
+        arm_id=ARM,
+        data={"skill_run_id": "run-1", "skill_name": "TRACK"},
+    )
+    await rt.bus.publish(evt)
+    await asyncio.sleep(0.1)
+
+    # Target stays alive for the upcoming PICK
+    assert svc._target_handle == "mug-3"
+    # But awaiting_acquisition is reset so no duplicate TARGET_ACQUIRED
+    assert svc._awaiting_acquisition is False
+
+    await svc.stop()
+
+
+async def test_drain_commands_ignores_non_track_skill_succeeded(rt: HALORuntime):
+    """SKILL_SUCCEEDED for non-TRACK skills (e.g. PICK) does not touch tracking state."""
+    svc = _make_svc(rt)
+    await svc.start()
+    await svc.set_tracking_target("mug-3")
+    svc._awaiting_acquisition = False  # simulate already acquired
+    await asyncio.sleep(0.02)
+
+    evt = EventEnvelope(
+        event_id=rt.bus.make_event_id(),
+        type=EventType.SKILL_SUCCEEDED,
+        ts_ms=1000,
+        arm_id=ARM,
+        data={"skill_run_id": "run-1", "skill_name": "PICK"},
+    )
+    await rt.bus.publish(evt)
+    await asyncio.sleep(0.1)
+
+    # PICK success does not clear the target
+    assert svc._target_handle == "mug-3"
+
+    await svc.stop()
+
+
+async def test_clear_tracking_target_resets_awaiting_acquisition(rt: HALORuntime):
+    """clear_tracking_target() must reset _awaiting_acquisition to False."""
+    svc = _make_svc(rt)
+    await svc.set_tracking_target("cube-1")
+    assert svc._awaiting_acquisition is True
+
+    await svc.clear_tracking_target()
+    assert svc._awaiting_acquisition is False
+    assert svc._target_handle is None
 
 
 # ─── Frame-buffer replay + switchover ────────────────────────────────────────

@@ -49,8 +49,8 @@ tui-live-cloud:
 
 CLOUD_PLANNER_MODEL    ?= gemini-3.1-flash-lite-preview
 CLOUD_VLM_MODEL        ?= gemini-3.1-flash-lite-preview
-COMPACTION_INTERVAL    ?= 5
-COMPACTION_OVERLAP     ?= 1
+COMPACTION_INTERVAL    ?= 8
+COMPACTION_OVERLAP     ?= 4
 
 tui-live-cloud-local:
 	uv run python -m halo.tui.app --live \

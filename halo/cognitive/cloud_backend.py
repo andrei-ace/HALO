@@ -138,8 +138,16 @@ class CloudCognitiveBackend:
         return True
 
     @property
+    def model_name(self) -> str:
+        return self._agent.model_name
+
+    @property
     def last_reasoning(self) -> str:
         return self._agent.last_reasoning
+
+    @property
+    def last_token_usage(self) -> dict[str, int]:
+        return self._agent.last_token_usage
 
     @property
     def agent(self) -> PlannerAgent:

@@ -10,7 +10,6 @@ from halo.contracts.commands import (
     DescribeScenePayload,
     OverrideTargetPayload,
     StartSkillPayload,
-    TrackObjectPayload,
 )
 from halo.contracts.enums import CommandType, SkillName
 
@@ -38,7 +37,7 @@ def build_tools(ctx: AgentContext) -> list:
         """Start a named skill on the arm.
 
         Args:
-            skill_name: Skill to run. One of: PICK.
+            skill_name: Skill to run. One of: PICK, TRACK.
             target_handle: Target object handle string (from perception).
             options: Optional JSON string of key/value overrides for the skill.
         """
@@ -150,30 +149,4 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued DESCRIBE_SCENE reason={reason}"
 
-    def track_object(target_handle: str) -> str:
-        """Tell perception to start tracking a named object.
-
-        Use a handle from SCENE_DESCRIBED detections. Perception will run
-        VLM to locate the object and begin tracking it. A TARGET_ACQUIRED
-        event fires once tracking is established.
-
-        Args:
-            target_handle: Object handle string (from SCENE_DESCRIBED detections).
-        """
-        if err := _once("track_object"):
-            return err
-        cmd = CommandEnvelope(
-            command_id=str(uuid.uuid4()),
-            arm_id=ctx.arm_id,
-            issued_at_ms=int(time.time() * 1000),
-            type=CommandType.TRACK_OBJECT,
-            payload=TrackObjectPayload(
-                target_handle=target_handle,
-            ),
-            precondition_snapshot_id=None,
-            epoch=ctx.epoch,
-        )
-        ctx.commands.append(cmd)
-        return f"Queued TRACK_OBJECT target={target_handle}"
-
-    return [start_skill, abort_skill, override_target, describe_scene, track_object]
+    return [start_skill, abort_skill, override_target, describe_scene]

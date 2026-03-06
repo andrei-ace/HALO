@@ -103,7 +103,7 @@ async def test_gemini_vlm_fn_box2d_1000():
     """box_2d [y_min,x_min,y_max,x_max] 0-1000 → bbox [x1,y1,x2,y2] 0..1."""
     with patch(
         "halo.services.target_perception_service.vlm_fn._call_gemini_sync",
-        return_value=_MOCK_RESPONSE_BOX2D,
+        return_value=(_MOCK_RESPONSE_BOX2D, {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150}),
     ):
         vlm_fn = make_gemini_vlm_fn(api_key="test-key")
         img = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -128,7 +128,7 @@ async def test_gemini_vlm_fn_legacy_bbox_0_1():
     """Legacy bounding_box in 0..1 [y,x,y,x] is reordered to [x,y,x,y]."""
     with patch(
         "halo.services.target_perception_service.vlm_fn._call_gemini_sync",
-        return_value=_MOCK_RESPONSE_LEGACY_01,
+        return_value=(_MOCK_RESPONSE_LEGACY_01, {}),
     ):
         vlm_fn = make_gemini_vlm_fn(api_key="test-key")
         img = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -171,7 +171,7 @@ async def test_gemini_vlm_fn_known_handles():
 
     def fake_call(api_key, model, prompt, pil_image):
         call_args["prompt"] = prompt
-        return {"scene": "table", "detections": []}
+        return {"scene": "table", "detections": []}, {}
 
     with patch(
         "halo.services.target_perception_service.vlm_fn._call_gemini_sync",

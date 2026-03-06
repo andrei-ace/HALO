@@ -9,7 +9,6 @@ from halo.contracts.commands import (
     DescribeScenePayload,
     OverrideTargetPayload,
     StartSkillPayload,
-    TrackObjectPayload,
 )
 from halo.contracts.enums import (
     ActStatus,
@@ -310,21 +309,6 @@ def test_command_describe_scene_roundtrip():
     assert restored.type == CommandType.DESCRIBE_SCENE
     assert restored.payload.reason == "initial scan"
     assert restored.precondition_snapshot_id is None
-
-
-def test_command_track_object_roundtrip():
-    cmd = CommandEnvelope(
-        command_id="cmd-5",
-        arm_id="arm0",
-        issued_at_ms=5000,
-        type=CommandType.TRACK_OBJECT,
-        payload=TrackObjectPayload(target_handle="red_cube_01"),
-    )
-    d = command_envelope_to_dict(cmd)
-    restored = command_envelope_from_dict(d)
-
-    assert restored.type == CommandType.TRACK_OBJECT
-    assert restored.payload.target_handle == "red_cube_01"
 
 
 # ---------------------------------------------------------------------------

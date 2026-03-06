@@ -29,14 +29,7 @@ class DescribeScenePayload:
     reason: str
 
 
-@dataclass(frozen=True)
-class TrackObjectPayload:
-    target_handle: str
-
-
-CommandPayload = (
-    StartSkillPayload | AbortSkillPayload | OverrideTargetPayload | DescribeScenePayload | TrackObjectPayload
-)
+CommandPayload = StartSkillPayload | AbortSkillPayload | OverrideTargetPayload | DescribeScenePayload
 
 
 @dataclass(frozen=True)

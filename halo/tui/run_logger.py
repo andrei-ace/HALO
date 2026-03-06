@@ -62,6 +62,8 @@ class RunLogger:
         reasoning: str = "",
         inference_ms: int = 0,
         error: str | None = None,
+        model: str = "",
+        token_usage: dict[str, int] | None = None,
     ) -> None:
         entry: dict[str, Any] = {
             "kind": "planner",
@@ -74,6 +76,8 @@ class RunLogger:
             "reasoning": reasoning,
             "inference_ms": inference_ms,
             "error": error,
+            "model": model,
+            "token_usage": token_usage or {},
         }
         self._file.write(json.dumps(entry, default=str) + "\n")
         self._file.flush()
@@ -90,6 +94,7 @@ class RunLogger:
         error: str | None = None,
         image: object | None = None,
         detections: list[dict] | None = None,
+        token_usage: dict[str, int] | None = None,
     ) -> None:
         self._vlm_counter += 1
         idx = f"{self._vlm_counter:03d}"
@@ -116,6 +121,7 @@ class RunLogger:
             "inference_ms": inference_ms,
             "error": error,
             "image_file": img_file,
+            "token_usage": token_usage or {},
         }
         self._file.write(json.dumps(entry, default=str) + "\n")
         self._file.flush()

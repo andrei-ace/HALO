@@ -1,20 +1,25 @@
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import json
 import logging
 import os
+import uuid
+import weakref
 from pathlib import Path
 
+import litellm
 from google.adk.agents import Agent
 from google.adk.apps import App
+from google.adk.events import Event
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from halo.cognitive.compaction_plugin import CompactionPlugin
-from halo.cognitive.compactor import CompactionResult, MessageHistory
+from halo.cognitive.compactor import CompactionResult, MessageHistory, MessageRecord
 from halo.cognitive.config import CompactionConfig
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.events import EventType
@@ -32,6 +37,12 @@ _SNAPSHOT_PREFIX = "Current robot state:"
 _THREAD_ID = "planner"  # single-thread; one conversation per PlannerAgent
 _APP_NAME = "halo"
 _USER_ID = "planner"
+
+# Per-decide() invocation nonce.  The litellm success_callback is global, so we
+# use a ContextVar to scope captured usage to the async task that owns a given
+# decide() call.  Concurrent decide() calls (multi-arm) and unrelated litellm
+# requests (compaction) run in different contexts and will not match.
+_decide_nonce: contextvars.ContextVar[str] = contextvars.ContextVar("_decide_nonce", default="")
 
 
 def _load_prompts(prompts_dir: Path) -> str:
@@ -106,9 +117,10 @@ class PlannerAgent:
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         self._tools = build_tools(self._ctx)
         self._backend = backend
+        self._model_name = model_name
 
         if backend == "cloud":
-            # ADK natively routes bare model strings (e.g. "gemini-2.5-flash")
+            # ADK natively routes bare model strings (e.g. "gemini-3.1-flash-lite-preview")
             # to the Gemini API via GOOGLE_API_KEY env var.
             model = model_name
         else:
@@ -149,8 +161,37 @@ class PlannerAgent:
 
         self._session_created = False
         self._last_reasoning: str = ""
+        self._last_token_usage: dict[str, int] = {}
         self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
+
+        # litellm fallback: a permanent callback scoped by ContextVar nonce.
+        # Captures token usage when ADK's event.usage_metadata is empty
+        # (e.g. Ollama via LiteLlm).  Uses a weakref so the callback does not
+        # prevent GC if the agent is discarded (tests, failover re-init).
+        self._litellm_usage: dict[str, int] = {}
+        self._litellm_nonce: str = ""
+
+        ref = weakref.ref(self)
+
+        def _on_litellm_success(kwargs, response_obj, start_time, end_time):  # noqa: ARG001
+            agent = ref()
+            if agent is None or _decide_nonce.get("") != agent._litellm_nonce:
+                return
+            usage = getattr(response_obj, "usage", None)
+            if usage:
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    agent._litellm_usage[key] = agent._litellm_usage.get(key, 0) + getattr(usage, key, 0)
+
+        self._litellm_callback = _on_litellm_success  # prevent callback GC while agent lives
+        litellm.success_callback.append(_on_litellm_success)
         self._pending_handoff: str | None = None
+
+    def __del__(self) -> None:
+        """Remove our callback from the global litellm list on GC."""
+        try:
+            litellm.success_callback.remove(self._litellm_callback)
+        except (ValueError, AttributeError):
+            pass
 
     async def _ensure_session(self) -> None:
         """Create the ADK session on first use (requires async)."""
@@ -163,9 +204,18 @@ class PlannerAgent:
             self._session_created = True
 
     @property
+    def model_name(self) -> str:
+        return self._model_name
+
+    @property
     def last_reasoning(self) -> str:
         """Final LLM text from the most recent decide() call (empty if none)."""
         return self._last_reasoning
+
+    @property
+    def last_token_usage(self) -> dict[str, int]:
+        """Token usage from the most recent decide() call (empty if unavailable)."""
+        return self._last_token_usage
 
     @property
     def msg_history(self) -> MessageHistory:
@@ -183,6 +233,106 @@ class PlannerAgent:
     async def inject_handoff_context(self, context_text: str) -> None:
         """Queue handoff context to be prepended to the next decide() call."""
         self._pending_handoff = context_text
+
+    async def inject_compaction_state(self, summary: str, retained_records: list[MessageRecord]) -> None:
+        """Rebuild session and MessageHistory from a compaction summary + retained records.
+
+        Used by ``Switchboard._sync_compaction_to_inactive`` to propagate cloud
+        compaction state to the local backend so that on failover the local model
+        starts with proper conversation history instead of just a text prefix.
+
+        Steps:
+        1. Reset session (wipe old ADK state + MessageHistory)
+        2. Create fresh session
+        3. Inject summary as a model Event
+        4. Inject each retained user+model pair as Events
+        5. Mirror all records into MessageHistory
+        """
+        await self.reset_session()
+        self._pending_handoff = None
+        await self._ensure_session()
+
+        session = await self._session_service.get_session(
+            app_name=_APP_NAME,
+            user_id=_USER_ID,
+            session_id=_THREAD_ID,
+        )
+
+        # Inject summary as model event
+        summary_inv_id = uuid.uuid4().hex
+        summary_event = Event(
+            author="planner",
+            invocation_id=summary_inv_id,
+            content=types.Content(
+                role="model",
+                parts=[types.Part.from_text(text=summary)],
+            ),
+        )
+        await self._session_service.append_event(session, summary_event)
+        self._msg_history.append("model", summary)
+        # Mark summary record
+        recs = self._msg_history.get_all()
+        if recs:
+            last = recs[-1]
+            # Replace with is_summary=True variant
+            self._msg_history._records[-1] = MessageRecord(
+                msg_id=last.msg_id,
+                role=last.role,
+                text=last.text,
+                ts_ms=last.ts_ms,
+                is_summary=True,
+            )
+
+        # Inject retained records as user+model pairs
+        i = 0
+        while i < len(retained_records):
+            rec = retained_records[i]
+            inv_id = uuid.uuid4().hex
+
+            if rec.role == "user":
+                # Inject user event
+                user_event = Event(
+                    author="user",
+                    invocation_id=inv_id,
+                    content=types.Content(
+                        role="user",
+                        parts=[types.Part.from_text(text=rec.text)],
+                    ),
+                )
+                await self._session_service.append_event(session, user_event)
+                self._msg_history.append("user", rec.text)
+
+                # Check for paired model response
+                if i + 1 < len(retained_records) and retained_records[i + 1].role == "model":
+                    model_rec = retained_records[i + 1]
+                    model_event = Event(
+                        author="planner",
+                        invocation_id=inv_id,
+                        content=types.Content(
+                            role="model",
+                            parts=[types.Part.from_text(text=model_rec.text)],
+                        ),
+                    )
+                    await self._session_service.append_event(session, model_event)
+                    self._msg_history.append("model", model_rec.text)
+                    i += 2
+                else:
+                    i += 1
+            elif rec.role == "model":
+                # Unpaired model record — inject standalone
+                model_event = Event(
+                    author="planner",
+                    invocation_id=inv_id,
+                    content=types.Content(
+                        role="model",
+                        parts=[types.Part.from_text(text=rec.text)],
+                    ),
+                )
+                await self._session_service.append_event(session, model_event)
+                self._msg_history.append("model", rec.text)
+                i += 1
+            else:
+                i += 1
 
     async def reset_session(self) -> None:
         """Delete the current ADK session for a fresh start after backend switch."""
@@ -263,8 +413,15 @@ class PlannerAgent:
         user_text = "\n\n".join(text_parts)
         self._msg_history.append("user", user_text)
 
-        # Run the agent and extract the final response text.
+        # Run the agent and extract the final response text + token usage.
         last_text = ""
+        token_usage: dict[str, int] = {}
+
+        # Activate litellm usage capture for this invocation via ContextVar nonce.
+        self._litellm_usage.clear()
+        self._litellm_nonce = uuid.uuid4().hex
+        _decide_nonce.set(self._litellm_nonce)
+
         async for event in self._runner.run_async(
             user_id=_USER_ID,
             session_id=_THREAD_ID,
@@ -274,14 +431,37 @@ class PlannerAgent:
                 for part in event.content.parts:
                     if part.text:
                         last_text = part.text
+            # Accumulate token usage across events (last event with data wins for
+            # cumulative fields; ADK may emit partial usage on intermediate events).
+            um = event.usage_metadata
+            if um is not None:
+                if um.prompt_token_count is not None:
+                    token_usage["prompt_tokens"] = um.prompt_token_count
+                if um.candidates_token_count is not None:
+                    token_usage["completion_tokens"] = um.candidates_token_count
+                if um.total_token_count is not None:
+                    token_usage["total_tokens"] = um.total_token_count
+                if um.thoughts_token_count:
+                    token_usage["thoughts_tokens"] = um.thoughts_token_count
+                if um.cached_content_token_count:
+                    token_usage["cached_tokens"] = um.cached_content_token_count
+
+        # Deactivate capture; fall back to litellm data if ADK provided nothing.
+        self._litellm_nonce = ""
+        if not token_usage and self._litellm_usage:
+            token_usage = dict(self._litellm_usage)
 
         self._last_reasoning = last_text
+        self._last_token_usage = token_usage
 
         # Track model response
         if last_text:
             self._msg_history.append("model", last_text)
 
-        # Read compaction result from plugin (set by after_run_callback)
+        # Apply deferred MessageHistory compaction now that both user and
+        # model messages are tracked — ensures the overlap window contains
+        # complete invocations (user + model pairs).
+        self._compaction_plugin.apply_deferred_history_compaction()
         self._last_compaction = self._compaction_plugin.last_compaction
 
         commands = list(self._ctx.commands)
@@ -328,7 +508,7 @@ def make_decide_fn(
         from halo.services.planner_service.agent import make_decide_fn
         decide = make_decide_fn()                        # local Ollama
         decide = make_decide_fn(backend="cloud",
-                                model_name="gemini-2.5-flash")  # Gemini
+                                model_name="gemini-3.1-flash-lite-preview")  # Gemini
         svc = PlannerService("arm0", runtime, decide)
     """
     if prompts_dir is None:

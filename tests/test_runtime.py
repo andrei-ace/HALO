@@ -25,7 +25,7 @@ async def test_returns_snapshot_with_correct_arm(rt: HALORuntime):
 
 async def test_snapshot_includes_recent_bus_events(rt: HALORuntime):
     rt.bus.subscribe(ARM)  # ensure arm is registered in bus
-    evt = EventEnvelope(event_id="evt-1", type=EventType.PHASE_ENTER, ts_ms=1000, arm_id=ARM)
+    evt = EventEnvelope(event_id="evt-1", type=EventType.SKILL_STARTED, ts_ms=1000, arm_id=ARM)
     await rt.bus.publish(evt)
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert any(e.event_id == "evt-1" for e in snap.recent_events)

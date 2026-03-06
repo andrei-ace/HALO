@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 import litellm
@@ -51,6 +52,14 @@ _SUMMARIZATION_PROMPT = (
 )
 
 
+@dataclass
+class _PendingHistoryCompaction:
+    """Deferred MessageHistory compaction — applied after model response is tracked."""
+
+    compacted_inv_count: int
+    summary: str
+
+
 class CompactionPlugin(BasePlugin):
     """ADK plugin: snapshot deprecation + optional session-level compaction.
 
@@ -59,8 +68,14 @@ class CompactionPlugin(BasePlugin):
     ``after_run_callback`` counts invocations and triggers LLM-based
     compaction, appending an ``EventCompaction`` event to the session.
 
+    The MessageHistory compaction is **deferred** — ``after_run_callback``
+    fires before the model response is appended to MessageHistory, so the
+    actual ``apply_compaction`` must be called later via
+    ``apply_deferred_history_compaction()`` once both user and model
+    messages are tracked.
+
     Attributes:
-        last_compaction: Set after a compaction is triggered; read by
+        last_compaction: Set after deferred compaction is applied; read by
             ``PlannerAgent`` to propagate to the Switchboard.
     """
 
@@ -76,6 +91,7 @@ class CompactionPlugin(BasePlugin):
         self._msg_history = msg_history
         self._last_compaction_end_ts: float = 0.0
         self.last_compaction: CompactionResult | None = None
+        self._pending: _PendingHistoryCompaction | None = None
 
     @property
     def enabled(self) -> bool:
@@ -130,8 +146,16 @@ class CompactionPlugin(BasePlugin):
         *,
         invocation_context: InvocationContext,
     ) -> None:
-        """Count invocations since last compaction; trigger when threshold reached."""
+        """Count invocations since last compaction; trigger when threshold reached.
+
+        NOTE: This callback fires *during* ``runner.run_async()``, before the
+        caller has appended the model response to ``MessageHistory``.  We defer
+        the ``MessageHistory.apply_compaction()`` to
+        ``apply_deferred_history_compaction()`` which the caller must invoke
+        after tracking the model response.
+        """
         self.last_compaction = None
+        self._pending = None
 
         if not self.enabled:
             return
@@ -173,22 +197,34 @@ class CompactionPlugin(BasePlugin):
             await invocation_context.session_service.append_event(session, compaction_event)
             self._last_compaction_end_ts = end_ts
 
-            # Build CompactionResult for cross-backend sync.
-            # We compacted (len(new_inv_ids) - overlap_size) invocations on the
-            # ADK side.  Find the corresponding boundary in MessageHistory by
-            # counting user messages from the end — skip overlap_size user msgs
-            # and compact up to the one before.
+            # Defer MessageHistory compaction — model response not yet tracked.
             if self._msg_history is not None:
                 compacted_inv_count = len(new_inv_ids) - self._config.overlap_size
-                try:
-                    boundary_id = self._find_compaction_boundary(self._msg_history, compacted_inv_count)
-                    if boundary_id:
-                        self.last_compaction = self._msg_history.apply_compaction(boundary_id, summary)
-                except (ValueError, IndexError):
-                    logger.debug("apply_compaction failed", exc_info=True)
+                self._pending = _PendingHistoryCompaction(
+                    compacted_inv_count=compacted_inv_count,
+                    summary=summary,
+                )
 
         except Exception:
             logger.debug("Compaction failed", exc_info=True)
+
+    def apply_deferred_history_compaction(self) -> None:
+        """Apply pending MessageHistory compaction after model response is tracked.
+
+        Must be called by the agent after ``msg_history.append("model", ...)``
+        so that the overlap window includes complete invocations (user + model).
+        """
+        if self._pending is None or self._msg_history is None:
+            return
+
+        try:
+            boundary_id = self._find_compaction_boundary(self._msg_history, self._pending.compacted_inv_count)
+            if boundary_id:
+                self.last_compaction = self._msg_history.apply_compaction(boundary_id, self._pending.summary)
+        except (ValueError, IndexError):
+            logger.debug("apply_compaction failed", exc_info=True)
+        finally:
+            self._pending = None
 
     # ------------------------------------------------------------------
     # Internal helpers

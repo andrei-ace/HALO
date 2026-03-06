@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 
-from halo.contracts.commands import CommandEnvelope, StartSkillPayload, TrackObjectPayload
+from halo.contracts.commands import CommandEnvelope, StartSkillPayload
 from halo.contracts.enums import CommandType, SkillName
 from halo.services.planner_service.agent import _command_key
 from halo.services.planner_service.tools import AgentContext, build_tools
@@ -128,27 +128,23 @@ def test_different_tools_allowed_same_tick() -> None:
     """Different tools can each be called once in the same tick."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["track_object"](target_handle="cube-1")
+    tools["describe_scene"](reason="check")
     tools["start_skill"](skill_name="PICK", target_handle="cube-1")
 
     assert len(ctx.commands) == 2
 
 
-# ---------------------------------------------------------------------------
-# track_object
-# ---------------------------------------------------------------------------
-
-
-def test_track_object_tool_appends_command() -> None:
+def test_start_skill_track_appends_command() -> None:
+    """start_skill(TRACK, ...) creates a START_SKILL command."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    tools["track_object"](target_handle="mug-2")
+    tools["start_skill"](skill_name="TRACK", target_handle="mug-2")
 
     assert len(ctx.commands) == 1
     cmd = ctx.commands[0]
-    assert cmd.type == CommandType.TRACK_OBJECT
+    assert cmd.type == CommandType.START_SKILL
+    assert cmd.payload.skill_name == SkillName.TRACK
     assert cmd.payload.target_handle == "mug-2"
-    assert cmd.precondition_snapshot_id is None
 
 
 # ---------------------------------------------------------------------------
@@ -158,13 +154,10 @@ def test_track_object_tool_appends_command() -> None:
 
 def _cmd(cmd_type: CommandType = CommandType.START_SKILL, **payload_kw) -> CommandEnvelope:
     """Build a CommandEnvelope with unique id/ts but deterministic payload."""
-    if cmd_type == CommandType.START_SKILL:
-        payload = StartSkillPayload(
-            skill_name=payload_kw.get("skill_name", SkillName.PICK),
-            target_handle=payload_kw.get("target_handle", "cube-1"),
-        )
-    else:
-        payload = TrackObjectPayload(target_handle=payload_kw.get("target_handle", "cube-1"))
+    payload = StartSkillPayload(
+        skill_name=payload_kw.get("skill_name", SkillName.PICK),
+        target_handle=payload_kw.get("target_handle", "cube-1"),
+    )
     return CommandEnvelope(
         command_id=str(uuid.uuid4()),
         arm_id="arm0",
@@ -189,6 +182,6 @@ def test_command_key_differs_for_different_payloads() -> None:
 
 
 def test_command_key_differs_for_different_types() -> None:
-    a = _cmd(CommandType.START_SKILL, target_handle="cube-1")
-    b = _cmd(CommandType.TRACK_OBJECT, target_handle="cube-1")
+    a = _cmd(CommandType.START_SKILL, skill_name=SkillName.PICK, target_handle="cube-1")
+    b = _cmd(CommandType.START_SKILL, skill_name=SkillName.TRACK, target_handle="cube-1")
     assert _command_key(a) != _command_key(b)

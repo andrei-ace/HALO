@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
 class VlmScene:
     scene: str
     detections: list[VlmDetection]
+    token_usage: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -126,14 +126,26 @@ async def request_refresh(self, mode: str = "reacquire", reason: str = "") -> No
 - **`mode="reacquire"`** (default): scene analysis **and** tracker reacquisition if a target is set. Sets status to `REACQUIRING`.
 - **`mode="scene_only"`**: scene analysis only — never attempts tracker init, even if a target is active. Used by `DESCRIBE_SCENE` command.
 
-## Command Listener
+## Event Listener
 
-Listens on EventBus for `COMMAND_ACCEPTED` events:
+Listens on EventBus for `COMMAND_ACCEPTED` and `SKILL_STARTED` events:
 
-| Command | Action |
-|---------|--------|
-| `DESCRIBE_SCENE` | `request_refresh(mode="scene_only")` → VLM → `SCENE_DESCRIBED` |
-| `TRACK_OBJECT` | `set_tracking_target(target_handle)` |
+| Event | Condition | Action |
+|-------|-----------|--------|
+| `COMMAND_ACCEPTED` | `command_type == DESCRIBE_SCENE` | `request_refresh(mode="scene_only")` → VLM → `SCENE_DESCRIBED` |
+| `SKILL_STARTED` | `skill_name == TRACK` | `set_tracking_target(target_handle)` |
+| `SKILL_FAILED` | `skill_name == TRACK` | `clear_tracking_target()` — stops tracker, prevents stale TARGET_ACQUIRED |
+| `SKILL_FAILED` | other skills (e.g. PICK) | Resets `_awaiting_acquisition` only — preserves tracker for planner retry |
+| `SKILL_SUCCEEDED` | `skill_name == TRACK` | Resets `_awaiting_acquisition` only — keeps target+tracker alive for PICK |
+
+## VLM Dual-Slot Parallelism
+
+The VLM runs in two independent slots — **scene** and **track** — allowing `describe_scene` and tracking VLM to run concurrently:
+
+- **Scene slot**: used by `request_refresh(mode="scene_only")` (DESCRIBE_SCENE command)
+- **Track slot**: used by `set_tracking_target()`, `request_refresh(mode="reacquire")`, auto-reacquire, tracker init retries
+
+Each slot has its own task, run sequence, and active run ID. `_cancel_vlm()` can cancel one or both slots.
 
 ## tracker_fn.py — OpenCV Tracker
 
@@ -165,7 +177,7 @@ Each is tried at runtime via `getattr(cv2, ...)`. The first that instantiates wi
 
 - **Writes**: `TargetInfo` + `PerceptionInfo` to RuntimeStateStore every tick
 - **Publishes**: `PERCEPTION_FAILURE`, `PERCEPTION_RECOVERED`, `TARGET_ACQUIRED`, `SCENE_DESCRIBED`
-- **Subscribes to**: `COMMAND_ACCEPTED` events (DESCRIBE_SCENE, TRACK_OBJECT)
+- **Subscribes to**: `COMMAND_ACCEPTED` events (DESCRIBE_SCENE), `SKILL_STARTED` events (TRACK skill), `SKILL_FAILED` and `SKILL_SUCCEEDED` events (clear tracking)
 - **Consumed by**: SkillRunnerService reads target hints directly from store; PlannerService sees perception status in snapshot
 - **RunLogger**: if `run_logger` is provided, logs `SCENE_DESCRIBED` events (with VLM image) and tracker lifecycle events (`init_ok`, `init_failed`, `retry`, `init_exhausted`, `handle_not_found`, `handle_alias`, `replay_*`)
 

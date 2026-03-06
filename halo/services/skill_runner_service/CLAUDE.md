@@ -1,13 +1,14 @@
 # SkillRunnerService
 
-10-20 Hz service that owns the Pick skill FSM, schedules ACT action chunks, and publishes phase/skill lifecycle events.
+10-20 Hz service that owns skill FSMs (Pick, Track), schedules ACT action chunks, and publishes phase/skill lifecycle events.
 
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `config.py` | `SkillRunnerConfig` — FSM thresholds, timeouts, buffer targets |
-| `fsm.py` | `PickFSM` — pure synchronous state machine (no asyncio, no I/O) |
+| `fsm.py` | `PickFSM` — pure synchronous state machine for PICK (no asyncio, no I/O) |
+| `track_fsm.py` | `TrackFSM` — pure FSM for TRACK skill (IDLE → ACQUIRING → DONE) |
 | `service.py` | `SkillRunnerService` — async orchestrator, event publisher, chunk scheduler |
 
 ## Key Types
@@ -99,8 +100,8 @@ In sim mode, `_tick_sim()` defers `start_pick_fn` until FSM exits SELECT_GRASP. 
 | Event | Trigger |
 |-------|---------|
 | `SKILL_STARTED` | `start_skill()` |
-| `SKILL_SUCCEEDED` | FSM → DONE with SUCCESS |
-| `SKILL_FAILED` | FSM → DONE with FAILURE |
+| `SKILL_SUCCEEDED` | FSM → DONE with SUCCESS (data includes `skill_name`) |
+| `SKILL_FAILED` | FSM → DONE with FAILURE (data includes `skill_name`) |
 | `PHASE_ENTER` | Every phase transition (incl. start) |
 | `PHASE_EXIT` | Every phase transition |
 

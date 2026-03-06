@@ -18,7 +18,7 @@ import pytest
 
 from halo.cognitive.compaction_plugin import CompactionPlugin
 from halo.cognitive.compactor import CompactionResult, MessageHistory
-from halo.cognitive.config import BackendType, CognitiveConfig
+from halo.cognitive.config import BackendType, CognitiveConfig, CompactionConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.cognitive.switchboard import Switchboard
@@ -276,6 +276,84 @@ class TestFindCompactionBoundary:
 
 
 # ---------------------------------------------------------------------------
+# Deferred compaction: apply_deferred_history_compaction
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredCompaction:
+    """Verify that deferred compaction (applied after model response) gives correct counts."""
+
+    def test_deferred_compaction_includes_model_response(self):
+        """interval=5, overlap=1 → compact 4 invocations.
+
+        Simulates the real flow:
+        1. 4 complete invocations (user+model) + 5th user appended
+        2. _find_compaction_boundary called with compacted_inv_count=4
+           (this is what after_run_callback stores as _pending)
+        3. 5th model response appended
+        4. apply_deferred_history_compaction runs — should retain 2 records (u5+m5)
+        """
+        mh = MessageHistory()
+        config = CompactionConfig(enabled=True, compaction_interval=5, overlap_size=1)
+        plugin = CompactionPlugin(config=config, model_name="test", msg_history=mh)
+
+        # Simulate 4 complete invocations + 5th user only (as during after_run_callback)
+        for i in range(1, 5):
+            mh.append("user", f"u{i}")
+            mh.append("model", f"m{i}")
+        mh.append("user", "u5")
+        # At this point: 9 records (4 user+model + 1 user)
+
+        # Simulate what after_run_callback stores
+        from halo.cognitive.compaction_plugin import _PendingHistoryCompaction
+
+        plugin._pending = _PendingHistoryCompaction(compacted_inv_count=4, summary="summary")
+
+        # Now append the 5th model response (as agent.py does after run_async)
+        mh.append("model", "m5")
+        assert mh.count() == 10
+
+        # Apply deferred compaction
+        plugin.apply_deferred_history_compaction()
+
+        assert plugin.last_compaction is not None
+        assert plugin.last_compaction.compacted_count == 8  # u1..m4
+        assert plugin.last_compaction.retained_count == 2  # u5, m5
+
+    def test_deferred_noop_when_no_pending(self):
+        """apply_deferred_history_compaction is a no-op when nothing is pending."""
+        mh = MessageHistory()
+        plugin = CompactionPlugin(config=None, model_name="test", msg_history=mh)
+
+        mh.append("user", "u1")
+        mh.append("model", "m1")
+
+        plugin.apply_deferred_history_compaction()
+        assert plugin.last_compaction is None
+
+    def test_deferred_clears_pending(self):
+        """_pending is cleared after apply_deferred_history_compaction."""
+        mh = MessageHistory()
+        config = CompactionConfig(enabled=True, compaction_interval=2, overlap_size=1)
+        plugin = CompactionPlugin(config=config, model_name="test", msg_history=mh)
+
+        mh.append("user", "u1")
+        mh.append("model", "m1")
+        mh.append("user", "u2")
+        mh.append("model", "m2")
+
+        from halo.cognitive.compaction_plugin import _PendingHistoryCompaction
+
+        plugin._pending = _PendingHistoryCompaction(compacted_inv_count=1, summary="s")
+
+        plugin.apply_deferred_history_compaction()
+        assert plugin._pending is None
+
+        # Second call is a no-op
+        plugin.apply_deferred_history_compaction()
+
+
+# ---------------------------------------------------------------------------
 # Switchboard: SESSION_COMPACTED event + EventBus
 # ---------------------------------------------------------------------------
 
@@ -287,10 +365,12 @@ def _mock_agent(backend="cloud"):
     mock.reset_loop_state = MagicMock()
     mock.reset_session = AsyncMock()
     mock.inject_handoff_context = AsyncMock()
+    mock.inject_compaction_state = AsyncMock()
     mock._pending_handoff = None
     mock.last_compaction = None
     mock.msg_history = MagicMock()
     mock.msg_history.clear = MagicMock()
+    mock.msg_history.get_all = MagicMock(return_value=[])
     mock.msg_history.apply_compaction = MagicMock(side_effect=ValueError("not found"))
     return mock
 
@@ -621,12 +701,18 @@ async def test_switchboard_wires_remote_backend():
 
 
 @pytest.mark.asyncio
-async def test_cross_backend_sync_uuid_mismatch_clears():
-    """When cloud up_to_msg_id not found in local MessageHistory, fallback to clear()."""
-    sb, _, _, _, _, mock_local_agent = _make_switchboard()
+async def test_cross_backend_sync_injects_compaction_state():
+    """Switchboard syncs compaction to inactive via inject_compaction_state."""
+    sb, _, cloud, _, mock_cloud_agent, mock_local_agent = _make_switchboard()
 
-    # local agent's msg_history.apply_compaction raises ValueError (UUID mismatch)
-    mock_local_agent.msg_history.apply_compaction = MagicMock(side_effect=ValueError("not found"))
+    # Cloud agent has post-compaction history with retained records
+    from halo.cognitive.compactor import MessageRecord
+
+    mock_cloud_agent.msg_history.get_all.return_value = [
+        MessageRecord(msg_id="s1", role="model", text="summary", ts_ms=1, is_summary=True),
+        MessageRecord(msg_id="u1", role="user", text="snap_3", ts_ms=2),
+        MessageRecord(msg_id="m1", role="model", text="reply_3", ts_ms=3),
+    ]
 
     result = CompactionResult(
         summary="Cloud summary",
@@ -637,13 +723,14 @@ async def test_cross_backend_sync_uuid_mismatch_clears():
     )
     await sb._sync_compaction_to_inactive(result)
 
-    # apply_compaction was attempted
-    mock_local_agent.msg_history.apply_compaction.assert_called_once_with("cloud-uuid-xyz", "Cloud summary")
-    # Fell back to clear()
-    mock_local_agent.msg_history.clear.assert_called_once()
-    # Session was still reset + handoff injected
-    mock_local_agent.reset_session.assert_awaited_once()
-    mock_local_agent.inject_handoff_context.assert_awaited_once()
+    # inject_compaction_state called with summary + retained (no summary record)
+    mock_local_agent.inject_compaction_state.assert_awaited_once()
+    call_args = mock_local_agent.inject_compaction_state.call_args
+    assert call_args[0][0] == "Cloud summary"
+    retained = call_args[0][1]
+    assert len(retained) == 2  # u1, m1 (summary filtered)
+    assert retained[0].text == "snap_3"
+    assert retained[1].text == "reply_3"
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +751,21 @@ async def test_full_cycle_cloud_compact_switch_local_switch_cloud():
 
     mock_local_agent = _mock_agent()
     mock_local_agent.msg_history = local_mh
+
+    # Wire inject_compaction_state to rebuild local_mh from summary + retained
+    async def _inject_compaction(summary, retained):
+        local_mh.clear()
+        local_mh.append("model", summary)
+        # Mark as summary
+        from halo.cognitive.compactor import MessageRecord
+
+        recs = local_mh._records
+        last = recs[-1]
+        recs[-1] = MessageRecord(msg_id=last.msg_id, role=last.role, text=last.text, ts_ms=last.ts_ms, is_summary=True)
+        for r in retained:
+            local_mh.append(r.role, r.text)
+
+    mock_local_agent.inject_compaction_state = AsyncMock(side_effect=_inject_compaction)
 
     with (
         patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
@@ -707,8 +809,15 @@ async def test_full_cycle_cloud_compact_switch_local_switch_cloud():
     # Sync compaction to inactive (local)
     await sb._sync_compaction_to_inactive(cloud_result)
 
-    # Local MessageHistory should be cleared (UUID mismatch)
-    assert local_mh.count() == 0
+    # Local MessageHistory should have summary + 4 retained records
+    assert local_mh.count() == 5  # summary + 4 retained
+    local_records = local_mh.get_all()
+    assert local_records[0].is_summary is True
+    assert local_records[0].text == "Cloud compaction summary"
+    assert local_records[1].role == "user"
+    assert local_records[1].text == "snap_3"
+    assert local_records[2].role == "model"
+    assert local_records[2].text == "reply_3"
 
     # -- Phase 2: Switch to Local --
     await sb.switch_to(BackendType.LOCAL, reason="test")
@@ -718,14 +827,13 @@ async def test_full_cycle_cloud_compact_switch_local_switch_cloud():
     for i in range(3):
         local_mh.append("user", f"local_snap_{i}")
         local_mh.append("model", f"local_reply_{i}")
-    assert local_mh.count() == 6
+    assert local_mh.count() == 11  # 5 from compaction sync + 6 new
 
     # -- Phase 3: Switch back to Cloud --
     await sb.switch_to(BackendType.CLOUD, reason="test failback")
     assert sb.active_type == BackendType.CLOUD
 
     # Cloud MessageHistory still has its post-compaction state
-    # (switch_to doesn't modify the active backend's msg_history)
     assert cloud_mh.count() == 5  # summary + 4 retained records
 
     # Cloud can still run more invocations and compact again
@@ -736,7 +844,6 @@ async def test_full_cycle_cloud_compact_switch_local_switch_cloud():
 
     # Second compaction on cloud
     records2 = cloud_mh.get_all()
-    # Compact first 3 new invocations (indices 0-6: summary + 2 retained + 1 new pair)
     boundary_id2 = records2[6].msg_id
     cloud_result2 = cloud_mh.apply_compaction(boundary_id2, "Cloud compaction summary 2")
     assert cloud_result2.compacted_count == 7
@@ -798,3 +905,160 @@ async def test_session_compacted_filtered_from_recent_events():
     assert EventType.SESSION_COMPACTED not in event_types
     assert EventType.SKILL_SUCCEEDED in event_types
     assert EventType.TARGET_ACQUIRED in event_types
+
+
+# ---------------------------------------------------------------------------
+# PlannerAgent.inject_compaction_state
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_inject_compaction_state_empty_retained():
+    """inject_compaction_state with empty retained list creates summary-only history."""
+    from pathlib import Path
+    from unittest.mock import patch as _patch
+
+    with _patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    await agent.inject_compaction_state("Summary text", [])
+
+    records = agent.msg_history.get_all()
+    assert len(records) == 1
+    assert records[0].is_summary is True
+    assert records[0].text == "Summary text"
+    assert records[0].role == "model"
+
+
+@pytest.mark.asyncio
+async def test_inject_compaction_state_paired_records():
+    """inject_compaction_state with user+model pairs rebuilds full history."""
+    from pathlib import Path
+    from unittest.mock import patch as _patch
+
+    from halo.cognitive.compactor import MessageRecord
+
+    with _patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    retained = [
+        MessageRecord(msg_id="a", role="user", text="snap_1", ts_ms=1),
+        MessageRecord(msg_id="b", role="model", text="reply_1", ts_ms=2),
+        MessageRecord(msg_id="c", role="user", text="snap_2", ts_ms=3),
+        MessageRecord(msg_id="d", role="model", text="reply_2", ts_ms=4),
+    ]
+    await agent.inject_compaction_state("Summary", retained)
+
+    records = agent.msg_history.get_all()
+    assert len(records) == 5  # summary + 4 retained
+    assert records[0].is_summary is True
+    assert records[0].text == "Summary"
+    assert records[1].role == "user"
+    assert records[1].text == "snap_1"
+    assert records[2].role == "model"
+    assert records[2].text == "reply_1"
+    assert records[3].role == "user"
+    assert records[3].text == "snap_2"
+    assert records[4].role == "model"
+    assert records[4].text == "reply_2"
+
+
+@pytest.mark.asyncio
+async def test_inject_compaction_state_unpaired_trailing_user():
+    """inject_compaction_state handles trailing user without model pair."""
+    from pathlib import Path
+    from unittest.mock import patch as _patch
+
+    from halo.cognitive.compactor import MessageRecord
+
+    with _patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    retained = [
+        MessageRecord(msg_id="a", role="user", text="snap_1", ts_ms=1),
+        MessageRecord(msg_id="b", role="model", text="reply_1", ts_ms=2),
+        MessageRecord(msg_id="c", role="user", text="snap_2", ts_ms=3),
+    ]
+    await agent.inject_compaction_state("Summary", retained)
+
+    records = agent.msg_history.get_all()
+    assert len(records) == 4  # summary + 3 retained
+    assert records[0].is_summary is True
+    assert records[3].role == "user"
+    assert records[3].text == "snap_2"
+
+
+@pytest.mark.asyncio
+async def test_inject_compaction_state_clears_previous():
+    """inject_compaction_state wipes previous history before rebuilding."""
+    from pathlib import Path
+    from unittest.mock import patch as _patch
+
+    with _patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    # Pre-populate with some history
+    agent.msg_history.append("user", "old_snap")
+    agent.msg_history.append("model", "old_reply")
+    assert agent.msg_history.count() == 2
+
+    await agent.inject_compaction_state("Fresh summary", [])
+
+    records = agent.msg_history.get_all()
+    assert len(records) == 1
+    assert records[0].is_summary is True
+    assert records[0].text == "Fresh summary"
+
+
+@pytest.mark.asyncio
+async def test_inject_compaction_state_clears_pending_handoff():
+    """inject_compaction_state clears any previously queued _pending_handoff."""
+    from pathlib import Path
+    from unittest.mock import patch as _patch
+
+    with _patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    # Simulate a prior warm-up that queued handoff context
+    await agent.inject_handoff_context("stale handoff from warm-up")
+    assert agent._pending_handoff is not None
+
+    await agent.inject_compaction_state("Compaction summary", [])
+
+    # Pending handoff must be cleared — compaction state replaces it
+    assert agent._pending_handoff is None

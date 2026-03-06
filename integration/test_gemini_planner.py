@@ -11,7 +11,7 @@ Run explicitly:
 
 Environment:
     GOOGLE_API_KEY        Gemini API key (required)
-    HALO_CLOUD_MODEL      Model to use (default: gemini-2.5-flash)
+    HALO_CLOUD_MODEL      Model to use (default: gemini-3.1-flash-lite-preview)
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ pytestmark = [pytest.mark.cloud_integration]
 # Configuration
 # ---------------------------------------------------------------------------
 
-CLOUD_MODEL = os.getenv("HALO_CLOUD_MODEL", "gemini-2.5-flash")
+CLOUD_MODEL = os.getenv("HALO_CLOUD_MODEL", "gemini-3.1-flash-lite-preview")
 _TS_MS = 268_245_429
 
 

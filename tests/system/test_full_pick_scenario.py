@@ -1,7 +1,7 @@
 """System test: full pick scenario — all services wired, external deps mocked.
 
-Scenario: planner sees scene → issues track_object → perception acquires target
-→ planner issues start_skill → FSM runs through phases → skill succeeds.
+Scenario: planner sees scene → issues start_skill(TRACK) → perception acquires
+target → planner issues start_skill(PICK) → FSM runs through phases → skill succeeds.
 """
 
 import asyncio
@@ -10,7 +10,6 @@ from halo.contracts.commands import (
     CommandEnvelope,
     DescribeScenePayload,
     StartSkillPayload,
-    TrackObjectPayload,
 )
 from halo.contracts.enums import CommandType, SkillName
 from halo.contracts.events import EventType
@@ -34,9 +33,8 @@ def _make_scripted_decide(latency: LatencyProfile):
     """Scripted decide_fn that drives a full pick scenario.
 
     Step 0: DESCRIBE_SCENE
-    Step 1: TRACK_OBJECT red_cube
-    Step 2: wait for TARGET_ACQUIRED (noop)
-    Step 3+: START_SKILL pick (once target is acquired and skill not active)
+    Step 1: START_SKILL(TRACK, red_cube)
+    Step 2: wait for TRACK to succeed, then START_SKILL(PICK)
     After that: no-op until skill completes
     """
     state = {"step": 0, "skill_started": False}
@@ -51,9 +49,20 @@ def _make_scripted_decide(latency: LatencyProfile):
 
         if step == 1:
             state["step"] = 2
-            return [make_command(ARM, CommandType.TRACK_OBJECT, TrackObjectPayload(target_handle="red_cube"))]
+            return [
+                make_command(
+                    ARM,
+                    CommandType.START_SKILL,
+                    StartSkillPayload(skill_name=SkillName.TRACK, target_handle="red_cube"),
+                    snapshot_id=None,
+                )
+            ]
 
-        if not state["skill_started"] and snap.target is not None and snap.target.hint_valid:
+        # Wait for TRACK skill to complete (DONE phase) before starting PICK
+        track_done = snap.skill is not None and snap.skill.name == SkillName.TRACK and snap.skill.phase.name == "DONE"
+        no_skill = snap.skill is None
+        ready = snap.target is not None and snap.target.hint_valid and (track_done or no_skill)
+        if not state["skill_started"] and ready:
             state["skill_started"] = True
             # In a system test with concurrent service ticks, snapshot_id can
             # become stale between decide_fn return and submit_command. Use None
@@ -123,7 +132,7 @@ async def test_full_pick_scenario(latency: LatencyProfile):
         f"Expected 1 SKILL_SUCCEEDED, got {len(succeeded)}. Events: {runner.recorder.event_types()}"
     )
 
-    # Should have had COMMAND_ACCEPTED events (describe_scene, track_object, start_skill, + planner startup)
+    # Should have had COMMAND_ACCEPTED events (describe_scene, start_skill(TRACK), start_skill(PICK), + planner startup)
     accepted = runner.recorder.events_of_type(EventType.COMMAND_ACCEPTED)
     assert len(accepted) >= 3
 

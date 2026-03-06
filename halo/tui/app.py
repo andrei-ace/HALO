@@ -115,7 +115,6 @@ _DATA = dict(
         ("14:32:06", "SKILL_STARTED run-9"),
         ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
         ("14:32:08", "PERCEPTION_RECOVERED"),
-        ("14:32:08", "PHASE_ENTER PREGRASP_ALIGN"),
     ],
 )
 
@@ -202,7 +201,6 @@ def _format_cmd(cmd: object) -> str:
         DescribeScenePayload,
         OverrideTargetPayload,
         StartSkillPayload,
-        TrackObjectPayload,
     )
 
     p = cmd.payload  # type: ignore[attr-defined]
@@ -214,8 +212,6 @@ def _format_cmd(cmd: object) -> str:
         return f"OVERRIDE_TARGET({p.target_handle})"
     if isinstance(p, DescribeScenePayload):
         return f"DESCRIBE_SCENE({p.reason})"
-    if isinstance(p, TrackObjectPayload):
-        return f"TRACK_OBJECT({p.target_handle})"
     return str(cmd.type)  # type: ignore[attr-defined]
 
 
@@ -223,12 +219,9 @@ def _format_event(evt: object) -> str:
     """Convert an EventEnvelope to a concise display string."""
     name = str(getattr(evt, "type", "?"))
     data = getattr(evt, "data", {}) or {}
-    phase = data.get("phase", "")
     run_id = data.get("skill_run_id", "")
     reason = data.get("reason", "")
     cmd_type = data.get("command_type", "")
-    if name in ("PHASE_ENTER", "PHASE_EXIT") and phase:
-        return f"{name} {phase}"
     if name == "SKILL_STARTED" and run_id:
         return f"{name} {run_id}"
     if name in ("SKILL_FAILED", "SAFETY_REFLEX_TRIGGERED") and reason:
@@ -1536,14 +1529,16 @@ class HALOApp(App):
                             )
                         except Exception:
                             pass
-                try:
-                    await events_panel.append_event(evt)
-                except Exception:
-                    pass  # DOM error must not kill the listener
+                # Skip high-frequency FSM events from TUI panel (still logged above)
+                evt_type_name = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
+                if evt_type_name not in ("PHASE_ENTER", "PHASE_EXIT"):
+                    try:
+                        await events_panel.append_event(evt)
+                    except Exception:
+                        pass  # DOM error must not kill the listener
                 # Wake the agent — it reads event details from the snapshot
-                evt_type = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
-                if self._agent_queue is not None and evt_type in self._AGENT_WAKE_EVENTS:
-                    self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type}]"))
+                if self._agent_queue is not None and evt_type_name in self._AGENT_WAKE_EVENTS:
+                    self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type_name}]"))
         except asyncio.CancelledError:
             pass
 
@@ -1620,6 +1615,8 @@ class HALOApp(App):
                     acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
                     reasoning=reasoning,
                     inference_ms=inference_ms,
+                    model=getattr(self._agent, "model_name", "") or "",
+                    token_usage=getattr(self._agent, "last_token_usage", None) or {},
                 )
 
             # Update thinking widget
@@ -1648,6 +1645,7 @@ class HALOApp(App):
                     commands=[],
                     acks=[],
                     error=str(exc),
+                    model=getattr(self._agent, "model_name", "") or "",
                 )
             err_text = Text()
             err_text.append(ts, style="grey62")
@@ -1905,12 +1903,28 @@ def _run_live(args: list[str]) -> None:
     # Redirect all logging to the run log directory so warnings/errors
     # don't corrupt the Textual TUI display (which owns stdout/stderr).
     import logging as _logging
+    import sys as _sys
 
     _log_file = run_logger.run_dir / "tui.log" if run_logger.run_dir else _RUNS_DIR / "tui.log"
     _file_handler = _logging.FileHandler(_log_file)
     _file_handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
     _logging.root.handlers = [_file_handler]
     _logging.root.setLevel(_logging.DEBUG)
+
+    # Strip StreamHandlers that libraries (litellm, httpx, google.*) attach
+    # directly to their own loggers — those bypass root and write to the
+    # terminal, corrupting the Textual TUI.
+    for _name in list(_logging.Logger.manager.loggerDict):
+        _lgr = _logging.getLogger(_name)
+        for _h in list(_lgr.handlers):
+            if isinstance(_h, _logging.StreamHandler) and not isinstance(_h, _logging.FileHandler):
+                _lgr.removeHandler(_h)
+
+    # Redirect stdout/stderr to the log file to catch stray print() calls
+    # from third-party libraries (litellm debug prints, etc.).
+    _log_stream = open(_log_file, "a")  # noqa: SIM115
+    _sys.stdout = _log_stream  # type: ignore[assignment]
+    _sys.stderr = _log_stream  # type: ignore[assignment]
 
     HALOApp(
         runtime=runtime,
