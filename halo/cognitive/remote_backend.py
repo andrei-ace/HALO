@@ -113,7 +113,7 @@ class RemoteCognitiveBackend:
                 up_to_msg_id=c.get("up_to_msg_id", ""),
                 compacted_count=c.get("compacted_count", 0),
                 retained_count=c.get("retained_count", 0),
-                ts_ms=int(time.monotonic() * 1000),
+                ts_ms=int(time.time() * 1000),
             )
             try:
                 await self._on_compaction(result)
@@ -184,6 +184,10 @@ class RemoteCognitiveBackend:
 
     def set_on_compaction(self, callback: Callable[[CompactionResult], Awaitable[None]] | None) -> None:
         self._on_compaction = callback
+
+    @property
+    def model_name(self) -> str:
+        return "remote"
 
     @property
     def last_reasoning(self) -> str:

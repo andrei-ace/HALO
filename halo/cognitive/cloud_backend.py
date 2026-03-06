@@ -138,6 +138,10 @@ class CloudCognitiveBackend:
         return True
 
     @property
+    def model_name(self) -> str:
+        return self._agent.model_name
+
+    @property
     def last_reasoning(self) -> str:
         return self._agent.last_reasoning
 

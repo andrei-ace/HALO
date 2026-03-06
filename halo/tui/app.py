@@ -1616,6 +1616,7 @@ class HALOApp(App):
                     reasoning=reasoning,
                     inference_ms=inference_ms,
                     model=getattr(self._agent, "model_name", "") or "",
+                    token_usage=getattr(self._agent, "last_token_usage", None) or {},
                 )
 
             # Update thinking widget

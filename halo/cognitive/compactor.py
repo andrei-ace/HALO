@@ -104,7 +104,7 @@ class MessageHistory:
             up_to_msg_id=up_to_msg_id,
             compacted_count=compacted_count,
             retained_count=len(retained),
-            ts_ms=summary_record.ts_ms,
+            ts_ms=int(time.time() * 1000),
         )
 
     def clear(self) -> None:

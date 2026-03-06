@@ -296,6 +296,10 @@ class Switchboard:
         return VlmScene(scene="", detections=[])
 
     @property
+    def model_name(self) -> str:
+        return getattr(self.active_backend, "model_name", "")
+
+    @property
     def last_reasoning(self) -> str:
         return self.active_backend.last_reasoning
 
@@ -377,7 +381,7 @@ class Switchboard:
             event = EventEnvelope(
                 event_id=f"switch-{self._lease_mgr.current_epoch}",
                 type=EventType.BACKEND_SWITCHED,
-                ts_ms=int(time.monotonic() * 1000),
+                ts_ms=int(time.time() * 1000),
                 arm_id=self._arm_id,
                 data=switch_data,
             )
