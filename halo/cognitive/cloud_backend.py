@@ -142,6 +142,10 @@ class CloudCognitiveBackend:
         return self._agent.last_reasoning
 
     @property
+    def last_token_usage(self) -> dict[str, int]:
+        return self._agent.last_token_usage
+
+    @property
     def agent(self) -> PlannerAgent:
         return self._agent
 

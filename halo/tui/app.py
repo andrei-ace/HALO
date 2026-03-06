@@ -1615,6 +1615,7 @@ class HALOApp(App):
                     acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
                     reasoning=reasoning,
                     inference_ms=inference_ms,
+                    model=getattr(self._agent, "model_name", "") or "",
                 )
 
             # Update thinking widget
@@ -1643,6 +1644,7 @@ class HALOApp(App):
                     commands=[],
                     acks=[],
                     error=str(exc),
+                    model=getattr(self._agent, "model_name", "") or "",
                 )
             err_text = Text()
             err_text.append(ts, style="grey62")
@@ -1900,12 +1902,28 @@ def _run_live(args: list[str]) -> None:
     # Redirect all logging to the run log directory so warnings/errors
     # don't corrupt the Textual TUI display (which owns stdout/stderr).
     import logging as _logging
+    import sys as _sys
 
     _log_file = run_logger.run_dir / "tui.log" if run_logger.run_dir else _RUNS_DIR / "tui.log"
     _file_handler = _logging.FileHandler(_log_file)
     _file_handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
     _logging.root.handlers = [_file_handler]
     _logging.root.setLevel(_logging.DEBUG)
+
+    # Strip StreamHandlers that libraries (litellm, httpx, google.*) attach
+    # directly to their own loggers — those bypass root and write to the
+    # terminal, corrupting the Textual TUI.
+    for _name in list(_logging.Logger.manager.loggerDict):
+        _lgr = _logging.getLogger(_name)
+        for _h in list(_lgr.handlers):
+            if isinstance(_h, _logging.StreamHandler) and not isinstance(_h, _logging.FileHandler):
+                _lgr.removeHandler(_h)
+
+    # Redirect stdout/stderr to the log file to catch stray print() calls
+    # from third-party libraries (litellm debug prints, etc.).
+    _log_stream = open(_log_file, "a")  # noqa: SIM115
+    _sys.stdout = _log_stream  # type: ignore[assignment]
+    _sys.stderr = _log_stream  # type: ignore[assignment]
 
     HALOApp(
         runtime=runtime,

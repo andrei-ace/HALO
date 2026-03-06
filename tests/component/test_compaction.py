@@ -78,6 +78,7 @@ def _mock_agent(backend="cloud", compaction_config=None):
     mock.reset_loop_state = MagicMock()
     mock.reset_session = AsyncMock()
     mock.inject_handoff_context = AsyncMock()
+    mock.inject_compaction_state = AsyncMock()
     mock._pending_handoff = None
     mock.last_compaction = None
     mock.msg_history = MagicMock()
@@ -231,12 +232,24 @@ async def test_no_compaction_no_callback():
 
 @pytest.mark.asyncio
 async def test_switchboard_sync_compaction():
-    """Switchboard._sync_compaction_to_inactive resets local and injects summary."""
+    """Switchboard._sync_compaction_to_inactive calls inject_compaction_state on local agent."""
     mock_cloud_agent = _mock_agent()
     mock_cloud_agent.last_compaction = None
+    # Cloud agent has post-compaction history: summary + retained
+    from halo.cognitive.compactor import MessageHistory
+
+    cloud_mh = MessageHistory()
+    cloud_mh.append("user", "u1")
+    id_m1 = cloud_mh.append("model", "m1")
+    cloud_mh.apply_compaction(id_m1, "Cloud summary")
+    cloud_mh.append("user", "u2")
+    cloud_mh.append("model", "m2")
+    mock_cloud_agent.msg_history = cloud_mh
+
     mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     mock_local_agent = _mock_agent(backend="local")
+    mock_local_agent.inject_compaction_state = AsyncMock()
 
     with (
         patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
@@ -275,11 +288,16 @@ async def test_switchboard_sync_compaction():
 
     await sb._sync_compaction_to_inactive(result)
 
-    # Local agent should have had session reset + handoff injected
-    mock_local_agent.reset_session.assert_awaited_once()
-    mock_local_agent.inject_handoff_context.assert_awaited_once()
-    injected = mock_local_agent.inject_handoff_context.call_args[0][0]
-    assert "Compacted context summary" in injected
+    # Local agent should have inject_compaction_state called with summary + retained records
+    mock_local_agent.inject_compaction_state.assert_awaited_once()
+    call_args = mock_local_agent.inject_compaction_state.call_args
+    assert call_args[0][0] == "Compacted context summary"
+    retained = call_args[0][1]
+    assert len(retained) == 2  # u2, m2 (summary filtered out)
+    assert retained[0].role == "user"
+    assert retained[0].text == "u2"
+    assert retained[1].role == "model"
+    assert retained[1].text == "m2"
 
     # Context store should have a compaction entry
     entries = ctx_store.get_entries_after(-1)
@@ -462,9 +480,8 @@ async def test_multiple_compactions_accumulate_in_context_store():
     compaction_entries = [e for e in entries if e.entry_type == "compaction"]
     assert len(compaction_entries) == 3
 
-    # Local agent session was reset 3 times (once per compaction)
-    assert mock_local_agent.reset_session.await_count == 3
-    assert mock_local_agent.inject_handoff_context.await_count == 3
+    # Local agent had inject_compaction_state called 3 times (once per compaction)
+    assert mock_local_agent.inject_compaction_state.await_count == 3
 
 
 @pytest.mark.asyncio
@@ -472,7 +489,7 @@ async def test_sync_compaction_local_agent_error_still_writes_journal():
     """If local agent reset_session raises, journal entry is still written."""
     sb, ctx_store, _, _, _, mock_local_agent = _make_switchboard()
 
-    mock_local_agent.reset_session = AsyncMock(side_effect=RuntimeError("session gone"))
+    mock_local_agent.inject_compaction_state = AsyncMock(side_effect=RuntimeError("session gone"))
 
     result = CompactionResult(
         summary="Summary",

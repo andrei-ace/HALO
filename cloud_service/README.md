@@ -63,8 +63,8 @@ uv run --project cloud_service pytest cloud_service/tests/ -v
 |----------|----------|-------------|
 | `GOOGLE_API_KEY` | Yes | Gemini API key |
 | `HALO_CLOUD_API_KEY` | No | Bearer token clients must present (skip auth if unset) |
-| `HALO_PLANNER_MODEL` | No | Planner model (default: `gemini-2.5-flash`) |
-| `HALO_VLM_MODEL` | No | VLM model (default: `gemini-2.5-flash`) |
+| `HALO_PLANNER_MODEL` | No | Planner model (default: `gemini-3.1-flash-lite-preview`) |
+| `HALO_VLM_MODEL` | No | VLM model (default: `gemini-3.1-flash-lite-preview`) |
 
 ## Cloud Run deployment
 

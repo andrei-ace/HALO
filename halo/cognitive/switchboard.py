@@ -299,6 +299,10 @@ class Switchboard:
     def last_reasoning(self) -> str:
         return self.active_backend.last_reasoning
 
+    @property
+    def last_token_usage(self) -> dict[str, int]:
+        return getattr(self.active_backend, "last_token_usage", {})
+
     def reset_loop_state(self) -> None:
         self.active_backend.reset_loop_state()
 
@@ -553,11 +557,11 @@ class Switchboard:
                 self._bus.unsubscribe(self._arm_id, queue)
 
     async def _sync_compaction_to_inactive(self, result: CompactionResult) -> None:
-        """Propagate compaction summary to the inactive backend.
+        """Propagate compaction summary + retained messages to the inactive backend.
 
-        After ADK compacts the cloud session, this resets the local backend's
-        session and injects the compaction summary so that if a failback occurs,
-        the local model starts with a concise context instead of nothing.
+        After ADK compacts the cloud session, this rebuilds the local backend's
+        session with the compaction summary and retained conversation history so
+        that on failover the local model starts with proper context.
         """
         inactive_type = BackendType.LOCAL if self._active_type == BackendType.CLOUD else BackendType.CLOUD
         inactive = self._backends.get(inactive_type)
@@ -568,14 +572,13 @@ class Switchboard:
             from halo.cognitive.local_backend import LocalCognitiveBackend
 
             if isinstance(inactive, LocalCognitiveBackend):
-                await inactive.agent.reset_session()
-                await inactive.agent.inject_handoff_context(
-                    f"[Compaction summary from cloud backend]\n{result.summary}"
-                )
-                try:
-                    inactive.agent.msg_history.apply_compaction(result.up_to_msg_id, result.summary)
-                except ValueError:
-                    inactive.agent.msg_history.clear()
+                # Extract retained records from active backend's MessageHistory
+                active = self._backends[self._active_type]
+                retained = []
+                if hasattr(active, "agent") and hasattr(active.agent, "msg_history"):
+                    retained = [r for r in active.agent.msg_history.get_all() if not r.is_summary]
+
+                await inactive.agent.inject_compaction_state(result.summary, retained)
         except Exception:
             logger.debug("Failed to sync compaction to inactive backend", exc_info=True)
 
