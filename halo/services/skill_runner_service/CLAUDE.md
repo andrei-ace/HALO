@@ -100,8 +100,8 @@ In sim mode, `_tick_sim()` defers `start_pick_fn` until FSM exits SELECT_GRASP. 
 | Event | Trigger |
 |-------|---------|
 | `SKILL_STARTED` | `start_skill()` |
-| `SKILL_SUCCEEDED` | FSM → DONE with SUCCESS |
-| `SKILL_FAILED` | FSM → DONE with FAILURE |
+| `SKILL_SUCCEEDED` | FSM → DONE with SUCCESS (data includes `skill_name`) |
+| `SKILL_FAILED` | FSM → DONE with FAILURE (data includes `skill_name`) |
 | `PHASE_ENTER` | Every phase transition (incl. start) |
 | `PHASE_EXIT` | Every phase transition |
 

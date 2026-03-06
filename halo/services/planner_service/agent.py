@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import json
 import logging
 import os
 import uuid
+import weakref
 from pathlib import Path
 
+import litellm
 from google.adk.agents import Agent
 from google.adk.apps import App
 from google.adk.events import Event
@@ -34,6 +37,12 @@ _SNAPSHOT_PREFIX = "Current robot state:"
 _THREAD_ID = "planner"  # single-thread; one conversation per PlannerAgent
 _APP_NAME = "halo"
 _USER_ID = "planner"
+
+# Per-decide() invocation nonce.  The litellm success_callback is global, so we
+# use a ContextVar to scope captured usage to the async task that owns a given
+# decide() call.  Concurrent decide() calls (multi-arm) and unrelated litellm
+# requests (compaction) run in different contexts and will not match.
+_decide_nonce: contextvars.ContextVar[str] = contextvars.ContextVar("_decide_nonce", default="")
 
 
 def _load_prompts(prompts_dir: Path) -> str:
@@ -154,7 +163,35 @@ class PlannerAgent:
         self._last_reasoning: str = ""
         self._last_token_usage: dict[str, int] = {}
         self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
+
+        # litellm fallback: a permanent callback scoped by ContextVar nonce.
+        # Captures token usage when ADK's event.usage_metadata is empty
+        # (e.g. Ollama via LiteLlm).  Uses a weakref so the callback does not
+        # prevent GC if the agent is discarded (tests, failover re-init).
+        self._litellm_usage: dict[str, int] = {}
+        self._litellm_nonce: str = ""
+
+        ref = weakref.ref(self)
+
+        def _on_litellm_success(kwargs, response_obj, start_time, end_time):  # noqa: ARG001
+            agent = ref()
+            if agent is None or _decide_nonce.get("") != agent._litellm_nonce:
+                return
+            usage = getattr(response_obj, "usage", None)
+            if usage:
+                for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+                    agent._litellm_usage[key] = agent._litellm_usage.get(key, 0) + getattr(usage, key, 0)
+
+        self._litellm_callback = _on_litellm_success  # prevent callback GC while agent lives
+        litellm.success_callback.append(_on_litellm_success)
         self._pending_handoff: str | None = None
+
+    def __del__(self) -> None:
+        """Remove our callback from the global litellm list on GC."""
+        try:
+            litellm.success_callback.remove(self._litellm_callback)
+        except (ValueError, AttributeError):
+            pass
 
     async def _ensure_session(self) -> None:
         """Create the ADK session on first use (requires async)."""
@@ -379,6 +416,12 @@ class PlannerAgent:
         # Run the agent and extract the final response text + token usage.
         last_text = ""
         token_usage: dict[str, int] = {}
+
+        # Activate litellm usage capture for this invocation via ContextVar nonce.
+        self._litellm_usage.clear()
+        self._litellm_nonce = uuid.uuid4().hex
+        _decide_nonce.set(self._litellm_nonce)
+
         async for event in self._runner.run_async(
             user_id=_USER_ID,
             session_id=_THREAD_ID,
@@ -402,6 +445,11 @@ class PlannerAgent:
                     token_usage["thoughts_tokens"] = um.thoughts_token_count
                 if um.cached_content_token_count:
                     token_usage["cached_tokens"] = um.cached_content_token_count
+
+        # Deactivate capture; fall back to litellm data if ADK provided nothing.
+        self._litellm_nonce = ""
+        if not token_usage and self._litellm_usage:
+            token_usage = dict(self._litellm_usage)
 
         self._last_reasoning = last_text
         self._last_token_usage = token_usage

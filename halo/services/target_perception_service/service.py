@@ -8,7 +8,7 @@ import re
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from halo.contracts.enums import CommandType, PerceptionFailureCode, TrackingStatus
+from halo.contracts.enums import CommandType, PerceptionFailureCode, SkillName, TrackingStatus
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
@@ -263,6 +263,7 @@ class TargetPerceptionService:
         self._target_handle = None
         self._tracking_status = TrackingStatus.LOST
         self._reacquire_fail_count = 0
+        self._awaiting_acquisition = False
         self._active_tracker_fn = None
         self._pending_tracker_fn = None
         self._last_tracked_center_px = None
@@ -515,10 +516,28 @@ class TargetPerceptionService:
                     if cmd_type == CommandType.DESCRIBE_SCENE:
                         await self.request_refresh(mode="scene_only", reason="command:DESCRIBE_SCENE")
                 elif event.type == EventType.SKILL_STARTED:
-                    if event.data.get("skill_name") == "TRACK":
+                    if event.data.get("skill_name") == SkillName.TRACK:
                         handle = event.data.get("target_handle", "")
                         if handle:
                             await self.set_tracking_target(handle)
+                elif event.type == EventType.SKILL_FAILED:
+                    # Only tear down tracking on TRACK failure.  PICK failures
+                    # (NO_GRASP, NO_PROGRESS, etc.) should preserve the active
+                    # tracker so the planner can retry PICK without re-running
+                    # TRACK.
+                    if event.data.get("skill_name") == SkillName.TRACK:
+                        await self.clear_tracking_target()
+                    else:
+                        self._awaiting_acquisition = False
+                elif event.type == EventType.SKILL_SUCCEEDED:
+                    # Only reset on TRACK completion.  PICK needs the active
+                    # tracker to keep running (it was established by TRACK).
+                    if event.data.get("skill_name") == SkillName.TRACK:
+                        # TRACK succeeded — acquisition is done but keep the
+                        # target handle and tracker alive for the upcoming PICK.
+                        # Just reset _awaiting_acquisition so no duplicate
+                        # TARGET_ACQUIRED can fire.
+                        self._awaiting_acquisition = False
             except asyncio.TimeoutError:
                 continue
 

@@ -128,6 +128,7 @@ class SkillRunnerService:
                 EventType.SKILL_FAILED,
                 {
                     "skill_run_id": skill_run_id,
+                    "skill_name": skill_name,
                     "reason": "unsupported_skill",
                     "failure_code": SkillFailureCode.UNSAFE_ABORT.value,
                 },
@@ -237,6 +238,7 @@ class SkillRunnerService:
             EventType.SKILL_FAILED,
             {
                 "skill_run_id": self._skill_run_id,
+                "skill_name": self._skill_name,
                 "reason": "abort",
                 "failure_code": "UNSAFE_ABORT",
             },
@@ -385,7 +387,7 @@ class SkillRunnerService:
                 )
                 await self._publish(
                     EventType.SKILL_SUCCEEDED,
-                    {"skill_run_id": self._skill_run_id},
+                    {"skill_run_id": self._skill_run_id, "skill_name": self._skill_name},
                 )
             else:
                 await store.update_outcome(
@@ -400,6 +402,7 @@ class SkillRunnerService:
                     EventType.SKILL_FAILED,
                     {
                         "skill_run_id": self._skill_run_id,
+                        "skill_name": self._skill_name,
                         "failure_code": self._fsm.failure_code.value if self._fsm.failure_code else None,
                     },
                 )
