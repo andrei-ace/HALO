@@ -22,6 +22,9 @@ integration/runs/
 runs/
 
 
+# env files
+.env
+
 # editors
 .idea/
 .vscode/

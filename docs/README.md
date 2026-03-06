@@ -99,22 +99,15 @@ sequenceDiagram
     participant EB as EventBus
 
     P->>CR: submit_command(start_skill, snapshot_id=42)
-
-    Note over CR: 1. Idempotency check (first)
-    alt Duplicate command_id
-        CR-->>P: ALREADY_APPLIED (short-circuit)
-    else New command_id
-        Note over CR,SS: 2. Precondition check
-        CR->>SS: latest snapshot_id == 42?
-        alt Exact match
-            CR->>SS: apply command
-            CR->>EB: publish COMMAND_ACCEPTED
-            EB-->>P: event in next snapshot
-        else Snapshot has advanced (stale)
-            CR->>EB: publish COMMAND_REJECTED (REJECTED_STALE)
-            EB-->>P: event in next snapshot
-        end
+    Note over CR: Check: duplicate command_id → ALREADY_APPLIED
+    CR->>SS: latest snapshot_id == 42?
+    alt Exact match
+        CR->>SS: apply command
+        CR->>EB: publish COMMAND_ACCEPTED
+    else Stale or mismatched
+        CR->>EB: publish COMMAND_REJECTED
     end
+    EB-->>P: event in next snapshot
 ```
 
 ### Planner Tools
@@ -279,24 +272,12 @@ flowchart TB
 
 The planner sees exactly **one** compact snapshot (the latest). Old snapshots are replaced, never appended.
 
-```mermaid
-graph LR
-    subgraph Snapshot["PlannerSnapshot"]
-        ID["snapshot_id, arm_id, ts_ms"]
-        SK["skill: name, phase, skill_run_id"]
-        TG["target: hint_valid, confidence,\nobs_age_ms, delta_xyz_ee, distance_m"]
-        PC["perception: tracking_status,\nfailure_code"]
-        ACT["act: status, buffer_fill_ms,\nbuffer_low"]
-        PR["progress: elapsed_ms,\nno_progress_ms, delta_distance"]
-        OUT["outcome: state, reason_code"]
-        SAF["safety: state, reflex_active"]
-        CMD["command_acks"]
-        EVT["recent_events (ring of 8)"]
-        HLD["held_object_handle"]
-    end
-
-    style Snapshot fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
-```
+Snapshot field groups:
+- **Identity**: `snapshot_id`, `arm_id`, `ts_ms`
+- **Skill**: name, phase, `skill_run_id` | **Target**: `hint_valid`, confidence, `obs_age_ms`, `delta_xyz_ee`, `distance_m`
+- **Perception**: `tracking_status`, `failure_code` | **ACT**: status, `buffer_fill_ms`, `buffer_low`
+- **Progress/Outcome**: `elapsed_ms`, `no_progress_ms`, `delta_distance`, state, `reason_code`
+- **Safety**: state, `reflex_active` | **Misc**: `command_acks`, `recent_events` (ring of 8), `held_object_handle`
 
 ---
 
@@ -325,28 +306,6 @@ The action spaces are **intentionally different** — conversion is the responsi
 
 ## Timing Budgets
 
-```mermaid
-gantt
-    title Service Timing Budgets
-    dateFormat X
-    axisFormat %L ms
-
-    section Control
-    ControlService tick (target 50-100 Hz) :0, 20
-    ControlService tick (v0 MuJoCo 20 Hz)  :0, 50
-
-    section Skill
-    ACT inference (10-20 Hz)           :0, 100
-
-    section Perception
-    Fast loop (tracker + depth + gates) :0, 120
-    VLM reacquire (async)              :0, 5000
-
-    section Planner
-    LLM decide (event-driven)          :0, 5000
-    Watchdog fallback                  :0, 30000
-```
-
 | Path | Target | v0 Sim |
 |---|---|---|
 | ControlService tick | 50–100 Hz (10–20 ms) | 20 Hz (50 ms) in MuJoCo |
@@ -358,267 +317,55 @@ gantt
 
 ---
 
+## Cognitive Backend Switching (`halo/cognitive/`)
+
+Transparent proxy layer that routes planner and VLM calls through a **Switchboard** to either a **LOCAL** (Ollama) or **CLOUD** (Gemini Live API / remote HTTP) backend. Services call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-in replacements — unaware of which backend is active.
+
+- **Switchboard**: retry logic, failure counting (3 consecutive → failover), warm-up handoff on failback, health loop (5 s interval)
+- **LeaseManager**: epoch-monotonic grants with UUID token + TTL; `CommandRouter` rejects stale epoch/token — prevents split-brain
+- **ContextStore**: append-only journal (bounded to 200 entries) with cursor-based sync for incremental warm-up during failback
+- **CompactionPlugin**: ADK-native event compaction callback; propagates summaries to inactive backend for concise failback context
+- **Backends**: `LocalCognitiveBackend` (ADK + LiteLLM/Ollama), `CloudCognitiveBackend` (Gemini Live API), `RemoteCognitiveBackend` (HTTP client to Cloud Run)
+
+See `docs/halo_architecture.md` §17 for detailed failover/failback/compaction sequence diagrams.
+
+---
+
 ## MuJoCo Simulation (`mujoco_sim/`)
 
-Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (no robosuite). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
-
-### SO-101 Robot
-
-5-DOF arm + 1-DOF gripper = 6 actuated joints (position-controlled STS3215 servos).
-
-| Idx | Joint | Range (rad) |
-|-----|-------|-------------|
-| 0 | `shoulder_pan` | ±1.92 |
-| 1 | `shoulder_lift` | ±1.75 |
-| 2 | `elbow_flex` | ±1.69 |
-| 3 | `wrist_flex` | ±1.66 |
-| 4 | `wrist_roll` | -2.74 to 2.84 |
-| 5 | `gripper` | -0.17 (closed) to 1.75 (open) |
-
-EE site: `gripperframe` on the `gripper` body. Position actuators with `kp=998.22` track targets written directly to `data.ctrl[:]`.
-
-MJCF: `so101_new_calib.xml` (from SO-ARM100 repo) + `pick_scene.xml` (robot + floor + cube + cameras).
-
-### SO101Env
-
-Raw MuJoCo wrapper with dual cameras, seeded resets, 6D joint-position control.
-
-- **Action space:** 6D joint-position targets `[shoulder_pan, ..., gripper]`
-- **Observations:** `rgb_scene` (480,640,3), `rgb_wrist` (480,640,3), `qpos` (13,), `qvel` (12,), `gripper` (float), `ee_pose` (7,), `object_pose` (7,), `joint_pos` (6,)
-- **Physics:** `dt=0.005`, control_freq=20 Hz → 10 substeps per `step()`
-- **State dims:** nq=13 (6 robot + 7 cube freejoint), nv=12 (6+6), nu=6
-- **Seeded resets:** cube position randomized within workspace bounds
-- **Key methods:** `reset(seed)`, `step(action)`, `render(camera)`, `get_state()`/`set_state(state)`
-- **Properties:** `mujoco_model`, `mujoco_data`, `home_qpos` (6,), `action_dim`
+Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (5-DOF + 1-DOF gripper, 6 actuated joints). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
 
 ### Trajectory Planning Pipeline
 
-PickTeacher pre-computes a full trajectory on the first `step()` call, then samples in real time:
+PickTeacher pre-computes a full trajectory on first `step()`, then samples in real time:
 
 ```
-grasp_planner.evaluate_grasps()         →  ScoredGrasp (best of 64 candidates)
-    ↓
-keyframe_planner.plan_pick_keyframes()  →  5 SE(3) keyframes (pos + ori + gripper + phase_id)
-    ↓
-waypoint_generator.generate_joint_waypoints()  →  5 joint-space waypoints via IK (yaw-retry fallbacks)
-    ↓
-trajectory.plan_trajectory()            →  TrajectoryPlan (jerk-limited ruckig segments)
-    ↓
-pick_teacher.step()                     →  samples plan at elapsed time → (action, phase_id, done)
+grasp_planner (64 candidates, geometric filter, IK scoring)
+  → keyframe_planner (5 SE(3) keyframes: home → pregrasp → grasp → close → lift)
+    → waypoint_generator (IK with yaw-retry fallbacks)
+      → trajectory (jerk-limited ruckig segments, start/end at rest)
+        → pick_teacher.step() samples at elapsed time → (action, phase_id, done)
 ```
 
-**Grasp planner** (`grasp_planner.py`): 64 candidates (16 per side face, 5° cone around face normal, random yaw). Geometric filter (table collision, pregrasp feasibility), scoring by IK quality + joint margin + manipulability + orientation error. Gripperframe axes: Z=approach, X=jaw/hinge, Y=lateral/span. Exports `GraspPose`, `ScoredGrasp`, `GraspPlanningFailure`.
+**Teacher phase sequence:** `IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(8) → DONE(9)`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation.
 
-**IK solvers** (`ik_helper.py`, damped least-squares):
-- `solve_ik(model, data, target_pos, ...)` — position-only (3×5 Jacobian), operates on copy of data
-- `solve_ik_with_orientation(model, data, target_pos, target_rot, ...)` — single-phase coupled 6D: position + orientation optimized simultaneously from iter 1. Weighted Jacobian `[pos_weight*Jp; ori_weight*Jr]`, ori_weight=0.3, 300 iters, 0.1 rad/iter step limit.
-
-**Keyframe planner** (`keyframe_planner.py`): 5 Cartesian keyframes from cube pose + home joints: `home → pregrasp → grasp → grasp_closed → lift`. Each `Keyframe` has position (3,), orientation (3×3), gripper, phase_id, label.
-
-**Waypoint generator** (`waypoint_generator.py`): Solves IK for each keyframe, seeded from previous solution. Yaw-retry fallback: `[0°, 90°, -90°, 180°]` if IK fails. Lift phase uses position-only IK with relaxed tolerance (0.03 m). Raises `IKFailure` if unreachable.
-
-**Trajectory** (`trajectory.py`, ruckig): Jerk-limited segments between waypoint pairs. All segments start/end at rest (v=0, a=0). Gripper interpolated linearly. Default limits: vel `[1.0,1.0,1.0,1.0,1.5]`, accel `[3.0,3.0,3.0,3.0,4.0]`, jerk `[10.0,10.0,10.0,10.0,15.0]`. `TrajectoryPlan.sample(t) → (arm_joints[5], gripper, phase_id)`.
-
-**Teacher phase sequence:**
-```
-IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(8) → DONE(9)
-```
-SELECT_GRASP, PLAN_APPROACH, and VISUAL_ALIGN are folded into planning (instantaneous). VERIFY_GRASP is implicit in the gripper-close segment.
-
-### Scene Constants (`scene_info.py`)
-
-Single source of truth for all grasp planner and teacher defaults — never use magic numbers.
-
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `TCP_PINCH_OFFSET_LOCAL` | `[0,0,0]` | Zeroed (3-4 mm actual offset hurts more via IK error) |
-| `DEFAULT_FACE_STANDOFF` | 0.003 m | Outward offset to prevent jaw overshoot |
-| `DEFAULT_GRASP_N_CANDIDATES` | 64 | Grasp candidates (16 per side face) |
-| `DEFAULT_GRASP_MAX_CONE_DEG` | 5° | Cone angle for approach direction sampling |
-| `DEFAULT_CUBE_FACE_CONTACT_SPAN` | 0.10 | Tangential sampling range on cube faces |
-| `DEFAULT_PREGRASP_STANDOFF` | 0.08 m | Pregrasp distance along approach direction |
-| `DEFAULT_LIFT_HEIGHT` | 0.08 m | Lift distance above grasp contact |
-| `DEFAULT_ORI_TOL_DEG` | 55° | IK orientation tolerance (5-DOF arm kinematic limit) |
-| `DEFAULT_IK_POS_TOL` | 0.03 m | IK position tolerance |
-
-`SceneInfo.from_model(model)` extracts runtime geometry (`cube_half_sizes`, `cube_default_pos`, `table_z`) from MuJoCo model. Entity names: `CUBE_GEOM_NAME`, `CUBE_BODY_NAME`, `TABLE_BODY_NAME`, `EE_SITE_NAME`.
-
-### Contact Solver Tuning (`pick_scene.xml`)
-
-MuJoCo's soft contact model allows friction slip by default. Three solver-level settings suppress slippage:
-
-```xml
-<option impratio="10" cone="elliptic" noslip_iterations="3"/>
-```
-
-- **`impratio=10`** — friction constraints 10× stiffer than normal force
-- **`cone="elliptic"`** — accurate friction cones (required for high impratio)
-- **`noslip_iterations=3`** — post-processing solver that eliminates residual slip
-
-Gripper collision geoms: `friction="2.0 0.1 0.001" condim="4"`. Gripper actuator force: `±6.0 N` (increased from default ±3.35 N). Episode generation achieves **100% success rate** (10/10) with these settings.
-
-### Dataset Format (HDF5)
-
-One file per episode (`ep_NNNNNN.hdf5`):
-
-```
-ep_000000.hdf5
-├── obs/
-│   ├── rgb_scene    (T, H, W, 3) uint8  [gzip]
-│   ├── rgb_wrist    (T, H, W, 3) uint8  [gzip]
-│   ├── qpos         (T, 13)
-│   ├── qvel         (T, 12)
-│   ├── gripper      (T,)
-│   ├── ee_pose      (T, 7)
-│   ├── joint_pos    (T, 6)             [if present]
-│   ├── phase_id     (T,) int32         [if present]
-│   ├── object_pose  (T, 7)             [if present]
-│   └── contacts/    step_NNNNNN (N,)   [if present]
-├── action           (T, 6)
-└── attrs: seed, env_name, robot, control_freq, num_steps, created_at
-```
-
-In-memory: `Timestep` dataclass → `RawEpisode` buffer with `append()`, indexing, slicing, bulk numpy accessors (`rgb_scenes`, `qpos_array`, `actions`, `phase_ids`). `EpisodeMetadata` carries seed, env_name, robot, control_freq.
-
-### Episode Generation
-
-`run_teacher(num_episodes, output_dir, ...)` generates episodes via ZMQ SimClient (managed or standalone):
-
-1. Reset env (seeded cube randomization)
-2. Stabilize 5 s at `home_qpos` (physics settling before recording)
-3. Teacher loop: `step(obs, model, data) → (action, phase_id, done)`
-4. Write HDF5
-5. Verify lift success (cube Δz ≥ 5 mm during LIFT phase — uses max Z, not final Z)
-
-Returns `EpisodeResult` per episode (idx, seed, path, success, num_steps, final_phase, error).
+Episode generation: reset → 5 s stabilization → teacher loop → write HDF5 → verify lift. **100% success rate** with current tuning. Use `make generate-episodes` to produce datasets.
 
 ### Constants Sync
 
-Phase IDs, gripper semantics, wrist-active phases defined in both `halo/contracts/enums.py` and `mujoco_sim/constants.py`. Cross-module sync tests verify alignment:
-- `tests/test_mujoco_sim_contract_sync.py` (3 tests at repo root)
-- `mujoco_sim/tests/test_constants_sync.py` (6 tests)
+Phase IDs, gripper semantics, and wrist-active phases are synced between `halo/contracts/enums.py` and `mujoco_sim/constants.py`, verified by cross-module tests. Action space intentionally diverged (sim: 6D joint-position, core: 7D EE-delta).
 
-Action space intentionally diverged (sim: 6D joint-position, core: 7D EE-delta) — verified but not synchronized by design.
-
-### Test Coverage (116 mujoco_sim tests + 413 HALO tests)
-
-| Test file | Count | Coverage |
-|-----------|-------|----------|
-| `test_constants_sync.py` | 6 | Phase IDs, action fields, gripper, wrist phases |
-| `test_raw_episode.py` | 29 | Timestep, RawEpisode, HDF5 roundtrip, metadata |
-| `test_pick_teacher.py` | 20 | Teacher phases, transitions, actions, full episode |
-| `test_grasp_planner.py` | 18 | Grasp enumeration, filtering, scoring |
-| `test_trajectory_pipeline.py` | 24 | Keyframes → IK → ruckig integration |
-| `test_server.py` | 19 | Protocol serialization, command dispatch, start_pick |
-
-### Development Roadmap
-
-| PR | Status | Scope |
-|----|--------|-------|
-| PR1 — Environment + Constants | done | SO101Env, constants sync |
-| PR2 — Episode Recording Format | done | Timestep, RawEpisode, HDF5 writer/reader |
-| PR3 — Teacher Runner | done | PickTeacher, trajectory pipeline, grasp planner, episode runner |
-| PR4 — Offline Phase Detection | pending | PickPhaseDetector, guards.py |
-| PR5 — VCR Replay Engine | planned | VCRPlayer, ViewerApp, PhaseOverlay |
-| PR6 — Manual Phase Annotation | planned | PhaseTrack, AnnotationUI, annotation_io |
-
-### Dependencies
-
-```
-numpy, h5py>=3.0, tqdm>=4.60, ruckig>=0.14
-Optional: mujoco>=3.1.6 (sim), pyzmq>=25 + msgpack>=1.0 (server), opencv-python>=4.8 (viewer/server)
-```
+See `mujoco_sim/CLAUDE.md` for full details (env, dataset format, scene constants, IK, grasp planner, contact solver tuning).
 
 ---
 
 ## ZMQ Bridge (`halo/bridge/`)
 
-Connects the HALO runtime to the MuJoCo simulation server via a 2-channel ZMQ protocol.
+Connects the HALO runtime to the MuJoCo sim server via a 2-channel ZMQ protocol.
 
-### Channel Architecture
+| Channel | ZMQ Pattern | Port | Direction | Purpose |
+|---------|-------------|------|-----------|---------|
+| **TelemetryStream** | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
+| **CommandRPC** | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, shutdown |
 
-| Channel | ZMQ Pattern | Default Port | Direction | Purpose |
-|---------|-------------|--------------|-----------|---------|
-| **TelemetryStream** | PUB/SUB | 5560 | Sim → HALO | Frames + state at render_fps (10 Hz default) |
-| **CommandRPC** | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, set_hint, shutdown |
-
-Single-threaded sim server (required for macOS OpenGL rendering). Protocol: msgpack for structured data, raw bytes for numpy arrays, JPEG for camera frames (quality 85).
-
-### Dataflow
-
-```
-MuJoCo SimServer (mujoco_sim.server)
-├── SO101Env (raw MuJoCo, SO-101 robot)
-├── Autonomous physics loop (20 Hz) — plans + executes trajectories
-└── ZMQ Sockets
-    ├── PUB (TelemetryStream @ 5560)
-    │   └── publishes: frames, qpos, qvel, phase_id, done — every 100ms (10 Hz)
-    └── REP (CommandRPC @ 5561)
-        └── handles: step, reset, start_pick, configure, shutdown
-
-HALO Runtime (halo/)
-├── SimClient (halo/bridge/sim_client.py)
-│   ├── Background telemetry thread (SUB, receives frames @ 10 Hz)
-│   └── Main thread (REQ, sends commands, thread-safe via _cmd_lock)
-├── SimSource (halo/bridge/sim_source.py)
-│   └── Wraps SimClient → capture_fn + frame queue + latest_phase_id/latest_done
-└── SkillRunnerService (sim mode)
-    └── start_pick_fn(arm_id, target_body) → SimClient.start_pick(target_body)
-```
-
-### SimClient (`halo/bridge/sim_client.py`)
-
-HALO-side ZMQ client with background telemetry receiver thread.
-
-**Key methods:** `start(timeout)`, `stop()`, `step(action)`, `reset(seed)`, `start_pick(target_body)`, `configure(**kwargs)`, `get_state()`, `set_state(qpos, qvel)`, `set_hint(...)`, `shutdown()`.
-
-**Thread architecture:**
-- Main thread sends commands on CommandRPC REQ socket (thread-safe via `_cmd_lock`)
-- Background telemetry thread receives frames on TelemetryStream SUB socket, decodes with msgpack, updates `_latest_telemetry` atomically (protected by `_telemetry_lock`)
-- Command retries: on ZMQ timeout, socket is recreated; retryable commands (reset, get_state, set_state, configure, set_hint) are resent once
-- `BridgeTransportError` raised on unrecoverable timeout (caught by ControlService → `ActStatus.STALE`)
-
-**Managed mode** (`SimBridgeConfig.managed=True`): SimClient spawns `python -m mujoco_sim.server` as a subprocess and manages its lifecycle (start with timeout, terminate on stop with 5s grace period).
-
-### SimSource (`halo/bridge/sim_source.py`)
-
-Drop-in replacement for `MuJocoVideoSource`. Wraps SimClient internally.
-
-- Frame queue — buffers frames in a deque for sequential consumption
-- Polling thread — monitors telemetry, converts RGB→BGR, appends to queue
-- `capture_fn` — async function returning `CapturedFrame` (image + ts_ms + arm_id)
-- Properties: `latest_frame` (BGR HWC), `latest_qpos` (20,), `latest_qvel` (18,), `latest_phase_id` (int), `latest_done` (bool), `client`
-
-### SimBridgeConfig (`halo/bridge/config.py`)
-
-```python
-SimBridgeConfig(
-    protocol_version=2,
-    telemetry_url="tcp://127.0.0.1:5560",
-    command_url="tcp://127.0.0.1:5561",
-    managed=False,
-    server_startup_timeout_s=30.0,
-    recv_timeout_ms=5000,
-    command_timeout_ms=10_000,
-)
-```
-
-### Transforms (`halo/bridge/transforms.py`)
-
-`world_to_ee_frame(world_delta, ee_quat)` — rotates a world-frame 3D vector into the EE frame using the inverse (conjugate) quaternion. Constructs transposed rotation matrix from quaternion (R^T rotates world → body).
-
-### SimServer (`mujoco_sim/server/`)
-
-Autonomous physics server owning SO101Env. Runs physics loop at `physics_hz` (20 Hz), samples active trajectory, publishes telemetry at `render_fps` (10 Hz).
-
-- `start_pick(target_body)` triggers grasp planning from current arm state (same pipeline: evaluate_grasps → keyframes → waypoints → trajectory), then executes autonomously
-- No env resets between skills — arm stays at final position, sim runs continuously
-- Commands: `step(action)`, `reset(seed)`, `start_pick(target_body)`, `configure(...)`, `get_state()`, `set_state(qpos, qvel)`, `set_hint(...)`, `shutdown()`
-- Telemetry payload: `ts_ms`, `step_count`, `phase_id`, `done`, `qpos`, `qvel`, `ee_pose`, `object_pose`, `red_object_pose`, `joint_pos`, `gripper`, `action`, `rgb_scene` (JPEG), `rgb_wrist` (JPEG)
-
-### E2E Tests (`tests/e2e/test_mujoco_source.py`)
-
-3 tests (auto-skip if mujoco or Ollama unavailable):
-- **test_sim_source_frame_basics** — telemetry reception, frame shape, capture_fn
-- **test_sim_source_client_commands** — reset, step, get_state via SimClient
-- **test_mujoco_tracker_vs_vlm_bbox** — full perception pipeline: VLM detect → tracker init → track for 3s → IoU ≥ 0.75
+**SimServer** (`mujoco_sim.server`) runs an autonomous physics loop at 20 Hz, plans and executes trajectories, and publishes telemetry. Single-threaded (macOS OpenGL constraint). Protocol: msgpack + JPEG. **SimClient** (`sim_client.py`) provides a thread-safe command interface with background telemetry reception; `BridgeTransportError` on timeout (ControlService catches → `ActStatus.STALE`). **SimSource** (`sim_source.py`) wraps SimClient as a drop-in video source (`capture_fn` → `CapturedFrame`). No env resets between skills — arm stays at final position, sim runs continuously.

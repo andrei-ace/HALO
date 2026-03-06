@@ -47,7 +47,7 @@
     },
     "CommandAckStatus": {
       "type": "string",
-      "enum": ["ACCEPTED", "REJECTED_STALE", "REJECTED_WRONG_SKILL_RUN", "ALREADY_APPLIED"]
+      "enum": ["ACCEPTED", "REJECTED_STALE", "REJECTED_WRONG_SKILL_RUN", "REJECTED_WRONG_EPOCH", "ALREADY_APPLIED"]
     },
     "EventType": {
       "type": "string",

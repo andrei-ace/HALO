@@ -110,11 +110,7 @@ _DATA = dict(
         ("ControlService", "RUNNING", "bright_green"),
         ("Safety", "OK", "yellow"),
     ],
-    target_info=[
-        ("Target", "cube-1"),
-        ("Distance", "9 cm"),
-        ("Confidence", "86%"),
-    ],
+    backend="local",
     events=[
         ("14:32:06", "SKILL_STARTED run-9"),
         ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
@@ -168,7 +164,7 @@ _EMPTY_DATA = dict(
         ("ControlService", "—", "#9e9e9e"),
         ("Safety", "—", "#9e9e9e"),
     ],
-    target_info=[],
+    backend="",
     events=[],
 )
 
@@ -299,8 +295,8 @@ def _snap_to_panel_data(snap: object, base: dict) -> dict:
     return data
 
 
-def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
-    """Return (service_rows, target_info_str) from a PlannerSnapshot."""
+def _derive_services(snap: object) -> list[tuple[str, str, str]]:
+    """Return service_rows from a PlannerSnapshot."""
     rows: list[tuple[str, str, str]] = []
 
     perc = getattr(snap, "perception", None)
@@ -332,19 +328,7 @@ def _derive_services(snap: object) -> tuple[list[tuple[str, str, str]], str]:
         color = "red" if reflex or state == "FAULT" else "bright_green"
         rows.append(("Safety", f"{state} (REFLEX)" if reflex else state, color))
 
-    target = getattr(snap, "target", None)
-    target_info: list[tuple[str, str]] = []
-    if target is not None:
-        handle = getattr(target, "handle", "")
-        dist_cm = int(getattr(target, "distance_m", 0) * 100)
-        conf = int(getattr(target, "confidence", 0) * 100)
-        target_info = [
-            ("Target", handle or "—"),
-            ("Distance", f"{dist_cm} cm"),
-            ("Confidence", f"{conf}%"),
-        ]
-
-    return rows, target_info
+    return rows
 
 
 # ── Panel widgets ─────────────────────────────────────────────────
@@ -661,7 +645,6 @@ class TalkPanel(Container):
 
 class SystemPanel(Container):
     _SERVICE_NAMES = ("TargetPerception", "SkillRunner", "ControlService", "Safety")
-    _TARGET_LABELS = ("Target", "Distance", "Confidence")
 
     def __init__(self, data: dict = _DATA, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -678,31 +661,26 @@ class SystemPanel(Container):
         t.append(status, style=f"bold {color}")
         return t
 
-    @classmethod
-    def _target_texts(cls, target_info: list[tuple[str, str]]) -> list[Text]:
-        values = dict(target_info)
-        texts = []
-        for label in cls._TARGET_LABELS:
-            value = values.get(label)
-            t = Text()
-            t.append("  ")  # match "● " column
-            t.append(f"{label:<16}  ", style="bold white")
-            t.append(value if value else "—", style="white" if value else "#9e9e9e")
-            texts.append(t)
-        return texts
+    @staticmethod
+    def _backend_text(backend: str) -> Text:
+        t = Text()
+        t.append("  ")  # match "● " column
+        t.append(f"{'Backend':<16}  ", style="bold white")
+        label = backend.upper() if backend else "—"
+        color = "bright_cyan" if label == "CLOUD" else "bright_green" if label == "LOCAL" else "#9e9e9e"
+        t.append(label, style=f"bold {color}")
+        return t
 
     def compose(self) -> ComposeResult:
         for name, status, color in self._data["services"]:
             yield Static(self._service_text(name, status, color), id=f"sys-svc-{name}")
-        for label, text in zip(self._TARGET_LABELS, self._target_texts(self._data["target_info"])):
-            yield Static(text, id=f"sys-tgt-{label}")
+        yield Static(self._backend_text(self._data.get("backend", "")), id="sys-backend")
 
-    def refresh_live(self, services: list[tuple[str, str, str]], target_info: list[tuple[str, str]]) -> None:
+    def refresh_live(self, services: list[tuple[str, str, str]], *, backend: str = "") -> None:
         """Update content in-place — no DOM churn."""
         for name, status, color in services:
             self.query_one(f"#sys-svc-{name}", Static).update(self._service_text(name, status, color))
-        for label, text in zip(self._TARGET_LABELS, self._target_texts(target_info)):
-            self.query_one(f"#sys-tgt-{label}", Static).update(text)
+        self.query_one("#sys-backend", Static).update(self._backend_text(backend))
 
 
 class EventsPanel(VerticalScroll):
@@ -736,6 +714,48 @@ class EventsPanel(VerticalScroll):
         if len(children) > 8:
             await children[0].remove()
         self.scroll_end(animate=False)
+
+
+class AudioPanel(Container):
+    """Live audio status panel — mic/speaker state, transcriptions."""
+
+    def on_mount(self) -> None:
+        self.border_title = "Voice"
+
+    def compose(self) -> ComposeResult:
+        yield Static(Text("Mic: —", style="#9e9e9e"), id="audio-mic")
+        yield Static(Text("Speaker: —", style="#9e9e9e"), id="audio-speaker")
+        yield Static(Text("", style="#9e9e9e"), id="audio-transcript-in")
+        yield Static(Text("", style="#9e9e9e"), id="audio-transcript-out")
+
+    def refresh_live(
+        self,
+        mic_status: str,
+        speaker_status: str,
+        transcript_in: str = "",
+        transcript_out: str = "",
+    ) -> None:
+        mic_text = Text()
+        mic_text.append("Mic: ", style="bold white")
+        mic_text.append(mic_status, style="bright_green" if "Listening" in mic_status else "#9e9e9e")
+        self.query_one("#audio-mic", Static).update(mic_text)
+
+        spk_text = Text()
+        spk_text.append("Speaker: ", style="bold white")
+        spk_text.append(speaker_status, style="bright_green" if "Speaking" in speaker_status else "#9e9e9e")
+        self.query_one("#audio-speaker", Static).update(spk_text)
+
+        if transcript_in:
+            tin = Text()
+            tin.append("You: ", style="bold #4fc3f7")
+            tin.append(transcript_in[-80:], style="#b0bcd0")
+            self.query_one("#audio-transcript-in", Static).update(tin)
+
+        if transcript_out:
+            tout = Text()
+            tout.append("AI: ", style="bold #66bb6a")
+            tout.append(transcript_out[-80:], style="#b0bcd0")
+            self.query_one("#audio-transcript-out", Static).update(tout)
 
 
 class PanicPanel(Container):
@@ -895,13 +915,17 @@ class HALOApp(App):
     TalkPanel,
     SystemPanel,
     EventsPanel,
-    PanicPanel {
+    PanicPanel,
+    AudioPanel {
         border: solid #263050;
         border-title-color: #4fc3f7;
         border-title-style: bold;
         padding: 0 1;
         height: auto;
     }
+
+    AudioPanel            { height: auto; min-height: 6; display: none; }
+    AudioPanel.visible    { display: block; }
 
     /* info containers shrink first; Talk + Panic hold their space */
     #left-info            { height: 1fr; min-height: 0; overflow: hidden hidden; }
@@ -1050,6 +1074,7 @@ class HALOApp(App):
         Binding("r", "show_reasoning", "reasoning", show=False),
         Binding("y", "yank_reasoning", "yank", show=False),
         Binding("f", "toggle_feed", "feed", show=False),
+        Binding("m", "toggle_mic", "mic", show=False),
         Binding("question_mark", "show_legend", "legend", show=False),
     ]
 
@@ -1067,6 +1092,8 @@ class HALOApp(App):
         run_logger: RunLogger | None = None,
         tracker_name: str = "",
         video_source: object | None = None,
+        live_backend: object | None = None,
+        cognitive_stack: object | None = None,
     ) -> None:
         super().__init__()
         self._runtime = runtime
@@ -1076,6 +1103,8 @@ class HALOApp(App):
         self._skill_runner_svc = skill_runner_svc
         self._tracker_name = tracker_name
         self._video_source = video_source
+        self._live_backend = live_backend
+        self._cognitive_stack = cognitive_stack
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
@@ -1089,12 +1118,30 @@ class HALOApp(App):
         self._cmd_route_queue: object | None = None  # for command routing
         self._pending_commands: dict[str, object] = {}  # intercepted commands by id
 
+    def _stamp_lease(self, cmd: object) -> object:
+        """Stamp epoch + lease_token on a CommandEnvelope from the active lease."""
+        if self._cognitive_stack is None:
+            return cmd
+        from dataclasses import replace as _dc_replace
+
+        lm = self._cognitive_stack.switchboard.lease_manager
+        return _dc_replace(
+            cmd,
+            epoch=lm.current_epoch,
+            lease_token=lm.current_token,
+        )
+
     async def on_mount(self) -> None:
         self.call_after_refresh(self.set_focus, None)
         if self._runtime:
             self.set_interval(2.0, self._poll_system_panel)
             self._event_queue = self._runtime.bus.subscribe(self._arm_id, maxsize=0)  # type: ignore[union-attr]
             self.run_worker(self._listen_events(), name="event_listener")
+        # Cognitive stack: start switchboard (non-blocking)
+        if self._cognitive_stack is not None:
+            sb = self._cognitive_stack.switchboard
+            await sb.start()
+        # Start agent processor
         if self._runtime and self._agent:
             self._agent_queue = asyncio.Queue()
             self.run_worker(self._agent_processor_loop(), name="agent_processor")
@@ -1108,13 +1155,59 @@ class HALOApp(App):
             self._cmd_route_queue = self._runtime.bus.subscribe(self._arm_id, maxsize=0)  # type: ignore[union-attr]
             self.run_worker(self._route_commands(), name="cmd_router")
         if self._perception_svc is not None:
-            # Start the service so it listens for planner commands,
-            # but don't set a tracking target — the planner decides when.
             await self._perception_svc.start()  # type: ignore[union-attr]
-            # Run a single scene analysis on startup via the service.
+        # Cloud wait + initial scene analysis in background so UI renders immediately
+        self.run_worker(self._startup_cloud_and_perception(), name="startup_backend")
+        # Live backend: voice command polling + audio panel updates
+        if self._live_backend is not None:
+            self.run_worker(self._poll_voice_commands(), name="voice_cmd_poll")
+            self.set_interval(0.5, self._poll_audio_panel)
+
+    async def _startup_cloud_and_perception(self) -> None:
+        """Background: wait for cloud backend, fall back to local, then DESCRIBE_SCENE."""
+        import logging as _logging
+        import time as _time
+
+        log = _logging.getLogger(__name__)
+
+        if self._cognitive_stack is not None:
+            sb = self._cognitive_stack.switchboard
+            cfg = self._cognitive_stack.config
+            from halo.cognitive.backend import WarmableBackend
+            from halo.cognitive.config import BackendType
+
+            if cfg.active == BackendType.CLOUD:
+                deadline = _time.monotonic() + cfg.startup_cloud_wait_s
+                cloud_ready = False
+                cloud_be = sb.active_backend
+                while _time.monotonic() < deadline:
+                    try:
+                        if isinstance(cloud_be, WarmableBackend):
+                            cloud_ready = await cloud_be.warm_up(state=None, journal_entries=[])
+                        else:
+                            cloud_ready = await cloud_be.health_check()
+                        if cloud_ready:
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(1.0)
+                if not cloud_ready:
+                    log.warning(
+                        "Cloud not ready within %.0fs, falling back to local",
+                        cfg.startup_cloud_wait_s,
+                    )
+                    await sb.switch_to(BackendType.LOCAL, reason="cloud startup timeout")
+
+        # Initial scene analysis
+        if self._perception_svc is not None:
             await self._perception_svc.request_refresh(reason="startup")  # type: ignore[union-attr]
 
     async def on_unmount(self) -> None:
+        if self._cognitive_stack is not None:
+            try:
+                await self._cognitive_stack.switchboard.stop()
+            except Exception:
+                pass
         if self._feed_viewer is not None:
             self._feed_viewer.stop()  # type: ignore[union-attr]
             self._feed_viewer = None
@@ -1126,6 +1219,11 @@ class HALOApp(App):
             self._runtime.bus.unsubscribe(self._arm_id, self._cmd_route_queue)  # type: ignore[union-attr]
             self._cmd_route_queue = None
         self._pending_commands.clear()
+        if self._live_backend is not None and hasattr(self._live_backend, "aclose"):
+            try:
+                await self._live_backend.aclose()  # type: ignore[union-attr]
+            except Exception:
+                pass
         if self._run_logger:
             self._run_logger.close()
         if self._runtime and self._event_queue is not None:
@@ -1141,6 +1239,10 @@ class HALOApp(App):
                         yield PlannerPanel(data=d, id="planner-panel")
                         yield TargetPerceptionPanel(data=d, tracker_name=self._tracker_name, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
+                    audio_panel = AudioPanel(id="audio-panel")
+                    if self._live_backend is not None:
+                        audio_panel.add_class("visible")
+                    yield audio_panel
                 with Vertical(id="right-col"):
                     with Vertical(id="right-info"):
                         yield SystemPanel(data=d, id="system-panel")
@@ -1263,15 +1365,35 @@ class HALOApp(App):
     def action_show_legend(self) -> None:
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
+    def action_toggle_mic(self) -> None:
+        if self._live_backend is None:
+            self.notify("Mic toggle requires live backend", severity="warning", timeout=3)
+            return
+        session_state = getattr(self._live_backend, "session_state", None)
+        if session_state is None:
+            return
+        # Find the audio capture on the session
+        session = getattr(self._live_backend, "_session", None)
+        if session is None:
+            return
+        capture = getattr(session, "_audio_capture", None)
+        if capture is not None and hasattr(capture, "muted"):
+            capture.muted = not capture.muted
+            status = "muted" if capture.muted else "listening"
+            self.notify(f"Mic {status}", timeout=2)
+
     # ── Live workers ──
 
     async def _poll_system_panel(self) -> None:
         """Refresh all live panels from the latest snapshot every 2 s."""
         try:
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
-            services, target_info = _derive_services(snap)
+            services = _derive_services(snap)
             panel_data = _snap_to_panel_data(snap, self._panel_data)
-            self.query_one("#system-panel", SystemPanel).refresh_live(services, target_info)
+            backend = ""
+            if self._cognitive_stack is not None:
+                backend = self._cognitive_stack.switchboard.active_type.value
+            self.query_one("#system-panel", SystemPanel).refresh_live(services, backend=backend)
             self.query_one("#planner-panel", PlannerPanel).refresh_live(panel_data)
             inp = self.query_one("#planner-input", Input)
             typing_active = self.focused is inp and bool(inp.value)
@@ -1301,10 +1423,70 @@ class HALOApp(App):
             servos.append((jid, self._SO101_JOINT_NAMES[i], "OK", float(qpos[i]), vel))
         self.query_one("#servos-panel", ServosPanel).refresh_live(servos)
 
+    async def _poll_voice_commands(self) -> None:
+        """Poll live backend for voice-triggered commands and submit them."""
+        try:
+            while True:
+                await asyncio.sleep(0.5)
+                if self._live_backend is None or self._runtime is None:
+                    continue
+                # Gate voice draining by active leader — skip if cloud is not active
+                if self._cognitive_stack is not None:
+                    from halo.cognitive.config import BackendType
+
+                    if self._cognitive_stack.switchboard.active_type != BackendType.CLOUD:
+                        continue
+                drain_fn = getattr(self._live_backend, "drain_pending_commands", None)
+                if drain_fn is None:
+                    continue
+                commands = drain_fn()
+                if not commands:
+                    continue
+                from dataclasses import replace as _dc_replace
+
+                for cmd in commands:
+                    cmd = _dc_replace(cmd, precondition_snapshot_id=None)
+                    cmd = self._stamp_lease(cmd)
+                    await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
+        except asyncio.CancelledError:
+            pass
+
+    async def _poll_audio_panel(self) -> None:
+        """Refresh the AudioPanel from live backend session state."""
+        if self._live_backend is None:
+            return
+        session_state = getattr(self._live_backend, "session_state", None)
+        if session_state is None:
+            return
+        try:
+            panel = self.query_one("#audio-panel", AudioPanel)
+        except Exception:
+            return
+        # Determine mic status
+        session = getattr(self._live_backend, "_session", None)
+        capture = getattr(session, "_audio_capture", None) if session else None
+        if capture is not None and hasattr(capture, "muted"):
+            mic_status = "Muted" if capture.muted else "Listening"
+        elif session_state.connected:
+            mic_status = "Text-only"
+        else:
+            mic_status = "Disconnected"
+
+        speaker_status = "Speaking" if getattr(session_state, "turn_active", False) else "Silent"
+        if not session_state.connected:
+            speaker_status = "Disconnected"
+
+        panel.refresh_live(
+            mic_status=mic_status,
+            speaker_status=speaker_status,
+            transcript_in=getattr(session_state, "last_transcription_in", ""),
+            transcript_out=getattr(session_state, "last_transcription_out", ""),
+        )
+
     def _with_task_context(self, system_msg: str) -> str:
         """Append the last operator instruction so the agent keeps task context."""
         if self._last_operator_msg:
-            return f"{system_msg}\nOperator task: {self._last_operator_msg}"
+            return f"{system_msg}\nOperator task (act on it now): {self._last_operator_msg}"
         return system_msg
 
     _AGENT_WAKE_EVENTS = frozenset(
@@ -1333,8 +1515,27 @@ class HALOApp(App):
                 if self._run_logger:
                     try:
                         self._run_logger.log_event(evt)
-                    except Exception:
-                        pass
+                    except Exception as _log_err:
+                        import logging as _lg
+
+                        _lg.getLogger("halo.tui").debug(
+                            "log_event error for %s: %s",
+                            getattr(evt, "type", "?"),
+                            _log_err,
+                        )
+                    # Also write compaction summary to run.jsonl
+                    evt_type_str = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
+                    if evt_type_str == "SESSION_COMPACTED":
+                        try:
+                            data = getattr(evt, "data", {}) or {}
+                            self._run_logger.log_compaction(
+                                compacted_count=data.get("compacted_count", 0),
+                                retained_count=data.get("retained_count", 0),
+                                summary=data.get("summary", ""),
+                                backend=data.get("backend", ""),
+                            )
+                        except Exception:
+                            pass
                 try:
                     await events_panel.append_event(evt)
                 except Exception:
@@ -1526,6 +1727,7 @@ class HALOApp(App):
                 reason="operator_abort",
             ),
         )
+        cmd = self._stamp_lease(cmd)
         ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
         self.notify(
             f"ABORT_SKILL → {ack.status.value}",
@@ -1552,21 +1754,20 @@ def _take_screenshot(path: str = "halo_tui.svg") -> None:
 
 def _run_live(args: list[str]) -> None:
     """Start the TUI wired to a real HALORuntime + PlannerAgent."""
-    from pathlib import Path
 
     from halo.runtime.runtime import HALORuntime
-    from halo.services.planner_service.agent import PlannerAgent
-    from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.service import TargetPerceptionService
     from halo.services.target_perception_service.tracker_fn import get_tracker_name, make_tracker_factory_fn
     from halo.services.target_perception_service.video_source import VideoSource
 
-    # Parse --arm, --model, --vlm-model, --base-url, --source from args
+    # Parse CLI args — model defaults come from config dataclasses, not here
     arm_id = "arm0"
-    model = "gpt-oss:20b"
-    vlm_model = "qwen2.5vl:3b"
+    model: str | None = None
+    vlm_model: str | None = None
     base_url = "http://localhost:11434"
     source_type = "videoloop"
+    backend = "local"
+    cloud_url = ""
 
     for i, arg in enumerate(args):
         if arg == "--arm" and i + 1 < len(args):
@@ -1579,20 +1780,83 @@ def _run_live(args: list[str]) -> None:
             base_url = args[i + 1]
         elif arg == "--source" and i + 1 < len(args):
             source_type = args[i + 1]
-
-    runtime = HALORuntime()
-    runtime.register_arm(arm_id)
+        elif arg == "--backend" and i + 1 < len(args):
+            backend = args[i + 1]
+        elif arg == "--cloud-url" and i + 1 < len(args):
+            cloud_url = args[i + 1]
 
     run_logger = RunLogger(_RUNS_DIR, arm_id)
 
-    prompts_dir = Path(__file__).parents[2] / "configs" / "planner"
-    agent = PlannerAgent(model, base_url, prompts_dir)
+    live_backend = None
+    cognitive_stack = None
 
-    vlm_fn = make_ollama_vlm_fn(
-        base_url=base_url,
-        model=vlm_model,
-        run_logger=run_logger,
-    )
+    # Build cognitive stack — all paths go through Switchboard
+    from halo.cognitive import make_cognitive_stack
+    from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
+    from halo.cognitive.lease import LeaseManager
+
+    # Build local config with CLI overrides (or defaults from LocalConfig)
+    local_kwargs: dict = {"base_url": base_url}
+    if model:
+        local_kwargs["planner_model"] = model
+    if vlm_model:
+        local_kwargs["vlm_model"] = vlm_model
+    local_cfg = LocalConfig(**local_kwargs)
+
+    if cloud_url:
+        from halo.cognitive.config import RemoteCloudConfig
+        from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url), arm_id=arm_id, run_logger=run_logger)
+        lease_mgr = LeaseManager()
+        runtime = HALORuntime(lease_manager=lease_mgr)
+        runtime.register_arm(arm_id)
+        stack = make_cognitive_stack(
+            config=CognitiveConfig(active=BackendType.CLOUD, local=local_cfg, enable_failover=True),
+            cloud_backend=remote,
+            lease_mgr=lease_mgr,
+            bus=runtime.bus,
+            snapshot_fn=runtime.get_latest_runtime_snapshot,
+            run_logger=run_logger,
+            arm_id=arm_id,
+        )
+    elif backend == "cloud":
+        cloud_kwargs: dict = {}
+        if model:
+            cloud_kwargs["planner_model"] = model
+        if vlm_model:
+            cloud_kwargs["vlm_model"] = vlm_model
+        cloud_cfg = CloudConfig(**cloud_kwargs)
+
+        from halo.cognitive.cloud_backend import CloudCognitiveBackend
+
+        cloud_be = CloudCognitiveBackend(config=cloud_cfg, run_logger=run_logger)
+        lease_mgr = LeaseManager()
+        runtime = HALORuntime(lease_manager=lease_mgr)
+        runtime.register_arm(arm_id)
+        stack = make_cognitive_stack(
+            config=CognitiveConfig(active=BackendType.CLOUD, local=local_cfg, cloud=cloud_cfg, enable_failover=True),
+            cloud_backend=cloud_be,
+            lease_mgr=lease_mgr,
+            bus=runtime.bus,
+            snapshot_fn=runtime.get_latest_runtime_snapshot,
+            run_logger=run_logger,
+            arm_id=arm_id,
+        )
+    else:
+        runtime = HALORuntime()
+        runtime.register_arm(arm_id)
+        stack = make_cognitive_stack(
+            config=CognitiveConfig(active=BackendType.LOCAL, local=local_cfg, enable_failover=False),
+            bus=runtime.bus,
+            snapshot_fn=runtime.get_latest_runtime_snapshot,
+            run_logger=run_logger,
+            arm_id=arm_id,
+        )
+
+    agent = stack.switchboard
+    vlm_fn = stack.switchboard.vlm_scene
+    cognitive_stack = stack
 
     if source_type == "mujoco":
         from halo.bridge.sim_source import SimSource
@@ -1638,6 +1902,16 @@ def _run_live(args: list[str]) -> None:
             sim_phase_fn=sim_phase_fn,
         )
 
+    # Redirect all logging to the run log directory so warnings/errors
+    # don't corrupt the Textual TUI display (which owns stdout/stderr).
+    import logging as _logging
+
+    _log_file = run_logger.run_dir / "tui.log" if run_logger.run_dir else _RUNS_DIR / "tui.log"
+    _file_handler = _logging.FileHandler(_log_file)
+    _file_handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
+    _logging.root.handlers = [_file_handler]
+    _logging.root.setLevel(_logging.DEBUG)
+
     HALOApp(
         runtime=runtime,
         agent=agent,
@@ -1647,7 +1921,20 @@ def _run_live(args: list[str]) -> None:
         run_logger=run_logger,
         tracker_name=get_tracker_name(),
         video_source=video_source,
+        live_backend=live_backend,
+        cognitive_stack=cognitive_stack,
     ).run()
+
+    # After TUI exits, suppress all output — stray log messages from asyncio
+    # cleanup, health-check threads, etc. are terminal noise.
+    import logging as _logging
+    import os
+    import sys
+
+    _logging.disable(_logging.CRITICAL)
+    _devnull = open(os.devnull, "w")  # noqa: SIM115
+    sys.stdout = _devnull
+    sys.stderr = _devnull
 
     video_source.stop()
 

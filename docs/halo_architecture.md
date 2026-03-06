@@ -1,6 +1,6 @@
 # HALO Architecture Specification (Planner + Perception + ACT Skill Runner)
 
-Date: 2026-03-02
+Date: 2026-03-05
 Scope: HALO — three-phase sim strategy: (1) MuJoCo + SO-101 (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, ACT for continuous control.
 
 This document is the **architecture reference** that complements the plan summary. It focuses on **module boundaries, runtime contracts, dataflows, timing**, and **code-facing interfaces**.
@@ -448,125 +448,9 @@ Keep it **off** the steady-state planner loop.
 
 ---
 
-## 13) Repo structure (actual)
+## 13) Repo structure
 
-```
-halo/
-  contracts/
-    enums.py            # all enums (PhaseId, SafetyReflexReason, ActStatus, etc.)
-    snapshots.py        # PlannerSnapshot, TargetInfo, ActInfo(wrist_enabled), SafetyInfo, etc.
-    commands.py         # CommandEnvelope, CommandAck, payload types
-    events.py           # EventEnvelope, EventType
-    actions.py          # Action, ActionChunk, ZERO_ACTION
-    enums.json          # JSON schema
-    commands.json
-    events.json
-    snapshot.json
-  runtime/
-    runtime.py          # HALORuntime (register_arm, get_latest_runtime_snapshot, submit_command)
-    state_store.py      # RuntimeStateStore (per-arm state, snapshot caching)
-    event_bus.py        # EventBus (subscribe/unsubscribe/publish/get_recent_events)
-    command_router.py   # CommandRouter (idempotency + precondition + skill-run validation)
-  bridge/                          # ZMQ bridge to MuJoCo sim server
-    __init__.py                    # BridgeTransportError exception
-    config.py                      # SimBridgeConfig (2-channel URLs, managed flag, timeouts)
-    sim_client.py                  # SimClient (ZMQ client: TelemetryStream SUB + CommandRPC REQ)
-    sim_source.py                  # SimSource (drop-in MuJocoVideoSource replacement via ZMQ)
-    transforms.py                  # world_to_ee_frame() quaternion math
-  services/                        # each service has its own CLAUDE.md with detailed docs
-    planner_service/
-      CLAUDE.md                 # tools, one-tool-per-tick, loop detection, snapshot middleware
-      config.py                 # PlannerServiceConfig (watchdog_interval_s, max_commands_per_tick)
-      snapshot_serializer.py    # snapshot_to_dict() — PlannerSnapshot → plain dict for LLM
-      tools.py                  # AgentContext, build_tools() — 5 plain functions (ADK introspects signature + docstring)
-      agent.py                  # PlannerAgent, make_decide_fn() — ADK Agent with LiteLlm (Ollama)
-      service.py                # PlannerService (event-driven loop, 30 s watchdog)
-    target_perception_service/
-      CLAUDE.md             # tick logic, plausibility gates, VLM async pipeline, state transitions
-      config.py             # TargetPerceptionServiceConfig
-      service.py            # TargetPerceptionService (fast loop + async VLM)
-      vlm_parser.py         # VlmDetection, VlmScene, parse_vlm_response()
-      ollama_vlm_fn.py      # make_ollama_vlm_fn() — Ollama VLM client factory
-      video_capture_fn.py   # make_video_capture_fn() — looping video file CaptureFn
-      frame_buffer.py       # CapturedFrame, FrameRingBuffer — replay buffer
-      mock_fns.py           # make_mock_capture_fn(), make_mock_tracker_factory_fn()
-    skill_runner_service/
-      CLAUDE.md             # FSM phase flow, advance() check order, grasp persistence, recovery
-      config.py             # SkillRunnerConfig
-      fsm.py                # PickFSM (pure synchronous state machine)
-      service.py            # SkillRunnerService
-    control_service/
-      CLAUDE.md             # tick order, TE buffer, reflex lifecycle, safety guard
-      config.py             # ControlServiceConfig
-      action_buffer.py      # ActionBuffer (legacy, kept for compatibility)
-      te_buffer.py          # TemporalEnsemblingBuffer (production blending)
-      safety_guard.py       # SafetyGuard (check, clamp, hint_freshness)
-      service.py            # ControlService (50–100 Hz loop)
-  testing/                         # multi-tier test framework
-    event_recorder.py              # EventRecorder (subscribe, wait_for, query by type)
-    state_seeder.py                # make_target(), make_perception(), seed_store()
-    mock_fns.py                    # LatencyProfile, mock factories for all callables
-    runner.py                      # HeadlessRunner (orchestrate services without TUI)
-    metrics.py                     # RunReport, compute_run_report()
-  tui/
-    app.py              # Textual TUI — mock + live modes
-    run_logger.py       # RunLogger: writes JSONL session logs to runs/
-  models/               # (planned) act/, vlm/
-  configs/
-    planner/
-      system_prompt.md        # core agent instructions
-      skills/pick.md          # PICK skill reference for planner
-      skills/place.md         # PLACE skill reference for planner
-    perception/
-      scene_analysis.md       # VLM prompt for qwen2.5vl
-    calib/                    # (planned)
-    skills/                   # (planned)
-    safety/                   # (planned)
-  tools/                      # (planned) ollama_clients/, zed_capture/, uvc_capture/
-  eval/                       # (planned) sim/, real/
-mujoco_sim/                     # MuJoCo + SO-101 sim (see section 15)
-  mujoco_sim/
-    constants.py                # phase IDs, action fields, gripper semantics (synced from halo.contracts)
-    scene_info.py               # SceneInfo: runtime geometry extraction + all grasp/teacher constants
-    config/
-      env_config.py             # EnvConfig (SO-101, dual cameras, 20 Hz)
-    env/
-      so101_env.py              # SO101Env: raw MuJoCo wrapper, dual cameras, joint-position control
-    dataset/
-      raw_episode.py            # Timestep (with phase_id, joint_pos), RawEpisode, EpisodeMetadata
-      writer_hdf5.py            # write_episode() — HDF5 serialization with gzip images
-      reader_hdf5.py            # read_episode() — HDF5 → RawEpisode
-    teacher/
-      pick_teacher.py           # PickTeacher: trajectory-planned policy (pre-computed on first step)
-      ik_helper.py              # Damped least-squares IK (position-only + coupled 6D)
-      keyframe_planner.py       # SE(3) keyframes from GraspPose
-      waypoint_generator.py     # Keyframes → joint waypoints via IK (yaw-retry fallbacks)
-      trajectory.py             # Jerk-limited ruckig trajectory planning
-      grasp_planner.py          # 64-candidate grasp enumeration, filtering, scoring
-    runner/
-      run_teacher.py            # run_teacher(): episode generation loop + verification
-    server/
-      __init__.py               # SimServer: ZMQ server owning SO101Env + PickTeacher
-      __main__.py               # CLI: python -m mujoco_sim.server
-      config.py                 # SimServerConfig (host, ports, render FPS, JPEG quality)
-      handlers.py               # dispatch_command(): route ZMQ messages
-      protocol.py               # Message types, msgpack/JPEG serialization
-    scripts/                    # test_env, generate_episodes, inspect_episode, visualize_ik_pose
-    assets/
-      so101/                    # MJCF (so101_new_calib.xml) + pick_scene.xml + 13 STL meshes
-    tests/                      # 112 tests (constants, dataset, teacher, grasp, trajectory, server)
-docs/
-  halo_architecture.md          # this file
-  halo_plan_summary.md          # project plan + Isaac Lab strategy
-  data/                         # gitignored; video.mp4 for video capture simulation
-sim/                            # Isaac Lab extension (planned — see sim/README.md)
-tests/                          # unit + component + system tests
-  e2e/                          # end-to-end tests (MuJoCo source + VLM, auto-skip if unavailable)
-integration/                    # LLM integration tests (require Ollama)
-  conftest.py                   # Ollama health-check; auto-skip if model unavailable
-  runs/                         # timestamped result folders
-runs/                           # live TUI session logs (JSONL, git-ignored)
-```
+See the **Repository Structure** section in the top-level `CLAUDE.md` for the authoritative directory listing. Each service directory also contains its own `CLAUDE.md` with detailed internal docs (tick order, config tables, integration points, testing notes).
 
 ---
 
@@ -582,19 +466,9 @@ runs/                           # live TUI session logs (JSONL, git-ignored)
 
 ## 15) MuJoCo simulation module (`mujoco_sim/`)
 
-Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (no robosuite). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
+Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (5-DOF + 1-DOF gripper, 6 actuated joints). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
 
-### 15.1 SO-101 robot
-
-5-DOF arm + 1-DOF gripper = 6 actuated joints (position-controlled STS3215 servos). EE site: `gripperframe`. Position actuators (`kp=998.22`) track targets written to `data.ctrl[:]`. Physics: `dt=0.005`, 20 Hz control, 10 substeps per step.
-
-MJCF: `so101_new_calib.xml` + `pick_scene.xml` (robot + floor + cube + dual cameras). Contact solver tuned for zero slip: `impratio=10`, `cone="elliptic"`, `noslip_iterations=3`, gripper friction=2.0, actuator force=±6.0 N.
-
-### 15.2 SO101Env
-
-Raw MuJoCo wrapper. Action: 6D joint-position targets. Observations: `rgb_scene` (480,640,3), `rgb_wrist` (240,320,3), `qpos` (13,), `qvel` (12,), `gripper`, `ee_pose` (7,), `object_pose` (7,), `joint_pos` (6,). Seeded resets with cube position randomization.
-
-### 15.3 Trajectory planning pipeline
+### 15.1 Trajectory planning pipeline
 
 PickTeacher pre-computes a full trajectory on first `step()`, then samples in real time:
 
@@ -608,40 +482,161 @@ grasp_planner (64 candidates, geometric filter, IK scoring)
 
 Teacher phase sequence: `IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation.
 
-### 15.4 Scene constants (`scene_info.py`)
-
-Single source of truth for all grasp/teacher defaults. `SceneInfo.from_model()` extracts runtime geometry (cube sizes, table height) from MuJoCo model. Key constants: `TCP_PINCH_OFFSET_LOCAL=[0,0,0]`, face standoff 3 mm, 64 grasp candidates (16/face, 5° cone), pregrasp standoff 0.08 m, lift height 0.08 m, IK ori tolerance 55°.
-
-### 15.5 Dataset format (HDF5)
-
-One file per episode. Observations (rgb gzipped), actions (6D), phase_id, metadata as attrs. In-memory: `Timestep` → `RawEpisode` buffer. Episode generation: reset → 5 s stabilization → teacher loop → write HDF5 → verify lift. **100% success rate** with current tuning.
-
-### 15.6 Constants sync
+### 15.2 Constants sync
 
 Phase IDs, gripper semantics, wrist-active phases synced between `halo/contracts/enums.py` and `mujoco_sim/constants.py`, verified by cross-module tests. Action space intentionally different (sim: 6D joint-position, core: 7D EE-delta).
 
-### 15.7 Status
-
-112 tests (constants, dataset, teacher, grasp planner, trajectory pipeline, server). PR1-3 done (env, dataset, teacher). PR4-6 pending (phase FSM, VCR replay, annotation).
+See `mujoco_sim/CLAUDE.md` for full details (env, dataset format, scene constants, IK, grasp planner, contact solver tuning).
 
 ---
 
 ## 16) ZMQ bridge (`halo/bridge/`)
 
-Connects HALO runtime to MuJoCo sim server via 2-channel ZMQ.
+Connects HALO runtime to the MuJoCo sim server via 2-channel ZMQ.
 
 | Channel | ZMQ Pattern | Port | Direction | Purpose |
 |---------|-------------|------|-----------|---------|
 | TelemetryStream | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
-| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, teacher_step, configure, shutdown |
+| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, shutdown |
 
-**SimServer** (`mujoco_sim.server`): single-threaded main loop (macOS OpenGL), owns SO101Env + PickTeacher. Protocol: msgpack + JPEG.
+**SimServer** (`mujoco_sim.server`) runs an autonomous physics loop at 20 Hz, plans and executes trajectories, and publishes telemetry. Single-threaded (macOS OpenGL constraint). Protocol: msgpack + JPEG. **SimClient** (`sim_client.py`) provides a thread-safe command interface with background telemetry reception; `BridgeTransportError` on timeout (ControlService catches → `ActStatus.STALE`). **SimSource** (`sim_source.py`) wraps SimClient as a drop-in video source (`capture_fn` → `CapturedFrame`).
 
-**SimClient** (`halo/bridge/sim_client.py`): background telemetry thread (SUB), main thread for commands (REQ, thread-safe). Managed mode spawns server subprocess. `BridgeTransportError` on timeout (ControlService catches → `ActStatus.STALE`).
+---
 
-**SimSource** (`halo/bridge/sim_source.py`): drop-in video source replacement, wraps SimClient. Provides `capture_fn` returning `CapturedFrame` for TargetPerceptionService.
+## 17) Cognitive backend switching (`halo/cognitive/`)
 
-**Transforms** (`halo/bridge/transforms.py`): `world_to_ee_frame()` quaternion rotation for ACT command conversion.
+Transparent proxy layer that routes planner (LLM) and perception (VLM) calls through a **Switchboard** to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini Live API / remote HTTP). Split-brain prevention via **LeaseManager**, context continuity via **ContextStore**, and ADK-native event compaction with cross-backend sync.
+
+PlannerService and TargetPerceptionService call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-in replacements — they are unaware of which backend is active.
+
+### 17.1 Component overview
+
+| File | Role |
+|---|---|
+| `config.py` | `BackendType`, `BackendReadiness`, `CognitiveConfig`, `LocalConfig`, `CloudConfig`, `RemoteCloudConfig`, `CompactionConfig` |
+| `backend.py` | `CognitiveBackend` protocol (decide + vlm_scene + health_check), `WarmableBackend` extension (warm_up + readiness + caught_up_cursor) |
+| `switchboard.py` | Transparent proxy, retry logic, failure counting, failover/failback, health loop, event journal loop, compaction sync |
+| `lease.py` | `LeaseManager` + `Lease` — epoch-monotonic grants with UUID token + TTL; `CommandRouter` rejects stale epoch/token |
+| `context_store.py` | `ContextStore` (append-only journal), `ContextEntry`, `ContextSnapshot`, `CognitiveState` for handoff |
+| `compactor.py` | `MessageHistory` (UUID-tracked parallel message list), `CompactionResult` for cross-backend sync |
+| `compaction_plugin.py` | `CompactionPlugin` — ADK-native event compaction callback; detects compaction boundaries and triggers cross-backend sync |
+| `local_backend.py` | `LocalCognitiveBackend` — wraps PlannerAgent (ADK + LiteLLM/Ollama) + Ollama VLM |
+| `cloud_backend.py` | `CloudCognitiveBackend` — Gemini Live API, ADK compaction, audio I/O |
+| `remote_backend.py` | `RemoteCognitiveBackend` — HTTP client to Cloud Run cognitive service |
+| `live_session.py` | `LivePlannerSession` — Gemini Live API session management |
+| `audio_io.py` | Audio capture/playback for voice interaction with cloud backend |
+
+### 17.2 Failover flow
+
+When the active backend fails 3 consecutive times (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically fails over to the alternate backend.
+
+```mermaid
+sequenceDiagram
+    participant PS as PlannerService
+    participant SB as Switchboard
+    participant Active as Active Backend (cloud)
+    participant Standby as Standby Backend (local)
+    participant LM as LeaseManager
+
+    PS->>SB: decide(snapshot)
+    SB->>Active: decide() — retries with backoff
+    Note over SB,Active: 3 consecutive failures → failover threshold reached
+
+    SB->>SB: take_snapshot + build_cognitive_state
+    SB->>Standby: warm_up(state, journal_entries)
+    SB->>LM: revoke(old_epoch) → grant("local")
+    SB->>Active: reset_loop_state()
+    SB->>Standby: reset_loop_state()
+    Note over SB: publish BACKEND_SWITCHED
+
+    SB->>Standby: decide(snapshot) — replay original call
+    Standby-->>SB: commands (stamped with new epoch + token)
+    SB-->>PS: commands
+```
+
+### 17.3 Failback flow (warm-up handoff)
+
+A background health loop (every 5 s) checks whether the preferred backend has recovered. Failback uses a graduated warm-up protocol to ensure seamless context transfer before switching.
+
+```mermaid
+sequenceDiagram
+    participant HL as Health Loop
+    participant SB as Switchboard
+    participant Preferred as Preferred Backend (cloud)
+
+    Note over SB: Currently on fallback (local)
+
+    HL->>Preferred: health_check() → healthy
+    Note over HL,Preferred: Graduated warm-up: COLD → WARMING → READY
+
+    HL->>Preferred: warm_up(full state + journal)
+    Note over Preferred: COLD → WARMING
+    HL->>Preferred: warm_up(incremental batches ≤20)
+    Note over Preferred: WARMING → READY (when cursor caught up)
+
+    HL->>SB: switch_to(preferred, "recovered and warmed up")
+    Note over SB: Full switch_to() protocol (see §17.2)
+```
+
+### 17.4 ADK compaction and cross-backend sync
+
+The cloud backend uses ADK-native event compaction to keep session context bounded. When compaction occurs, the summary is propagated to the inactive local backend so failback starts with concise context.
+
+```mermaid
+sequenceDiagram
+    participant CB as CloudBackend
+    participant ADK as ADK Session
+    participant MH as MessageHistory
+    participant SB as Switchboard
+    participant LB as LocalBackend
+
+    Note over CB: After ~20 events on cloud session
+
+    CB->>ADK: decide() returns response
+    CB->>CB: _detect_compaction(session_events)
+    Note over CB: Finds compaction boundary in ADK events
+
+    CB->>MH: apply_compaction(up_to_msg_id, summary)
+    Note over MH: Replace old records with single summary record
+
+    CB->>SB: on_compaction(CompactionResult)
+
+    SB->>LB: agent.reset_session()
+    SB->>LB: agent.inject_handoff_context(summary)
+    SB->>LB: msg_history.clear()
+
+    SB->>CS: append(entry_type="compaction", summary)
+    Note over CS: Journal records compaction event
+```
+
+### 17.5 Lease protocol
+
+The `LeaseManager` prevents split-brain — only one backend may issue commands at a time.
+
+- **Epoch**: monotonically increasing integer, incremented on every `grant()`
+- **Token**: UUID string, unique per grant — prevents replayed commands from a prior epoch that happen to share the same epoch number
+- **TTL**: 30 s default, renewed on every successful `decide()` / `vlm_scene()` call
+- **Validation**: `CommandRouter` checks both `epoch` and `lease_token` on every command when a `LeaseManager` is active; commands with missing or stale values are rejected
+
+Lifecycle: `grant(holder) → renew(epoch) → revoke(epoch) → grant(new_holder)`
+
+### 17.6 ContextStore journal
+
+Append-only journal (bounded to 200 entries) that captures what the planner knows and has decided, enabling context transfer across backend switches.
+
+**Entry types:**
+
+| Type | When recorded | Effect on tracked state |
+|---|---|---|
+| `decision` | After successful `decide()` with reasoning | Clears `pending_operator_instruction` |
+| `scene` | After successful `vlm_scene()` | Updates `known_scene_handles`, `last_scene_description` |
+| `event` | Runtime events (SKILL_STARTED/SUCCEEDED/FAILED, SAFETY_REFLEX, TARGET_ACQUIRED, PERCEPTION_FAILURE) | — |
+| `operator` | Operator instruction received | Sets `pending_operator_instruction` |
+| `compaction` | ADK compaction detected | — |
+
+**Handoff**: `build_cognitive_state()` produces a `CognitiveState` with journal-derived context (recent decisions, events, goal summary) plus snapshot-derived runtime state (skill phase, outcome, held object) — everything a new backend needs to resume without calling back to the edge runtime.
+
+**Cursor-based sync**: `get_entries_after(cursor)` enables incremental catch-up. `WarmableBackend.caught_up_cursor` tracks how far the standby backend has consumed, enabling bounded batch warm-up during failback.
 
 ---
 

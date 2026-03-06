@@ -10,19 +10,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv sync --extra dev                   # install + dev deps (first time or after pyproject.toml changes)
-uv sync --extra dev --extra sim       # install + dev deps + MuJoCo (for tui-live-mujoco / e2e tests)
+uv sync --extra dev --extra sim       # install deps + MuJoCo (first time or after pyproject.toml changes)
 uv run python -m pytest               # run all unit tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
-make install           # install deps (uv sync --extra dev)
-make install-sim       # install deps + MuJoCo (uv sync --extra dev --extra sim)
+make install           # install deps + MuJoCo (uv sync --extra dev --extra sim)
 make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
 make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
-make tui-live-videoloop # launch TUI with video loop source (requires Ollama)
-make tui-live-mujoco   # launch TUI with MuJoCo scene camera (requires Ollama + MuJoCo; run make install-sim first)
+make tui-live              # launch TUI with local Ollama + MuJoCo sim
+make tui-live-cloud        # launch TUI via cloud service HTTP (set HALO_CLOUD_URL)
+make tui-live-cloud-local  # launch TUI with direct Gemini API (requires GOOGLE_API_KEY)
+make run-cloud-service     # run cloud_service (requires GOOGLE_API_KEY)
+make test-cloud-service    # run cloud_service unit tests
+make smoke-cloud-service   # smoke test against Gemini (requires GOOGLE_API_KEY)
 make generate-episodes # generate teacher episodes (EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0; requires make install-sim)
 make test-integration  # run LLM integration tests (requires Ollama); saves results to integration/runs/YYYYMMDD_HHMMSS/
 ```
@@ -48,12 +50,17 @@ All v0 backbone services are implemented and tested:
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
 | Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ 2-channel: SimClient, SimSource, transforms) |
+| Cognitive backend switching (`halo/cognitive/`) | ✅ done — Switchboard, LeaseManager, ContextStore, failover/failback, epoch+token gating, warm-up handoff |
 | MuJoCo sim (`mujoco_sim/`) | ✅ done — SO-101 + raw MuJoCo (env, dataset, teacher, IK, autonomous SimServer); PR4-6 pending (phase FSM, VCR, annotation) |
 | Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
-The TUI supports two modes:
+The TUI supports multiple modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
-- **Live mode** (`make tui-live-videoloop` or `make tui-live-mujoco`): wired to real `HALORuntime` + `PlannerAgent.decide()`. Talk panel sends operator messages to the LLM; abort button submits `ABORT_SKILL` commands; results shown in the ActionsPanel. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
+- **Live local** (`make tui-live`): Ollama planner + VLM + MuJoCo sim.
+- **Live cloud** (`make tui-live-cloud`): HTTP client to cloud service via Switchboard. Set `HALO_CLOUD_URL` for remote.
+- **Live cloud local** (`make tui-live-cloud-local`): Direct Gemini API via Switchboard. Requires `GOOGLE_API_KEY`.
+
+All cloud modes use the Switchboard with LeaseManager for split-brain prevention, automatic failover (3 consecutive failures → switch), and warm-up handoff on failback. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
 
 To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot runs/halo_tui.svg`
 
@@ -68,6 +75,9 @@ halo/
   contracts/        # enums.py, snapshots.py, commands.py, events.py, actions.py
                     # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
+  cognitive/        # backend switching: config.py, backend.py, switchboard.py, lease.py,
+                    # context_store.py, local_backend.py, cloud_backend.py, remote_backend.py,
+                    # live_session.py, audio_io.py
   bridge/            # ZMQ 2-channel bridge to MuJoCo sim server
                       # __init__.py (BridgeTransportError), config.py (SimBridgeConfig),
                       # sim_client.py (SimClient), sim_source.py (SimSource), transforms.py,
@@ -133,6 +143,7 @@ RuntimeStateStore → get_latest_runtime_snapshot() → PlannerService → async
 3. Every mutating planner command carries a `command_id` (UUID) and `precondition_snapshot_id`; the router must enforce idempotency and reject stale preconditions. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = None` to avoid premature rejection.
 4. VLM reacquire runs **asynchronously** — it is never on the critical path of the 10–30 Hz hint-publish loop.
 5. On phase transition, **trim the ACT buffer** to ~50–100 ms to avoid executing old-phase tail actions.
+6. When a `LeaseManager` is active, every command must carry both `epoch` and `lease_token`. Commands without them (or with stale values) are rejected by the `CommandRouter`.
 
 ### HALORuntime (`halo/runtime/runtime.py`)
 Top-level entry point. Owns `RuntimeStateStore`, `EventBus`, and `CommandRouter`. Exposes the two planner-facing APIs: `get_latest_runtime_snapshot(arm_id)` and `submit_command(cmd)`.

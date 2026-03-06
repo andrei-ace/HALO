@@ -43,8 +43,8 @@
       <geom type="box" size="0.025 0.025 0.165" pos="-0.35 -0.30 -0.185" rgba="0.36 0.36 0.36 1"/>
     </body>
 
-    <!-- Overhead scene camera for VLM / observation — angled top-down like a real workbench camera -->
-    <camera name="scene_cam" pos="0.20 -0.35 0.75" xyaxes="1 0 0 0 0.70 0.72" mode="fixed"/>
+    <!-- Overhead scene camera for VLM / observation — opposite robot base, 45° down, avoids arm occlusion -->
+    <camera name="scene_cam" pos="0.50 -0.18 0.66" fovy="45" xyaxes="0.41 0.91 0 -0.57 0.26 0.78" mode="fixed"/>
 
     <!-- Pick target: green cube with freejoint, sits on table top (table top at z=0.37) -->
     <!-- Keep cubes farther apart in Y to reduce tracker cross-target interference. -->

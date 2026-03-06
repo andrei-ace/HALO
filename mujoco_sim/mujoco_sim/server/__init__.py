@@ -21,7 +21,7 @@ import numpy as np
 import zmq
 
 from mujoco_sim.server.config import SimServerConfig
-from mujoco_sim.server.handlers import ServerState, dispatch_command
+from mujoco_sim.server.handlers import ServerState, dispatch_command, execute_pending_pick
 from mujoco_sim.server.protocol import pack_telemetry
 
 logger = logging.getLogger(__name__)
@@ -124,14 +124,25 @@ class SimServer:
                     if shutdown:
                         break
 
-                # 2. Autonomous physics at physics_hz
+                # 2. Execute deferred pick planning (if any).
+                # Runs after command reply is sent, so the client gets an
+                # immediate response. Frame publication continues on the
+                # next loop iteration after planning completes.
+                if self._state.pending_pick_target is not None:
+                    # Publish one telemetry frame before blocking on planning
+                    # so the tracker doesn't starve.
+                    self._publish_telemetry(step_count)
+                    last_render = time.monotonic()
+                    execute_pending_pick(self._env, self._state)
+
+                # 3. Autonomous physics at physics_hz
                 now = time.monotonic()
                 if now - last_physics >= physics_interval:
                     last_physics = now
                     self._physics_tick(now)
                     step_count += 1
 
-                # 3. Publish telemetry at render_fps
+                # 4. Publish telemetry at render_fps
                 if now - last_render >= render_interval:
                     last_render = now
                     self._publish_telemetry(step_count)

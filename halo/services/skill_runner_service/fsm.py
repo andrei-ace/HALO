@@ -6,6 +6,7 @@ from halo.contracts.enums import (
     PhaseId,
     SkillFailureCode,
     SkillOutcomeState,
+    TrackingStatus,
 )
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.services.skill_runner_service.config import SkillRunnerConfig
@@ -23,6 +24,7 @@ class PickFSM:
         self._grasp_qualify_start_ms: int | None = None
         self._no_target_start_ms: int | None = None
         self._reacquire_count: int = 0
+        self._target_handle: str | None = None
 
     # --- Readable state ---
 
@@ -52,12 +54,13 @@ class PickFSM:
 
     # --- Commands ---
 
-    def start(self, now_ms: int) -> None:
+    def start(self, now_ms: int, target_handle: str) -> None:
         if self._phase != PhaseId.IDLE:
             raise RuntimeError(f"start() called in phase {self._phase!r}, expected IDLE")
         self._grasp_qualify_start_ms = None
         self._no_target_start_ms = None
         self._reacquire_count = 0
+        self._target_handle = target_handle
         self._outcome = SkillOutcomeState.IN_PROGRESS
         self._failure_code = None
         self._transition(now_ms, PhaseId.SELECT_GRASP)
@@ -101,8 +104,13 @@ class PickFSM:
 
         if phase == PhaseId.SELECT_GRASP:
             if elapsed >= self._config.select_grasp_timeout_ms:
-                return self._fail(now_ms, SkillFailureCode.NO_PROGRESS)
-            # v0: immediate pass-through (grasp planning is a future extension)
+                return self._fail(now_ms, SkillFailureCode.PERCEPTION_LOST)
+            # Gate on tracking: wait for tracker to establish before proceeding
+            if perception.tracking_status != TrackingStatus.TRACKING:
+                return None
+            # Gate on correct target: tracker must be locked onto the requested object
+            if target is None or target.handle != self._target_handle:
+                return None
             return self._transition(now_ms, PhaseId.PLAN_APPROACH)
 
         elif phase == PhaseId.PLAN_APPROACH:

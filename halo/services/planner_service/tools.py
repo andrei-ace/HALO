@@ -21,6 +21,7 @@ class AgentContext:
     snapshot_id: str | None
     commands: list[CommandEnvelope] = field(default_factory=list)
     used_tools: set[str] = field(default_factory=set)
+    epoch: int | None = None
 
 
 def build_tools(ctx: AgentContext) -> list:
@@ -33,13 +34,13 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.used_tools.add(name)
         return None
 
-    def start_skill(skill_name: str, target_handle: str, options: dict | None = None) -> str:
+    def start_skill(skill_name: str, target_handle: str, options: str = "") -> str:
         """Start a named skill on the arm.
 
         Args:
             skill_name: Skill to run. One of: PICK.
             target_handle: Target object handle string (from perception).
-            options: Optional key/value overrides for the skill.
+            options: Optional JSON string of key/value overrides for the skill.
         """
         if err := _once("start_skill"):
             return err
@@ -48,6 +49,14 @@ def build_tools(ctx: AgentContext) -> list:
         except Exception:
             allowed = ", ".join(s.value for s in SkillName)
             return f"REJECTED: invalid skill_name {skill_name!r}. Expected one of [{allowed}]."
+        opts: dict = {}
+        if options:
+            import json
+
+            try:
+                opts = json.loads(options)
+            except (json.JSONDecodeError, TypeError):
+                pass
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
@@ -56,9 +65,10 @@ def build_tools(ctx: AgentContext) -> list:
             payload=StartSkillPayload(
                 skill_name=skill,
                 target_handle=target_handle,
-                options=options or {},
+                options=opts,
             ),
             precondition_snapshot_id=ctx.snapshot_id,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued START_SKILL {skill_name} target={target_handle}"
@@ -82,6 +92,7 @@ def build_tools(ctx: AgentContext) -> list:
                 reason=reason,
             ),
             precondition_snapshot_id=ctx.snapshot_id,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued ABORT_SKILL run_id={skill_run_id} reason={reason}"
@@ -105,6 +116,7 @@ def build_tools(ctx: AgentContext) -> list:
                 target_handle=target_handle,
             ),
             precondition_snapshot_id=ctx.snapshot_id,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued OVERRIDE_TARGET run_id={skill_run_id} target={target_handle}"
@@ -133,6 +145,7 @@ def build_tools(ctx: AgentContext) -> list:
             # Pinning it to a snapshot_id causes REJECTED_STALE as soon as the
             # snapshot advances between decide() and submit().
             precondition_snapshot_id=None,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued DESCRIBE_SCENE reason={reason}"
@@ -158,6 +171,7 @@ def build_tools(ctx: AgentContext) -> list:
                 target_handle=target_handle,
             ),
             precondition_snapshot_id=None,
+            epoch=ctx.epoch,
         )
         ctx.commands.append(cmd)
         return f"Queued TRACK_OBJECT target={target_handle}"

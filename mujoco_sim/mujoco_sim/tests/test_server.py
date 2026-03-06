@@ -273,37 +273,34 @@ class TestHandlers:
         assert reply["type"] == "ok"
 
     def test_start_pick(self, env_state):
-        from mujoco_sim.server.handlers import dispatch_command
+        from mujoco_sim.server.handlers import dispatch_command, execute_pending_pick
 
         env, state = env_state
         reply, _ = dispatch_command({"type": "start_pick", "target_body": "green_cube"}, env, state)
-        assert reply["type"] in ("start_pick_ok", "start_pick_error")
-        if reply["type"] == "start_pick_ok":
-            assert isinstance(reply["duration"], float)
-            assert reply["duration"] > 0
-            assert reply["target_body"] == "green_cube"
-            assert reply["target_body_requested"] == "green_cube"
-            assert reply["target_body_resolved"] == "green_cube"
+        assert reply["type"] == "start_pick_ok"
+        assert reply["target_body"] == "green_cube"
+        assert reply.get("deferred") is True
+        # Planning is deferred — execute it now
+        assert state.pending_pick_target == "green_cube"
+        execute_pending_pick(env, state)
+        assert state.pending_pick_target is None
+        if state.error is None:
             assert state.trajectory is not None
 
     def test_start_pick_fuzzy_suffix_target_body(self, env_state):
-        from mujoco_sim.server.handlers import dispatch_command
+        from mujoco_sim.server.handlers import dispatch_command, execute_pending_pick
 
         env, state = env_state
         reply, _ = dispatch_command({"type": "start_pick", "target_body": "green_cube_01"}, env, state)
-        assert reply["type"] in ("start_pick_ok", "start_pick_error")
+        assert reply["type"] == "start_pick_ok"
+
+        # Planning is deferred — execute it now
+        execute_pending_pick(env, state)
 
         # Planning can still fail (IK/grasp), but fuzzy target resolution should
         # prevent immediate unknown-body rejection.
-        if reply["type"] == "start_pick_ok":
-            assert reply["target_body"] == "green_cube"
-            assert reply["target_body_requested"] == "green_cube_01"
-            assert reply["target_body_resolved"] == "green_cube"
+        if state.error is None:
             assert state.trajectory is not None
-        else:
-            msg = str(reply.get("message", ""))
-            assert "Unknown body:" not in msg
-            assert "Unknown cube body:" not in msg
 
     def test_start_pick_unknown_body_lists_known_bodies(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command

@@ -2,57 +2,36 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import logging
 import os
 from pathlib import Path
 
 from google.adk.agents import Agent
+from google.adk.apps import App
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
+from halo.cognitive.compaction_plugin import CompactionPlugin
+from halo.cognitive.compactor import CompactionResult, MessageHistory
+from halo.cognitive.config import CompactionConfig
 from halo.contracts.commands import CommandEnvelope
+from halo.contracts.events import EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.services.planner_service.service import DecideFn
 from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
 from halo.services.planner_service.tools import AgentContext, build_tools
 
+# Suppress the "non-text parts in the response" warning from google.genai.
+# ADK's internal _build_response_log accesses resp.text on responses that
+# contain function_call parts, triggering this harmless warning every call.
+logging.getLogger("google_genai.types").setLevel(logging.ERROR)
+
 _SNAPSHOT_PREFIX = "Current robot state:"
-_DEPRECATED_CONTENT = "[DEPRECATED - superseded by a more recent snapshot]"
 _THREAD_ID = "planner"  # single-thread; one conversation per PlannerAgent
 _APP_NAME = "halo"
 _USER_ID = "planner"
-
-
-def _deprecate_old_snapshots(
-    callback_context,  # noqa: ARG001 — required by ADK callback signature
-    llm_request,
-):
-    """ADK before_model_callback: enforce exactly-one-snapshot invariant.
-
-    Before every model call, replace the content of all but the most recent
-    "Current robot state:" user message with a deprecation notice so the LLM
-    only ever reasons about the latest snapshot and the context stays small.
-
-    Returns None to let the (modified) request proceed to the model.
-    """
-    contents = llm_request.contents or []
-    indices = [
-        i
-        for i, c in enumerate(contents)
-        if c.role == "user"
-        and c.parts
-        and any(getattr(p, "text", None) and p.text.startswith(_SNAPSHOT_PREFIX) for p in c.parts)
-    ]
-    if len(indices) <= 1:
-        return None
-    # Replace all but last snapshot with deprecation notice
-    for i in indices[:-1]:
-        contents[i] = types.Content(
-            role="user",
-            parts=[types.Part.from_text(_DEPRECATED_CONTENT)],
-        )
-    return None
 
 
 def _load_prompts(prompts_dir: Path) -> str:
@@ -71,6 +50,39 @@ def _load_prompts(prompts_dir: Path) -> str:
     return "\n".join(parts)
 
 
+def _extract_scene_image(snap: PlannerSnapshot) -> object | None:
+    """Extract the VLM image from the most recent SCENE_DESCRIBED event, if any."""
+    for ev in reversed(snap.recent_events):
+        if ev.type == EventType.SCENE_DESCRIBED and ev.data.get("vlm_image") is not None:
+            return ev.data["vlm_image"]
+    return None
+
+
+def _to_png_bytes(image: object) -> bytes | None:
+    """Convert numpy BGR, PIL, or raw bytes to PNG bytes for Gemini multimodal input."""
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    pil: Image.Image | None = None
+    if isinstance(image, Image.Image):
+        pil = image
+    elif isinstance(image, np.ndarray):
+        import cv2
+
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil = Image.fromarray(rgb)
+    elif isinstance(image, (bytes, bytearray)):
+        pil = Image.open(io.BytesIO(image))
+
+    if pil is None:
+        return None
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _command_key(cmd: CommandEnvelope) -> str:
     """Stable key for a command (type + payload, ignoring IDs and timestamps)."""
     payload_dict = dataclasses.asdict(cmd.payload)
@@ -87,30 +99,58 @@ class PlannerAgent:
         model_name: str,
         base_url: str,
         prompts_dir: Path,
+        backend: str = "local",
+        compaction_config: object | None = None,
     ) -> None:
         system_prompt = _load_prompts(prompts_dir)
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         self._tools = build_tools(self._ctx)
+        self._backend = backend
 
-        # LiteLLM uses OLLAMA_API_BASE env var for the Ollama endpoint.
-        os.environ["OLLAMA_API_BASE"] = base_url
+        if backend == "cloud":
+            # ADK natively routes bare model strings (e.g. "gemini-2.5-flash")
+            # to the Gemini API via GOOGLE_API_KEY env var.
+            model = model_name
+        else:
+            # LiteLLM uses OLLAMA_API_BASE env var for the Ollama endpoint.
+            os.environ["OLLAMA_API_BASE"] = base_url
+            model = LiteLlm(model=f"ollama_chat/{model_name}")
 
         self._agent = Agent(
             name="planner",
-            model=LiteLlm(model=f"ollama_chat/{model_name}"),
+            model=model,
             instruction=system_prompt,
             tools=self._tools,
-            before_model_callback=_deprecate_old_snapshots,
         )
         self._session_service = InMemorySessionService()
+        self._msg_history = MessageHistory()
+        self._last_compaction: CompactionResult | None = None
+
+        # Build CompactionPlugin — handles snapshot deprecation (all backends)
+        # and optional session compaction (cloud backend with config).
+        cfg: CompactionConfig | None = None
+        if backend == "cloud" and compaction_config is not None:
+            cfg = compaction_config if isinstance(compaction_config, CompactionConfig) else CompactionConfig()
+        self._compaction_plugin = CompactionPlugin(
+            config=cfg,
+            model_name=model_name,
+            msg_history=self._msg_history,
+        )
+
+        app = App(
+            name=_APP_NAME,
+            root_agent=self._agent,
+            plugins=[self._compaction_plugin],
+        )
         self._runner = Runner(
-            agent=self._agent,
-            app_name=_APP_NAME,
+            app=app,
             session_service=self._session_service,
         )
+
         self._session_created = False
         self._last_reasoning: str = ""
         self._cmd_streak: dict[str, int] = {}  # command_key → consecutive count
+        self._pending_handoff: str | None = None
 
     async def _ensure_session(self) -> None:
         """Create the ADK session on first use (requires async)."""
@@ -127,14 +167,44 @@ class PlannerAgent:
         """Final LLM text from the most recent decide() call (empty if none)."""
         return self._last_reasoning
 
+    @property
+    def msg_history(self) -> MessageHistory:
+        return self._msg_history
+
+    @property
+    def last_compaction(self) -> CompactionResult | None:
+        """Non-None when the most recent decide() triggered ADK compaction."""
+        return self._last_compaction
+
     def reset_loop_state(self) -> None:
         """Clear the loop-detection history (e.g. on new operator instruction)."""
         self._cmd_streak.clear()
+
+    async def inject_handoff_context(self, context_text: str) -> None:
+        """Queue handoff context to be prepended to the next decide() call."""
+        self._pending_handoff = context_text
+
+    async def reset_session(self) -> None:
+        """Delete the current ADK session for a fresh start after backend switch."""
+        if self._session_created:
+            try:
+                await self._session_service.delete_session(
+                    app_name=_APP_NAME,
+                    user_id=_USER_ID,
+                    session_id=_THREAD_ID,
+                )
+            except Exception:
+                pass
+            self._session_created = False
+        self._cmd_streak.clear()
+        self._msg_history.clear()
+        self._last_compaction = None
 
     async def decide(
         self,
         snap: PlannerSnapshot,
         operator_cmd: str | None = None,
+        epoch: int | None = None,
     ) -> list[CommandEnvelope]:
         """DecideFn implementation. Thread-safe per design (never called concurrently).
 
@@ -148,11 +218,14 @@ class PlannerAgent:
             operator_cmd: Optional natural-language instruction from the operator.
                           When provided it is appended to the snapshot message so
                           the agent can act on it in the context of the current state.
+                          Also resets loop detection.
+            epoch: Optional lease epoch to stamp on generated commands.
         """
         await self._ensure_session()
 
         self._ctx.arm_id = snap.arm_id
         self._ctx.snapshot_id = snap.snapshot_id
+        self._ctx.epoch = epoch
         self._ctx.commands.clear()
         self._ctx.used_tools.clear()
 
@@ -166,13 +239,29 @@ class PlannerAgent:
         # Combine snapshot + optional operator command into one user message.
         # ADK's runner.run_async takes a single new_message per call.
         text_parts = [f"{_SNAPSHOT_PREFIX}\n```json\n{snap_json}\n```"]
+        if self._pending_handoff:
+            text_parts.insert(0, self._pending_handoff)
+            self._pending_handoff = None
         if operator_cmd:
             text_parts.append(f"Operator: {operator_cmd}")
 
-        message = types.Content(
-            role="user",
-            parts=[types.Part.from_text("\n\n".join(text_parts))],
-        )
+        parts: list = [types.Part.from_text(text="\n\n".join(text_parts))]
+
+        # Cloud backend: attach the VLM scene image so Gemini can see what
+        # the VLM analysed.  Local (Ollama) skips this — it doesn't support
+        # inline images in the chat context.
+        if self._backend == "cloud":
+            scene_image = _extract_scene_image(snap)
+            if scene_image is not None:
+                png_bytes = _to_png_bytes(scene_image)
+                if png_bytes is not None:
+                    parts.append(types.Part.from_bytes(data=png_bytes, mime_type="image/png"))
+
+        message = types.Content(role="user", parts=parts)
+
+        # Track user message in parallel history
+        user_text = "\n\n".join(text_parts)
+        self._msg_history.append("user", user_text)
 
         # Run the agent and extract the final response text.
         last_text = ""
@@ -187,6 +276,13 @@ class PlannerAgent:
                         last_text = part.text
 
         self._last_reasoning = last_text
+
+        # Track model response
+        if last_text:
+            self._msg_history.append("model", last_text)
+
+        # Read compaction result from plugin (set by after_run_callback)
+        self._last_compaction = self._compaction_plugin.last_compaction
 
         commands = list(self._ctx.commands)
 
@@ -223,16 +319,19 @@ def make_decide_fn(
     model_name: str = "gpt-oss:20b",
     base_url: str = "http://localhost:11434",
     prompts_dir: Path | str | None = None,
+    backend: str = "local",
 ) -> DecideFn:
     """Factory that creates a PlannerAgent and returns its decide method.
 
     Usage::
 
         from halo.services.planner_service.agent import make_decide_fn
-        decide = make_decide_fn()          # defaults to local Ollama
+        decide = make_decide_fn()                        # local Ollama
+        decide = make_decide_fn(backend="cloud",
+                                model_name="gemini-2.5-flash")  # Gemini
         svc = PlannerService("arm0", runtime, decide)
     """
     if prompts_dir is None:
         prompts_dir = Path(__file__).parents[3] / "configs" / "planner"
-    agent = PlannerAgent(model_name, base_url, Path(prompts_dir))
+    agent = PlannerAgent(model_name, base_url, Path(prompts_dir), backend=backend)
     return agent.decide

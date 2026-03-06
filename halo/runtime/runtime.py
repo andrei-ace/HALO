@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from halo.contracts.commands import CommandAck, CommandEnvelope
+from halo.contracts.events import EventType
 from halo.contracts.snapshots import PlannerSnapshot
 from halo.runtime.command_router import CommandRouter
 from halo.runtime.event_bus import EventBus
 from halo.runtime.state_store import RuntimeStateStore
+
+if TYPE_CHECKING:
+    from halo.cognitive.lease import LeaseManager
 
 
 class HALORuntime:
@@ -22,10 +28,15 @@ class HALORuntime:
         q = rt.bus.subscribe("arm0")
     """
 
-    def __init__(self) -> None:
+    def __init__(self, lease_manager: LeaseManager | None = None) -> None:
         self.store = RuntimeStateStore()
         self.bus = EventBus()
-        self.router = CommandRouter(self.store, self.bus, self.get_latest_runtime_snapshot)
+        self.router = CommandRouter(
+            self.store,
+            self.bus,
+            self.get_latest_runtime_snapshot,
+            lease_manager=lease_manager,
+        )
 
     def register_arm(self, arm_id: str) -> None:
         """Register an arm. Must be called before any arm-specific operations."""
@@ -41,6 +52,7 @@ class HALORuntime:
         one snapshot — the latest.
         """
         recent = self.bus.get_recent_events(arm_id)
+        recent = [e for e in recent if e.type not in (EventType.BACKEND_SWITCHED, EventType.SESSION_COMPACTED)]
         return await self.store.build_and_cache_snapshot(arm_id, recent)
 
     async def submit_command(self, cmd: CommandEnvelope) -> CommandAck:
