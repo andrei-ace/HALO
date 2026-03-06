@@ -81,6 +81,13 @@ class TrackFSM:
 
         if phase == PhaseId.ACQUIRING:
             if elapsed >= self._config.acquiring_timeout_ms:
+                # Distinguish: tracker running but wrong handle vs. tracker never locked on
+                if (
+                    perception.tracking_status == TrackingStatus.TRACKING
+                    and target is not None
+                    and target.handle != self._target_handle
+                ):
+                    return self._fail(now_ms, SkillFailureCode.TARGET_MISMATCH)
                 return self._fail(now_ms, SkillFailureCode.PERCEPTION_LOST)
             if perception.tracking_status != TrackingStatus.TRACKING:
                 return None

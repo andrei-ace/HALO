@@ -122,16 +122,27 @@ operator asked for a manipulation task, keep chaining until it completes.
 Typical manipulation flow: `describe_scene` → (SCENE_DESCRIBED) →
 `start_skill(TRACK, X)` → (SKILL_SUCCEEDED) → `start_skill(PICK, X)`.
 
-**If tracking fails** (TRACK skill fails with `PERCEPTION_LOST` via
-SKILL_FAILED), the perception system already retried internally (3 VLM+tracker
-attempts). Do **not** immediately re-issue `start_skill(TRACK, ...)` for the
-same handle — that creates an infinite retry loop. Instead:
-1. Try `describe_scene` to get a fresh view of the workspace.
-2. If the scene description shows the object with a different handle, use the
-   new handle with `start_skill(TRACK, new_handle)`.
-3. If the object is still not found after one `describe_scene` +
-   `start_skill(TRACK, ...)` cycle, **stop and report to the operator** — do
-   not keep retrying.
+**If tracking fails** (TRACK skill fails via SKILL_FAILED):
+
+- `PERCEPTION_LOST`: the tracker never locked on — the object was not found.
+  The perception system already retried internally (3 VLM+tracker attempts).
+  Do **not** immediately re-issue `start_skill(TRACK, ...)` for the same
+  handle — that creates an infinite retry loop. Instead:
+  1. Try `describe_scene` to get a fresh view of the workspace.
+  2. If the scene description shows the object with a different handle, use the
+     new handle with `start_skill(TRACK, new_handle)`.
+  3. If the object is still not found after one `describe_scene` +
+     `start_skill(TRACK, ...)` cycle, **stop and report to the operator** — do
+     not keep retrying.
+
+- `TARGET_MISMATCH`: the tracker is running and healthy, but locked onto the
+  wrong object (handle doesn't match). The requested object may have been
+  renamed by the VLM or is no longer visible under that handle. Do **not**
+  retry with the same handle. Instead:
+  1. Call `describe_scene` to get fresh handles.
+  2. Use the updated handle with `start_skill(TRACK, new_handle)`.
+  3. If the object is still not found after one cycle, **stop and report to
+     the operator**.
 
 ## Using scene descriptions
 

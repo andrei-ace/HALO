@@ -79,6 +79,23 @@ def test_timeout_perception_lost():
     assert fsm.failure_code == SkillFailureCode.PERCEPTION_LOST
 
 
+def test_timeout_target_mismatch():
+    """Tracker is TRACKING with wrong handle at timeout → TARGET_MISMATCH."""
+    fsm = TrackFSM(_CFG)
+    fsm.start(1000, "cube-1")
+    # Tracking established but for wrong handle, then timeout fires
+    old = fsm.advance(
+        1000 + _CFG.acquiring_timeout_ms,
+        _target("cube-2"),
+        _tracking_perception(),
+        _act(),
+    )
+    assert old == PhaseId.ACQUIRING
+    assert fsm.phase == PhaseId.DONE
+    assert fsm.outcome == SkillOutcomeState.FAILURE
+    assert fsm.failure_code == SkillFailureCode.TARGET_MISMATCH
+
+
 def test_handle_mismatch_blocks():
     fsm = TrackFSM(_CFG)
     fsm.start(1000, "cube-1")
