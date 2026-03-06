@@ -56,6 +56,7 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
         "commands": [command_envelope_to_dict(c) for c in commands],
         "reasoning": reasoning,
         "compacted": compacted,
+        "token_usage": session.agent.last_token_usage,
     }
     if compacted and compaction is not None:
         result["compaction"] = {
@@ -88,7 +89,9 @@ async def vlm_scene(
         img = image_bytes  # fallback: pass raw bytes
 
     scene = await vlm_fn(arm_id, img, known_handles, target_handle=target_handle)
-    return vlm_scene_to_dict(scene)
+    result = vlm_scene_to_dict(scene)
+    result["token_usage"] = scene.token_usage
+    return result
 
 
 @app.post("/warm-up", dependencies=[Depends(verify_api_key)])

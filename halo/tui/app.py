@@ -115,7 +115,6 @@ _DATA = dict(
         ("14:32:06", "SKILL_STARTED run-9"),
         ("14:32:07", "COMMAND_ACCEPTED START_SKILL"),
         ("14:32:08", "PERCEPTION_RECOVERED"),
-        ("14:32:08", "PHASE_ENTER PREGRASP_ALIGN"),
     ],
 )
 
@@ -220,12 +219,9 @@ def _format_event(evt: object) -> str:
     """Convert an EventEnvelope to a concise display string."""
     name = str(getattr(evt, "type", "?"))
     data = getattr(evt, "data", {}) or {}
-    phase = data.get("phase", "")
     run_id = data.get("skill_run_id", "")
     reason = data.get("reason", "")
     cmd_type = data.get("command_type", "")
-    if name in ("PHASE_ENTER", "PHASE_EXIT") and phase:
-        return f"{name} {phase}"
     if name == "SKILL_STARTED" and run_id:
         return f"{name} {run_id}"
     if name in ("SKILL_FAILED", "SAFETY_REFLEX_TRIGGERED") and reason:
@@ -1533,14 +1529,16 @@ class HALOApp(App):
                             )
                         except Exception:
                             pass
-                try:
-                    await events_panel.append_event(evt)
-                except Exception:
-                    pass  # DOM error must not kill the listener
+                # Skip high-frequency FSM events from TUI panel (still logged above)
+                evt_type_name = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
+                if evt_type_name not in ("PHASE_ENTER", "PHASE_EXIT"):
+                    try:
+                        await events_panel.append_event(evt)
+                    except Exception:
+                        pass  # DOM error must not kill the listener
                 # Wake the agent — it reads event details from the snapshot
-                evt_type = getattr(evt.type, "value", str(evt.type))  # type: ignore[union-attr]
-                if self._agent_queue is not None and evt_type in self._AGENT_WAKE_EVENTS:
-                    self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type}]"))
+                if self._agent_queue is not None and evt_type_name in self._AGENT_WAKE_EVENTS:
+                    self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type_name}]"))
         except asyncio.CancelledError:
             pass
 
@@ -1609,6 +1607,7 @@ class HALOApp(App):
 
             # Log interaction
             if self._run_logger:
+                token_usage = getattr(self._agent, "last_token_usage", None) or {}
                 self._run_logger.log_interaction(
                     arm_id=self._arm_id,
                     operator_msg=msg,
@@ -1617,6 +1616,7 @@ class HALOApp(App):
                     acks=[{"id": a.command_id, "status": a.status.value} for _, a in acks],
                     reasoning=reasoning,
                     inference_ms=inference_ms,
+                    token_usage=token_usage,
                 )
 
             # Update thinking widget

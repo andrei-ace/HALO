@@ -6,7 +6,7 @@ known_handles?, target_handle?) -> VlmScene``.
 Usage::
 
     from halo.services.target_perception_service.vlm_fn import make_vlm_fn
-    vlm_fn = make_vlm_fn(provider="gemini", model="gemini-2.5-flash")
+    vlm_fn = make_vlm_fn(provider="gemini", model="gemini-3.1-flash-lite-preview")
     vlm_fn = make_vlm_fn(provider="ollama", model="qwen2.5vl:3b")
 """
 
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import io
 import json
 import os
@@ -139,7 +140,8 @@ def _extract_json(text: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _call_gemini_sync(api_key: str, model: str, prompt: str, pil_image: Image.Image) -> dict:
+def _call_gemini_sync(api_key: str, model: str, prompt: str, pil_image: Image.Image) -> tuple[dict, dict]:
+    """Call Gemini VLM. Returns (parsed_json, token_usage_dict)."""
     from google import genai
 
     client = genai.Client(api_key=api_key)
@@ -151,10 +153,22 @@ def _call_gemini_sync(api_key: str, model: str, prompt: str, pil_image: Image.Im
             "response_json_schema": _GEMINI_SCHEMA,
         },
     )
-    return _extract_json(response.text or "")
+    token_usage: dict[str, int] = {}
+    um = getattr(response, "usage_metadata", None)
+    if um is not None:
+        if getattr(um, "prompt_token_count", None) is not None:
+            token_usage["prompt_tokens"] = um.prompt_token_count
+        if getattr(um, "candidates_token_count", None) is not None:
+            token_usage["completion_tokens"] = um.candidates_token_count
+        if getattr(um, "total_token_count", None) is not None:
+            token_usage["total_tokens"] = um.total_token_count
+        if getattr(um, "cached_content_token_count", None):
+            token_usage["cached_tokens"] = um.cached_content_token_count
+    return _extract_json(response.text or ""), token_usage
 
 
-def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) -> dict:
+def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) -> tuple[dict, dict]:
+    """Call Ollama VLM. Returns (full_response_dict, token_usage_dict)."""
     payload = json.dumps(
         {
             "model": model,
@@ -170,7 +184,15 @@ def _call_ollama_sync(base_url: str, model: str, prompt: str, image_b64: str) ->
         headers={"Content-Type": "application/json"},
     )
     with urllib.request.urlopen(req, timeout=120) as resp:
-        return json.loads(resp.read())
+        result = json.loads(resp.read())
+    token_usage: dict[str, int] = {}
+    if result.get("prompt_eval_count") is not None:
+        token_usage["prompt_tokens"] = result["prompt_eval_count"]
+    if result.get("eval_count") is not None:
+        token_usage["completion_tokens"] = result["eval_count"]
+    if token_usage.get("prompt_tokens") is not None and token_usage.get("completion_tokens") is not None:
+        token_usage["total_tokens"] = token_usage["prompt_tokens"] + token_usage["completion_tokens"]
+    return result, token_usage
 
 
 # ---------------------------------------------------------------------------
@@ -281,14 +303,19 @@ def make_vlm_fn(
 
         t0 = time.monotonic()
         raw: dict = {}
+        vlm_token_usage: dict[str, int] = {}
         error: str | None = None
 
         try:
             if is_gemini:
-                raw = await asyncio.to_thread(_call_gemini_sync, resolved_key, model, effective_prompt, pil_image)
+                raw, vlm_token_usage = await asyncio.to_thread(
+                    _call_gemini_sync, resolved_key, model, effective_prompt, pil_image
+                )
             else:
                 image_b64 = _pil_to_b64(pil_image)
-                result = await asyncio.to_thread(_call_ollama_sync, base_url, model, effective_prompt, image_b64)
+                result, vlm_token_usage = await asyncio.to_thread(
+                    _call_ollama_sync, base_url, model, effective_prompt, image_b64
+                )
                 raw = _extract_json(result.get("response", ""))
         except Exception as exc:
             error = str(exc)
@@ -330,8 +357,11 @@ def make_vlm_fn(
                 error=error,
                 image=image,
                 detections=det_dicts,
+                token_usage=vlm_token_usage,
             )
 
-        return vlm_scene
+        vlm_fn.last_token_usage = vlm_token_usage  # type: ignore[attr-defined]
+        return dataclasses.replace(vlm_scene, token_usage=vlm_token_usage)
 
+    vlm_fn.last_token_usage = {}  # type: ignore[attr-defined]
     return vlm_fn

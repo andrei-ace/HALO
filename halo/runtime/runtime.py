@@ -52,7 +52,17 @@ class HALORuntime:
         one snapshot — the latest.
         """
         recent = self.bus.get_recent_events(arm_id)
-        recent = [e for e in recent if e.type not in (EventType.BACKEND_SWITCHED, EventType.SESSION_COMPACTED)]
+        recent = [
+            e
+            for e in recent
+            if e.type
+            not in (
+                EventType.BACKEND_SWITCHED,
+                EventType.SESSION_COMPACTED,
+                EventType.PHASE_ENTER,
+                EventType.PHASE_EXIT,
+            )
+        ]
         return await self.store.build_and_cache_snapshot(arm_id, recent)
 
     async def submit_command(self, cmd: CommandEnvelope) -> CommandAck:
