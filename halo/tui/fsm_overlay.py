@@ -39,25 +39,40 @@ _MARGIN_Y = 38
 _SPACING_Y = 50
 _HEADER_H = 24
 
-_RECOVERY_NODES = {"RECOVER_RETRY_APPROACH", "RECOVER_REGRASP", "RECOVER_ABORT"}
+
+def _is_recovery(name: str) -> bool:
+    """Recovery nodes follow the RECOVER_* naming convention."""
+    return name.startswith("RECOVER_")
 
 
-# Canonical main-path order for PICK.  Nodes not listed here are placed by
-# phase_id fallback.  DONE is always forced to the rightmost column.
-_PICK_MAIN_ORDER = [
-    "SELECT_GRASP",
-    "PLAN_APPROACH",
-    "MOVE_PREGRASP",
-    "VISUAL_ALIGN",
-    "EXECUTE_APPROACH",
-    "CLOSE_GRIPPER",
-    "VERIFY_GRASP",
-    "LIFT",
-]
-
-_TRACK_MAIN_ORDER = [
-    "ACQUIRING",
-]
+def _topo_sort_main_path(
+    nodes: list[dict],
+    edges: list[dict],
+) -> list[str]:
+    """Topological sort of main-path (non-recovery, non-DONE) nodes."""
+    main_names = {n["name"] for n in nodes if n["name"] != "DONE" and not _is_recovery(n["name"])}
+    # Build in-degree map and adjacency from edges between main-path nodes
+    in_degree = {name: 0 for name in main_names}
+    adj: dict[str, list[str]] = {name: [] for name in main_names}
+    for e in edges:
+        s, t = e["source"], e["target"]
+        if s in main_names and t in main_names:
+            adj[s].append(t)
+            in_degree[t] += 1
+    # Kahn's algorithm
+    queue = sorted(n for n in main_names if in_degree[n] == 0)
+    result: list[str] = []
+    while queue:
+        node = queue.pop(0)
+        result.append(node)
+        for nb in sorted(adj[node]):
+            in_degree[nb] -= 1
+            if in_degree[nb] == 0:
+                queue.append(nb)
+    # Append any nodes not reached (e.g. cycles in a malformed graph)
+    for name in sorted(main_names - set(result)):
+        result.append(name)
+    return result
 
 
 def _compute_layout(
@@ -78,19 +93,7 @@ def _compute_layout(
 
     node_map = {n["name"]: n for n in nodes}
 
-    # Determine main-path order from skill-specific list, falling back to
-    # phase_id sort for unknown skills.
-    main_path: list[str]
-    if any(n["name"] == "SELECT_GRASP" for n in nodes):
-        main_path = [n for n in _PICK_MAIN_ORDER if n in node_map]
-    elif any(n["name"] == "ACQUIRING" for n in nodes):
-        main_path = [n for n in _TRACK_MAIN_ORDER if n in node_map]
-    else:
-        # Fallback: sort by phase_id, exclude DONE and recovery
-        main_path = sorted(
-            (n["name"] for n in nodes if n["name"] != "DONE" and n["name"] not in _RECOVERY_NODES),
-            key=lambda name: node_map[name].get("phase_id", 999),
-        )
+    main_path = _topo_sort_main_path(nodes, edges)
 
     # Assign layers: main path gets consecutive columns 0..N-1
     layers: dict[str, int] = {}
@@ -107,7 +110,7 @@ def _compute_layout(
         name = n["name"]
         if name in layers or name == "DONE":
             continue
-        if name in _RECOVERY_NODES:
+        if _is_recovery(name):
             # Find the earliest source column that feeds into this recovery node
             sources = edge_sources.get(name, [])
             source_layers = [layers[s] for s in sources if s in layers]
@@ -136,8 +139,8 @@ def _compute_layout(
     spacing_x = avail_w // max(num_layers - 1, 1) if num_layers > 1 else 0
 
     for layer_idx, names in layer_groups.items():
-        main = [n for n in names if n not in _RECOVERY_NODES]
-        recovery = [n for n in names if n in _RECOVERY_NODES]
+        main = [n for n in names if not _is_recovery(n)]
+        recovery = [n for n in names if _is_recovery(n)]
         cx = _MARGIN_X + _NODE_W // 2 + layer_idx * spacing_x
         # Main row
         for i, name in enumerate(main):
@@ -154,27 +157,23 @@ def _compute_layout(
 # ── Drawing ──────────────────────────────────────────────────────────
 
 
-# Readable short labels for known nodes
-_SHORT_LABELS: dict[str, str] = {
-    "SELECT_GRASP": "SEL GRASP",
-    "PLAN_APPROACH": "PLAN APPR",
-    "MOVE_PREGRASP": "MOVE PRE",
-    "VISUAL_ALIGN": "VIS ALIGN",
-    "EXECUTE_APPROACH": "EXEC APPR",
-    "CLOSE_GRIPPER": "CLOSE GRIP",
-    "VERIFY_GRASP": "VERIFY",
-    "LIFT": "LIFT",
-    "DONE": "DONE",
-    "ACQUIRING": "ACQUIRING",
-    "RECOVER_RETRY_APPROACH": "RETRY APPR",
-    "RECOVER_REGRASP": "REGRASP",
-    "RECOVER_ABORT": "ABORT",
-}
+_LABEL_MAX_LEN = 12
 
 
 def _short_label(name: str) -> str:
-    """Return a compact display label for a node."""
-    return _SHORT_LABELS.get(name, name.replace("_", " ")[:12])
+    """Return a compact display label for a node, auto-shortened to fit."""
+    # Strip RECOVER_ prefix for recovery nodes
+    display = name.removeprefix("RECOVER_")
+    words = display.split("_")
+    label = " ".join(words)
+    if len(label) <= _LABEL_MAX_LEN:
+        return label
+    # Progressively cap word length until it fits
+    for cap in range(5, 2, -1):
+        label = " ".join(w[:cap] if len(w) > cap else w for w in words)
+        if len(label) <= _LABEL_MAX_LEN:
+            return label
+    return label[:_LABEL_MAX_LEN]
 
 
 def _draw_arrowhead(
@@ -215,7 +214,7 @@ def _edge_color(
     """Return (color, thickness) for an edge."""
     if not taken:
         return _EDGE_DIM, 1
-    if tgt in _RECOVERY_NODES or src in _RECOVERY_NODES:
+    if _is_recovery(tgt) or _is_recovery(src):
         return _EDGE_RECOVERY, 2
     if tgt == "DONE" and label in ("timeout", "max_retries"):
         return _EDGE_FAIL, 2
@@ -405,7 +404,8 @@ def render_fsm_overlay(fsm_dict: dict | None, width: int, height: int = _DEFAULT
     _draw_header(canvas, skill_name, target_handle, outcome, failure_code, width)
 
     # Compute or retrieve cached layout
-    cache_key = (skill_name or "", len(nodes), width)
+    variant = fsm_dict.get("variant", "")
+    cache_key = (skill_name or "", variant, len(nodes), width)
     if cache_key in _layout_cache:
         positions, layer_map = _layout_cache[cache_key]
     else:
