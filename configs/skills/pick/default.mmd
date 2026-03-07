@@ -5,6 +5,7 @@ stateDiagram-v2
     PLAN_APPROACH --> MOVE_PREGRASP : pass_through
     MOVE_PREGRASP --> VISUAL_ALIGN : close_enough
     MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : target_lost
+    MOVE_PREGRASP --> EXECUTE_APPROACH : skip_visual_align
     MOVE_PREGRASP --> DONE : timeout
     VISUAL_ALIGN --> EXECUTE_APPROACH : close_enough
     VISUAL_ALIGN --> RECOVER_RETRY_APPROACH : target_lost

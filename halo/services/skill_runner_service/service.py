@@ -38,6 +38,7 @@ PushFn = Callable[[ActionChunk], Awaitable[None]]
 # --- Sim mode types ---
 
 StartPickFn = Callable[[str, str], Awaitable[dict]]  # (arm_id, target_body) → server response
+AbortPickFn = Callable[[], Awaitable[dict]]  # () → server response
 SimPhaseFn = Callable[[], tuple[int, bool]]  # () → (phase_id, done)
 
 
@@ -66,6 +67,7 @@ class SkillRunnerService:
         config: SkillRunnerConfig = SkillRunnerConfig(),
         *,
         start_pick_fn: StartPickFn | None = None,
+        abort_pick_fn: AbortPickFn | None = None,
         sim_phase_fn: SimPhaseFn | None = None,
         registry: SkillRegistry | None = None,
     ) -> None:
@@ -92,6 +94,7 @@ class SkillRunnerService:
 
         # Sim mode callables
         self._start_pick_fn = start_pick_fn
+        self._abort_pick_fn = abort_pick_fn
         self._sim_phase_fn = sim_phase_fn
 
         # Engine-based FSM
@@ -197,6 +200,13 @@ class SkillRunnerService:
         """Abort the current skill run (idempotent if not active)."""
         if self._active_run is None or not self._active_run.is_active:
             return
+
+        # Stop the sim trajectory first so the arm freezes immediately
+        if self._sim_mode and self._abort_pick_fn is not None and self._sim_pick_triggered:
+            try:
+                await self._abort_pick_fn()
+            except Exception:
+                logger.warning("abort_pick_fn failed", exc_info=True)
 
         now_ms = int(time.monotonic() * 1000)
         old_phase = self._active_run.phase_id

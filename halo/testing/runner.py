@@ -23,7 +23,7 @@ from halo.services.control_service.service import ControlService
 from halo.services.planner_service.config import PlannerServiceConfig
 from halo.services.planner_service.service import PlannerService
 from halo.services.skill_runner_service.config import SkillRunnerConfig
-from halo.services.skill_runner_service.service import SimPhaseFn, SkillRunnerService, StartPickFn
+from halo.services.skill_runner_service.service import AbortPickFn, SimPhaseFn, SkillRunnerService, StartPickFn
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 from halo.services.target_perception_service.service import TargetPerceptionService
 from halo.testing.event_recorder import EventRecorder
@@ -91,6 +91,7 @@ class HeadlessRunner:
         push_fn: PushFn | None = None,
         # SkillRunner (Sim mode)
         start_pick_fn: StartPickFn | None = None,
+        abort_pick_fn: AbortPickFn | None = None,
         sim_phase_fn: SimPhaseFn | None = None,
         # Control
         apply_fn: ApplyFn | None = None,
@@ -133,6 +134,7 @@ class HeadlessRunner:
                     runtime=self.runtime,
                     config=config.skill_runner_config,
                     start_pick_fn=start_pick_fn,
+                    abort_pick_fn=abort_pick_fn,
                     sim_phase_fn=sim_phase_fn,
                 )
             else:
