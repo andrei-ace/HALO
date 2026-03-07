@@ -245,10 +245,10 @@ def test_acquiring_timeout_perception_lost():
     h = AcquiringHandler()
     result = h.evaluate(
         _ctx(
-            elapsed_ms=10000,
+            elapsed_ms=30000,
             target=None,
             perception=_perception(TrackingStatus.IDLE),
-            config=_cfg(acquiring_timeout_ms=10000),
+            config=_cfg(acquiring_timeout_ms=10000, acquiring_retry_budget=3),
         )
     )
     assert result.fail_code == SkillFailureCode.PERCEPTION_LOST
@@ -258,14 +258,28 @@ def test_acquiring_timeout_target_mismatch():
     h = AcquiringHandler()
     result = h.evaluate(
         _ctx(
-            elapsed_ms=10000,
+            elapsed_ms=30000,
             target=_target(handle="wrong"),
             perception=_perception(TrackingStatus.TRACKING),
-            config=_cfg(acquiring_timeout_ms=10000),
+            config=_cfg(acquiring_timeout_ms=10000, acquiring_retry_budget=3),
             target_handle="obj-1",
         )
     )
     assert result.fail_code == SkillFailureCode.TARGET_MISMATCH
+
+
+def test_acquiring_stays_before_retry_budget_exhausted():
+    h = AcquiringHandler()
+    result = h.evaluate(
+        _ctx(
+            elapsed_ms=29999,
+            target=None,
+            perception=_perception(TrackingStatus.REACQUIRING),
+            config=_cfg(acquiring_timeout_ms=10000, acquiring_retry_budget=3),
+        )
+    )
+    assert result.transition_to is None
+    assert result.fail_code is None
 
 
 # --- ReacquireFailedGuard ---

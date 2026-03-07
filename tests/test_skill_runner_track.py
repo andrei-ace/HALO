@@ -1,5 +1,7 @@
 """Service tests for SkillRunnerService with TRACK skill."""
 
+import asyncio
+
 import pytest
 
 from halo.contracts.enums import (
@@ -82,7 +84,7 @@ async def test_track_succeeds_when_tracking_established(rt: HALORuntime):
 
 async def test_track_fails_on_timeout(rt: HALORuntime):
     """TRACK skill fails with PERCEPTION_LOST on timeout."""
-    cfg = SkillRunnerConfig(acquiring_timeout_ms=0)  # instant timeout
+    cfg = SkillRunnerConfig(acquiring_timeout_ms=0, acquiring_retry_budget=1)  # instant timeout
     svc = _make_svc(rt, config=cfg)
     q = rt.bus.subscribe(ARM)
 
@@ -107,6 +109,37 @@ async def test_track_fails_on_timeout(rt: HALORuntime):
     assert len(failed) == 1
 
     rt.bus.unsubscribe(ARM, q)
+
+
+async def test_track_waits_for_retry_budget_before_failing(rt: HALORuntime):
+    """TRACK remains active until the full acquisition retry budget is consumed."""
+    cfg = SkillRunnerConfig(acquiring_timeout_ms=100, acquiring_retry_budget=3)
+    svc = _make_svc(rt, config=cfg)
+
+    await seed_store(
+        rt,
+        ARM,
+        target=None,
+        perception=make_perception(tracking_status=TrackingStatus.REACQUIRING),
+    )
+
+    await svc.start_skill(SkillName.TRACK, "run-1", "cube-1")
+    await svc.tick()
+    assert svc._fsm.phase == PhaseId.ACQUIRING
+    assert svc._fsm.outcome == SkillOutcomeState.IN_PROGRESS
+
+    await seed_store(
+        rt,
+        ARM,
+        target=None,
+        perception=make_perception(tracking_status=TrackingStatus.REACQUIRING),
+    )
+    await asyncio.sleep(0.31)
+    await svc.tick()
+
+    assert svc._fsm.phase == PhaseId.DONE
+    assert svc._fsm.outcome == SkillOutcomeState.FAILURE
+    assert svc._fsm.failure_code == SkillFailureCode.PERCEPTION_LOST
 
 
 async def test_track_does_not_update_held_object_handle(rt: HALORuntime):

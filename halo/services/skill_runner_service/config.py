@@ -17,7 +17,8 @@ class SkillRunnerConfig:
 
     # Per-phase timeouts
     select_grasp_timeout_ms: int = 10_000  # PICK: waits for tracking to establish
-    acquiring_timeout_ms: int = 10_000  # TRACK: waits for tracking to establish
+    acquiring_timeout_ms: int = 10_000  # TRACK: per-attempt acquisition wait; total default budget is 30s
+    acquiring_retry_budget: int = 3  # TRACK: allow multiple acquisition attempts before failing
     plan_approach_timeout_ms: int = 5_000
     move_pregrasp_timeout_ms: int = 10_000
     visual_align_timeout_ms: int = 5_000

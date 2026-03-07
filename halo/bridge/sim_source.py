@@ -63,6 +63,7 @@ class SimSource:
         self._cond = threading.Condition()
         self._frame_queue: deque[np.ndarray] = deque(maxlen=max_queue_size)
         self._latest_frame: np.ndarray | None = None
+        self._latest_wrist_frame: np.ndarray | None = None
         self._latest_qpos: np.ndarray | None = None
         self._latest_qvel: np.ndarray | None = None
         self._latest_phase_id: int = 0
@@ -113,6 +114,12 @@ class SimSource:
         """Most recent frame (BGR HWC numpy array), or None before first frame."""
         with self._cond:
             return self._latest_frame
+
+    @property
+    def latest_wrist_frame(self) -> np.ndarray | None:
+        """Most recent wrist camera frame (BGR HWC numpy array), or None."""
+        with self._cond:
+            return self._latest_wrist_frame
 
     @property
     def latest_qpos(self) -> np.ndarray | None:
@@ -180,8 +187,14 @@ class SimSource:
                 rgb_scene = telemetry["rgb_scene"]
                 bgr = cv2.cvtColor(rgb_scene, cv2.COLOR_RGB2BGR)
 
+                wrist_bgr = None
+                rgb_wrist = telemetry.get("rgb_wrist")
+                if rgb_wrist is not None:
+                    wrist_bgr = cv2.cvtColor(rgb_wrist, cv2.COLOR_RGB2BGR)
+
                 with self._cond:
                     self._latest_frame = bgr
+                    self._latest_wrist_frame = wrist_bgr
                     self._latest_qpos = telemetry["qpos"]
                     self._latest_qvel = telemetry["qvel"]
                     self._latest_phase_id = telemetry.get("phase_id", 0)

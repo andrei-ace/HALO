@@ -217,7 +217,8 @@ class RecoverRetryApproachHandler:
 
 class AcquiringHandler:
     def evaluate(self, ctx: StateContext) -> HandlerResult:
-        if ctx.elapsed_ms >= ctx.config.acquiring_timeout_ms:
+        timeout_ms = ctx.config.acquiring_timeout_ms * max(1, ctx.config.acquiring_retry_budget)
+        if ctx.elapsed_ms >= timeout_ms:
             if (
                 ctx.perception.tracking_status == TrackingStatus.TRACKING
                 and ctx.target is not None

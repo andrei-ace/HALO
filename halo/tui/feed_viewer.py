@@ -32,7 +32,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from halo.contracts.enums import PerceptionFailureCode, TrackingStatus
+from halo.contracts.enums import WRIST_ACTIVE_PHASES, PerceptionFailureCode, PhaseId, TrackingStatus
 from halo.contracts.snapshots import PerceptionInfo, TargetInfo
 
 _DEFAULT_VIDEO = Path(__file__).parents[2] / "data" / "video.mp4"
@@ -143,6 +143,26 @@ def _draw_annotations(
     return frame
 
 
+def _composite_wrist_pip(
+    frame: np.ndarray,
+    wrist_thumb: np.ndarray | None,
+    margin: int = 8,
+) -> None:
+    """Overlay a pre-scaled wrist thumbnail in the bottom-right corner.
+
+    *wrist_thumb* should already be resized; pass ``None`` to skip the overlay.
+    """
+    if wrist_thumb is None:
+        return
+
+    th, tw = wrist_thumb.shape[:2]
+    fh, fw = frame.shape[:2]
+    y0 = fh - th - margin
+    x0 = fw - tw - margin
+    if y0 >= 0 and x0 >= 0:
+        frame[y0 : y0 + th, x0 : x0 + tw] = wrist_thumb
+
+
 # ── Subprocess entry point ──────────────────────────────────────────
 
 
@@ -184,6 +204,7 @@ def _viewer_main(
     perception: PerceptionInfo | None = None
     fsm_dict: dict | None = None
     frame: np.ndarray | None = None
+    wrist_thumb: np.ndarray | None = None
     frame_delay_ms = max(1, int(1000 / _TARGET_FPS))
 
     def _stop_requested() -> bool:
@@ -197,7 +218,12 @@ def _viewer_main(
                     msg = data_conn.recv()
                 except EOFError:
                     break
-                if isinstance(msg, tuple) and len(msg) == 4:
+                if isinstance(msg, tuple) and len(msg) == 5:
+                    new_frame, new_wrist, target, perception, fsm_dict = msg
+                    if new_frame is not None:
+                        frame = new_frame
+                    wrist_thumb = new_wrist
+                elif isinstance(msg, tuple) and len(msg) == 4:
                     new_frame, target, perception, fsm_dict = msg
                     if new_frame is not None:
                         frame = new_frame
@@ -222,6 +248,7 @@ def _viewer_main(
 
             display = frame.copy()
             _draw_annotations(display, target, perception)
+            _composite_wrist_pip(display, wrist_thumb)
 
             # Render FSM overlay below the camera frame
             fw = display.shape[1]
@@ -428,6 +455,27 @@ class FeedViewer:
         self._cached_vm_dict = current
         return current
 
+    _WRIST_PIP_SCALE = 0.4
+
+    def _wrist_thumb_if_active(self) -> np.ndarray | None:
+        """Return a pre-scaled wrist thumbnail if in a wrist-active phase, else None."""
+        src = self._video_source
+        wrist = getattr(src, "latest_wrist_frame", None)
+        if wrist is None:
+            return None
+        phase_id = getattr(src, "latest_phase_id", 0)
+        if getattr(src, "latest_done", False):
+            return None
+        try:
+            phase = PhaseId(phase_id)
+        except ValueError:
+            return None
+        if phase not in WRIST_ACTIVE_PHASES:
+            return None
+        wh, ww = wrist.shape[:2]
+        th, tw = int(wh * self._WRIST_PIP_SCALE), int(ww * self._WRIST_PIP_SCALE)
+        return cv2.resize(wrist, (tw, th), interpolation=cv2.INTER_AREA)
+
     def _push_state(self) -> None:
         """Periodically send the latest state (and frame) to the child process."""
         while not self._pusher_stop.is_set():
@@ -442,11 +490,12 @@ class FeedViewer:
                 try:
                     if self._video_source is not None:
                         frame = self._video_source.latest_frame  # type: ignore[union-attr]
+                        wrist_thumb = self._wrist_thumb_if_active()
                         if frame is not None:
-                            self._data_conn.send((frame, target, perception, fsm_dict))
+                            self._data_conn.send((frame, wrist_thumb, target, perception, fsm_dict))
                         # Skip send if no frame yet (source still starting)
                     else:
-                        self._data_conn.send((None, target, perception, fsm_dict))
+                        self._data_conn.send((None, None, target, perception, fsm_dict))
                 except (BrokenPipeError, OSError):
                     break
 
