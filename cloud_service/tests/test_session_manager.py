@@ -1,4 +1,4 @@
-"""Unit tests for SessionManager — per-arm session management."""
+"""Unit tests for SessionManager — per-arm session management with sync protocol."""
 
 from __future__ import annotations
 
@@ -38,6 +38,7 @@ def _make_firestore_doc(**overrides) -> dict:
         "pending_operator_instruction": None,
         "next_cursor": 1,
         "entries": [],
+        "last_msg_id": None,
     }
     doc.update(overrides)
     return doc
@@ -127,94 +128,6 @@ async def test_eviction_at_capacity(prompts_dir: Path, mock_firestore_store: Mag
 
 
 @pytest.mark.asyncio
-async def test_warm_up_session(mgr: SessionManager):
-    state_dict = {
-        "ts_ms": 100,
-        "epoch": 1,
-        "cursor": 2,
-        "active_target_handle": "cube",
-        "held_object_handle": None,
-        "known_scene_handles": ["cube"],
-        "last_scene_description": "table",
-        "pending_operator_instruction": None,
-        "recent_decisions": ["d1"],
-        "last_snapshot_id": "snap-1",
-        "last_arm_id": "arm0",
-        "last_skill_phase": None,
-        "last_skill_name": None,
-        "last_outcome_state": None,
-    }
-    journal = [
-        {
-            "cursor": 0,
-            "ts_ms": 10,
-            "epoch": 1,
-            "backend": "local",
-            "entry_type": "decision",
-            "summary": "d0",
-            "data": {},
-        },
-        {
-            "cursor": 1,
-            "ts_ms": 20,
-            "epoch": 1,
-            "backend": "local",
-            "entry_type": "scene",
-            "summary": "table with cube",
-            "data": {"handles": ["cube"]},
-        },
-    ]
-
-    session = await mgr.warm_up_session("arm0", state_dict, journal)
-    assert session.readiness == "ready"
-    assert session.cursor == 1
-    assert session.context_store._active_target_handle == "cube"
-
-
-@pytest.mark.asyncio
-async def test_warm_up_incremental(mgr: SessionManager):
-    """Warm-up with only new journal entries (incremental)."""
-    # First warm-up with 2 entries
-    journal1 = [
-        {
-            "cursor": 0,
-            "ts_ms": 10,
-            "epoch": 1,
-            "backend": "local",
-            "entry_type": "decision",
-            "summary": "d0",
-            "data": {},
-        },
-        {
-            "cursor": 1,
-            "ts_ms": 20,
-            "epoch": 1,
-            "backend": "local",
-            "entry_type": "decision",
-            "summary": "d1",
-            "data": {},
-        },
-    ]
-    session = await mgr.warm_up_session("arm0", None, journal1)
-    assert session.cursor == 1
-
-    # Incremental warm-up with new entries
-    journal2 = [
-        {
-            "cursor": 2,
-            "ts_ms": 30,
-            "epoch": 1,
-            "backend": "local",
-            "entry_type": "decision",
-            "summary": "d2",
-            "data": {},
-        },
-    ]
-    session = await mgr.warm_up_session("arm0", None, journal2)
-    assert session.cursor == 2
-
-
-@pytest.mark.asyncio
 async def test_reset_session(mgr: SessionManager):
     await mgr.get_or_create("arm0")
     await mgr.reset_session("arm0")
@@ -233,6 +146,88 @@ def test_vlm_fn_shared(mgr: SessionManager):
     fn1 = mgr.vlm_fn
     fn2 = mgr.vlm_fn
     assert fn1 is fn2
+
+
+# ---------------------------------------------------------------------------
+# sync_session protocol tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_sync_session_fresh_when_no_last_msg_id(mgr: SessionManager):
+    """last_msg_id=None creates a fresh session."""
+    result = await mgr.sync_session("arm0", last_msg_id=None, msg_history=None)
+    assert result.status == "ok"
+    assert result.session is not None
+    assert result.session.arm_id == "arm0"
+
+
+@pytest.mark.asyncio
+async def test_sync_session_in_memory_match(mgr: SessionManager):
+    """When in-memory session's last msg_id matches, return it directly."""
+    # Create session and add a message to history
+    session = await mgr.get_or_create("arm0")
+    msg_id = session.agent.msg_history.append("user", "hello")
+
+    result = await mgr.sync_session("arm0", last_msg_id=msg_id, msg_history=None)
+    assert result.status == "ok"
+    assert result.session is session
+
+
+@pytest.mark.asyncio
+async def test_sync_session_need_history_when_no_match(mgr: SessionManager):
+    """When nothing matches, return need_history."""
+    result = await mgr.sync_session("arm0", last_msg_id="nonexistent-id", msg_history=None)
+    assert result.status == "need_history"
+    assert result.session is None
+
+
+@pytest.mark.asyncio
+async def test_sync_session_rebuild_from_history(mgr: SessionManager):
+    """When msg_history is provided, rebuild session from it."""
+    history = [
+        {"msg_id": "m1", "role": "user", "text": "Pick the red cube", "ts_ms": 100, "is_summary": False},
+        {"msg_id": "m2", "role": "model", "text": "Starting pick skill", "ts_ms": 200, "is_summary": False},
+    ]
+    result = await mgr.sync_session("arm0", last_msg_id="m1", msg_history=history)
+    assert result.status == "ok"
+    assert result.session is not None
+    # inject_compaction_state should have been called
+    result.session.agent.inject_compaction_state.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sync_session_firestore_match(mgr: SessionManager, mock_firestore_store: MagicMock):
+    """When Firestore doc's last_msg_id matches, rehydrate from it."""
+    mock_firestore_store.load = AsyncMock(
+        return_value=_make_firestore_doc(
+            last_msg_id="msg-abc",
+            cursor=3,
+            msg_history=[
+                {"msg_id": "msg-abc", "role": "user", "text": "hello", "ts_ms": 100, "is_summary": False},
+            ],
+        )
+    )
+
+    result = await mgr.sync_session("arm0", last_msg_id="msg-abc", msg_history=None)
+    assert result.status == "ok"
+    assert result.session is not None
+
+
+@pytest.mark.asyncio
+async def test_sync_session_client_mismatch_creates_fresh(mgr: SessionManager):
+    """Client session mismatch creates a fresh session."""
+    session = await mgr.get_or_create("arm0", client_session_id="old-client")
+    session.agent.msg_history.append("user", "hello")
+
+    result = await mgr.sync_session("arm0", last_msg_id=None, msg_history=None, client_session_id="new-client")
+    assert result.status == "ok"
+    assert result.session is not None
+
+
+# ---------------------------------------------------------------------------
+# Firestore rehydration (via get_or_create)
+# ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
@@ -284,26 +279,6 @@ async def test_get_or_create_rehydrates_from_firestore(mgr: SessionManager, mock
 
 
 @pytest.mark.asyncio
-async def test_warm_up_persists_to_firestore(mgr: SessionManager, mock_firestore_store: MagicMock):
-    """warm_up_session calls Firestore save."""
-    journal = [
-        {
-            "cursor": 0,
-            "ts_ms": 10,
-            "epoch": 1,
-            "backend": "local",
-            "entry_type": "decision",
-            "summary": "d0",
-            "data": {},
-        },
-    ]
-    await mgr.warm_up_session("arm0", None, journal)
-    mock_firestore_store.save.assert_called_once()
-    call_args = mock_firestore_store.save.call_args
-    assert call_args[0][0] == "arm0"
-
-
-@pytest.mark.asyncio
 async def test_reset_deletes_from_firestore(mgr: SessionManager, mock_firestore_store: MagicMock):
     """reset_session calls Firestore delete."""
     await mgr.get_or_create("arm0")
@@ -331,36 +306,6 @@ async def test_rehydrate_preserves_persisted_handoff(mgr: SessionManager, mock_f
     # Persisted handoff should be preserved, not regenerated from empty ContextStore
     assert session.pending_handoff == rich_handoff
     assert "Goal summary" in session.pending_handoff
-
-
-@pytest.mark.asyncio
-async def test_rehydrate_regenerates_handoff_when_none(mgr: SessionManager, mock_firestore_store: MagicMock):
-    """Rehydration always regenerates pending_handoff from ContextStore entries,
-    even when the persisted value is None (consumed by a prior /decide)."""
-    _scene_entry = {
-        "cursor": 0,
-        "ts_ms": 10,
-        "epoch": 1,
-        "backend": "local",
-        "entry_type": "scene",
-        "summary": "table with cube",
-        "data": {"handles": ["cube"]},
-    }
-    mock_firestore_store.load = AsyncMock(
-        return_value=_make_firestore_doc(
-            client_session_id="client-abc",
-            cursor=1,
-            known_scene_handles=["cube"],
-            last_scene_description="table with cube",
-            next_cursor=2,
-            entries=[_scene_entry],
-        )
-    )
-
-    session = await mgr.get_or_create("arm0", client_session_id="client-abc")
-    # Handoff is regenerated, not None
-    assert session.pending_handoff is not None
-    assert "table with cube" in session.pending_handoff
 
 
 @pytest.mark.asyncio
@@ -419,196 +364,6 @@ async def test_rehydrate_resets_agent_on_client_mismatch(mgr: SessionManager, mo
     assert session.cursor == -1
     assert len(session.context_store) == 0
     assert session.pending_handoff is None
-
-
-@pytest.mark.asyncio
-async def test_warm_up_full_reset_clears_agent_history(mgr: SessionManager):
-    """Full warm-up (state + empty journal) resets the agent's ADK session."""
-    _e = {"backend": "local", "entry_type": "decision", "data": {}}
-    journal = [{"cursor": 0, "ts_ms": 10, "epoch": 1, "summary": "d0", **_e}]
-    session = await mgr.warm_up_session("arm0", None, journal)
-    assert session.cursor == 0
-
-    # Fresh client sends state but empty journal — agent session should be reset
-    state = {
-        "ts_ms": 200,
-        "epoch": 2,
-        "cursor": -1,
-        "active_target_handle": "bowl",
-        "held_object_handle": "cube",
-        "known_scene_handles": ["bowl", "cube", "bin"],
-        "last_scene_description": "table with bowl, cube, and bin",
-        "pending_operator_instruction": "Place the cube in the bin after picking the bowl",
-        "recent_decisions": ["Pick the bowl first", "Then place the cube in the bin"],
-        "last_snapshot_id": None,
-        "last_arm_id": "arm0",
-        "last_skill_phase": "VISUAL_ALIGN",
-        "last_skill_name": "pick",
-        "last_outcome_state": "in_progress",
-        "recent_event_summaries": ["TARGET_ACQUIRED bowl", "SKILL_STARTED pick"],
-        "goal_summary": "Pick bowl, then place cube in bin",
-    }
-    session = await mgr.warm_up_session("arm0", state, [])
-    session.agent.reset_session.assert_awaited()
-    assert session.cursor == -1
-    assert len(session.context_store) == 0
-    assert session.context_store._active_target_handle == "bowl"
-    assert session.context_store._held_object_handle == "cube"
-    assert session.context_store._known_scene_handles == ["bowl", "cube", "bin"]
-    assert session.context_store._last_scene_description == "table with bowl, cube, and bin"
-    assert session.context_store._pending_operator_instruction == "Place the cube in the bin after picking the bowl"
-    assert session.pending_handoff is not None
-    assert "Pick the bowl first" in session.pending_handoff
-    assert "TARGET_ACQUIRED bowl" in session.pending_handoff
-    assert "Goal summary: Pick bowl, then place cube in bin" in session.pending_handoff
-
-
-@pytest.mark.asyncio
-async def test_warm_up_incremental_preserves_earlier_entries(mgr: SessionManager):
-    """Multiple incremental warm-up batches accumulate entries, not replace them."""
-    _e = {"backend": "local", "entry_type": "decision", "data": {}}
-    batch1 = [
-        {"cursor": 0, "ts_ms": 10, "epoch": 1, "summary": "d0", **_e},
-        {"cursor": 1, "ts_ms": 20, "epoch": 1, "summary": "d1", **_e},
-    ]
-    session = await mgr.warm_up_session("arm0", None, batch1)
-    assert session.cursor == 1
-    assert len(session.context_store) == 2
-
-    batch2 = [
-        {"cursor": 2, "ts_ms": 30, "epoch": 1, "summary": "d2", **_e},
-        {"cursor": 3, "ts_ms": 40, "epoch": 1, "summary": "d3", **_e},
-    ]
-    session = await mgr.warm_up_session("arm0", None, batch2)
-    assert session.cursor == 3
-    # All 4 entries should be present, not just the last batch
-    assert len(session.context_store) == 4
-
-
-@pytest.mark.asyncio
-async def test_warm_up_empty_journal_with_state_resets_store(mgr: SessionManager):
-    """Full warm-up (state + empty journal) from a fresh client clears stale context."""
-    _e = {"backend": "local", "entry_type": "decision", "data": {}}
-    journal = [{"cursor": 0, "ts_ms": 10, "epoch": 1, "summary": "d0", **_e}]
-    session = await mgr.warm_up_session("arm0", None, journal)
-    assert session.cursor == 0
-    assert len(session.context_store) == 1
-
-    # Fresh client sends state but empty journal — stale context should be cleared
-    state = {
-        "ts_ms": 200,
-        "epoch": 2,
-        "cursor": -1,
-        "active_target_handle": "cube",
-        "held_object_handle": None,
-        "known_scene_handles": ["cube", "bin"],
-        "last_scene_description": "cube on the table, bin on the right",
-        "pending_operator_instruction": "Pick the cube",
-        "recent_decisions": ["Retry pick on cube"],
-        "last_snapshot_id": None,
-        "last_arm_id": "arm0",
-        "last_skill_phase": "PLAN_APPROACH",
-        "last_skill_name": "pick",
-        "last_outcome_state": "in_progress",
-        "recent_event_summaries": ["PERCEPTION_RECOVERED", "TARGET_ACQUIRED cube"],
-        "goal_summary": "Pick the cube cleanly",
-    }
-    session = await mgr.warm_up_session("arm0", state, [])
-    assert session.cursor == -1
-    assert len(session.context_store) == 0
-    assert session.context_store._known_scene_handles == ["cube", "bin"]
-    assert session.pending_handoff is not None
-    assert "Retry pick on cube" in session.pending_handoff
-    assert "PERCEPTION_RECOVERED" in session.pending_handoff
-
-
-@pytest.mark.asyncio
-async def test_warm_up_state_only_preserves_rehydrated_history(prompts_dir: Path, mock_firestore_store: MagicMock):
-    """State-only warm-up after Firestore rehydration preserves agent conversation history."""
-    # Simulate a Firestore doc with msg_history (as if rehydrated from another instance)
-
-    msg_recs = [
-        {"msg_id": "a1", "role": "user", "text": "Pick the red cube", "ts_ms": 100, "is_summary": False},
-        {"msg_id": "a2", "role": "model", "text": "Starting pick", "ts_ms": 200, "is_summary": False},
-    ]
-    doc = _make_firestore_doc(
-        readiness="ready",
-        cursor=0,
-        msg_history=msg_recs,
-        entries=[
-            {
-                "cursor": 0,
-                "ts_ms": 10,
-                "epoch": 1,
-                "backend": "local",
-                "entry_type": "decision",
-                "summary": "d0",
-                "data": {},
-            },
-        ],
-    )
-    mock_firestore_store.load = AsyncMock(return_value=doc)
-
-    with patch("cloud_service.session_manager.PlannerAgent") as mock_cls:
-        agent = _mock_agent()
-
-        # After inject_compaction_state, agent should have records
-        async def _fake_inject(summary, retained):
-            for rec in retained:
-                agent.msg_history.append(rec.role, rec.text)
-
-        agent.inject_compaction_state = AsyncMock(side_effect=_fake_inject)
-        mock_cls.return_value = agent
-
-        mgr = SessionManager(
-            model_name="test-model",
-            prompts_dir=prompts_dir,
-            vlm_fn_factory=lambda: MagicMock(),
-            firestore_store=mock_firestore_store,
-        )
-
-        # get_or_create triggers rehydration (cache miss → Firestore load)
-        await mgr.get_or_create("arm0")
-        assert agent.msg_history.count() == 2  # rehydrated
-
-        # Now warm-up with state but empty journal (e.g. reconnect after instance restart)
-        state = {
-            "ts_ms": 300,
-            "epoch": 2,
-            "cursor": -1,
-            "active_target_handle": "cube",
-            "held_object_handle": None,
-            "known_scene_handles": ["cube"],
-            "last_scene_description": "table",
-            "pending_operator_instruction": None,
-            "recent_decisions": [],
-            "last_snapshot_id": None,
-            "last_arm_id": "arm0",
-            "last_skill_phase": None,
-            "last_skill_name": None,
-            "last_outcome_state": None,
-        }
-        await mgr.warm_up_session("arm0", state, [])
-
-        # Agent history must NOT have been reset
-        agent.reset_session.assert_not_awaited()
-        assert agent.msg_history.count() == 2
-        assert mgr.get_session("arm0").pending_handoff is None
-
-
-@pytest.mark.asyncio
-async def test_warm_up_empty_journal_no_state_preserves_store(mgr: SessionManager):
-    """Incremental warm-up with empty batch (state=None) preserves existing context."""
-    _e = {"backend": "local", "entry_type": "decision", "data": {}}
-    journal = [{"cursor": 0, "ts_ms": 10, "epoch": 1, "summary": "d0", **_e}]
-    session = await mgr.warm_up_session("arm0", None, journal)
-    assert session.cursor == 0
-    assert len(session.context_store) == 1
-
-    # Incremental catch-up with no new entries — should be a no-op on context
-    session = await mgr.warm_up_session("arm0", None, [])
-    assert session.cursor == 0
-    assert len(session.context_store) == 1
 
 
 @pytest.mark.asyncio

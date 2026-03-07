@@ -3,8 +3,7 @@
 Endpoints:
     POST /decide         — planner decision (snapshot JSON → commands JSON)
     POST /vlm/scene      — VLM scene analysis (JPEG image → VlmScene JSON)
-    POST /warm-up        — warm-up session with state + journal
-    GET  /state/{arm_id} — session readiness and cursor
+    GET  /state/{arm_id} — session readiness and cursor (debug)
     GET  /health         — health check
 """
 
@@ -15,7 +14,7 @@ import logging
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, UploadFile
-from halo.contracts.serde import command_envelope_to_dict, snapshot_from_dict, vlm_scene_to_dict
+from halo.contracts.serde import command_envelope_to_dict, message_record_to_dict, snapshot_from_dict, vlm_scene_to_dict
 
 from cloud_service.deps import get_session_manager, get_vlm_fn, lifespan, verify_api_key
 
@@ -28,7 +27,6 @@ app = FastAPI(title="HALO Cloud Cognitive Service", lifespan=lifespan)
 async def health(session_mgr=Depends(get_session_manager)) -> dict:
     return {
         "status": "ok",
-        "nonce": session_mgr.nonce,
         "sessions": session_mgr.active_arm_ids,
     }
 
@@ -39,9 +37,30 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     operator_cmd = body.get("operator_cmd")
     epoch = body.get("epoch")
     client_session_id = body.get("session_id")
+    last_msg_id = body.get("last_msg_id")
+    msg_history = body.get("msg_history")
+    handoff_context = body.get("handoff_context")
     arm_id = snapshot.arm_id
 
-    session = await session_mgr.get_or_create(arm_id, client_session_id=client_session_id)
+    # Sync session using last_msg_id protocol
+    sync_result = await session_mgr.sync_session(
+        arm_id,
+        last_msg_id=last_msg_id,
+        msg_history=msg_history,
+        client_session_id=client_session_id,
+    )
+
+    if sync_result.status == "need_history":
+        logger.info("decide arm_id=%s session_id=%s: need_history (sync failed)", arm_id, client_session_id)
+        return {"status": "need_history", "commands": [], "reasoning": "", "compacted": False}
+
+    logger.info("decide arm_id=%s session_id=%s: session synced", arm_id, client_session_id)
+    session = sync_result.session
+
+    # Client-provided handoff takes priority over any persisted handoff
+    if handoff_context:
+        session.pending_handoff = handoff_context
+
     handoff = session.pending_handoff
     if handoff:
         await session.agent.inject_handoff_context(handoff)
@@ -53,12 +72,15 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
         if handoff:
             session.pending_handoff = handoff
         raise
+    # Mark session ready after first successful decide (was previously done by warm-up)
+    session.readiness = "ready"
+    session.cursor = len(session.agent.msg_history.get_all())
+
     try:
         await session_mgr.persist_session(arm_id)
     except Exception:
         # Evict tainted in-memory session so the next request rehydrates
-        # from the last good Firestore snapshot (which still has the handoff
-        # if it was never persisted as cleared).
+        # from the last good Firestore snapshot.
         session_mgr.evict_session(arm_id)
         raise
     reasoning = session.agent.last_reasoning
@@ -67,11 +89,17 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     if compacted:
         logger.info("Session compacted for arm_id=%s: %d messages summarized", arm_id, compaction.compacted_count)
 
+    # Always include msg_history in response
+    all_records = session.agent.msg_history.get_all()
+    resp_history = [message_record_to_dict(r) for r in all_records]
+
     result: dict = {
+        "status": "ok",
         "commands": [command_envelope_to_dict(c) for c in commands],
         "reasoning": reasoning,
         "compacted": compacted,
         "token_usage": session.agent.last_token_usage,
+        "msg_history": resp_history,
     }
     if compacted and compaction is not None:
         result["compaction"] = {
@@ -107,22 +135,6 @@ async def vlm_scene(
     result = vlm_scene_to_dict(scene)
     result["token_usage"] = scene.token_usage
     return result
-
-
-@app.post("/warm-up", dependencies=[Depends(verify_api_key)])
-async def warm_up(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
-    """Warm up a session with CognitiveState + journal entries."""
-    state_dict = body.get("state")
-    journal_dicts = body.get("journal", [])
-    client_session_id = body.get("session_id")
-    # Read arm_id from top-level body, fall back to state, then default
-    arm_id = body.get("arm_id") or (state_dict.get("last_arm_id") if state_dict else None) or "arm0"
-
-    session = await session_mgr.warm_up_session(arm_id, state_dict, journal_dicts, client_session_id=client_session_id)
-    return {
-        "readiness": session.readiness,
-        "cursor": session.cursor,
-    }
 
 
 @app.get("/state/{arm_id}", dependencies=[Depends(verify_api_key)])

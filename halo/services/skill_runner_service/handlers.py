@@ -23,6 +23,7 @@ class StateContext:
     state_bag: dict
     target_handle: str
     successors: tuple[str, ...]
+    held_object_handle: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,15 @@ class ReacquireFailedGuard:
     def check(self, ctx: StateContext) -> HandlerResult | None:
         if ctx.perception.failure_code == PerceptionFailureCode.REACQUIRE_FAILED:
             return HandlerResult.fail(SkillFailureCode.PERCEPTION_LOST, trigger="reacquire_failed")
+        return None
+
+
+class PlaceHeldObjectGuard:
+    """Fail PLACE immediately if no object is held."""
+
+    def check(self, ctx: StateContext) -> HandlerResult | None:
+        if not ctx.held_object_handle:
+            return HandlerResult.fail(SkillFailureCode.PLACE_MISS, trigger="no_held_object")
         return None
 
 
@@ -339,4 +349,4 @@ def build_track_global_guards() -> list[GlobalGuard]:
 
 
 def build_place_global_guards() -> list[GlobalGuard]:
-    return [ReacquireFailedGuard()]
+    return [PlaceHeldObjectGuard(), ReacquireFailedGuard()]

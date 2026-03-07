@@ -7,33 +7,12 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from google.cloud.firestore_v1 import AsyncClient
-from halo.cognitive.compactor import MessageRecord
-from halo.contracts.serde import context_entry_to_dict
+from halo.contracts.serde import context_entry_to_dict, message_record_to_dict
 
 if TYPE_CHECKING:
     from cloud_service.session_manager import ArmSession
 
 logger = logging.getLogger(__name__)
-
-
-def _message_record_to_dict(rec: MessageRecord) -> dict:
-    return {
-        "msg_id": rec.msg_id,
-        "role": rec.role,
-        "text": rec.text,
-        "ts_ms": rec.ts_ms,
-        "is_summary": rec.is_summary,
-    }
-
-
-def _message_record_from_dict(d: dict) -> MessageRecord:
-    return MessageRecord(
-        msg_id=d["msg_id"],
-        role=d["role"],
-        text=d["text"],
-        ts_ms=d["ts_ms"],
-        is_summary=d.get("is_summary", False),
-    )
 
 
 class FirestoreSessionStore:
@@ -58,6 +37,9 @@ class FirestoreSessionStore:
         now = datetime.now(UTC)
         cs = session.context_store
 
+        all_records = session.agent.msg_history.get_all()
+        last_msg_id = all_records[-1].msg_id if all_records else None
+
         doc = {
             "client_session_id": session.client_session_id,
             "readiness": session.readiness,
@@ -65,6 +47,8 @@ class FirestoreSessionStore:
             "pending_handoff": session.pending_handoff,
             "updated_at": now,
             "expires_at": now + self._ttl,
+            # Fast sync check — avoids deserializing full history
+            "last_msg_id": last_msg_id,
             # ContextStore state
             "active_target_handle": cs._active_target_handle,
             "held_object_handle": cs._held_object_handle,
@@ -74,7 +58,7 @@ class FirestoreSessionStore:
             "next_cursor": cs._next_cursor,
             "entries": [context_entry_to_dict(e) for e in cs._entries],
             # PlannerAgent conversation history (for ADK session reconstruction)
-            "msg_history": [_message_record_to_dict(r) for r in session.agent.msg_history.get_all()],
+            "msg_history": [message_record_to_dict(r) for r in all_records],
         }
 
         client = self._get_client()

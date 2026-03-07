@@ -282,7 +282,14 @@ class SkillRunnerService:
         snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
         now_ms = int(time.monotonic() * 1000)
         run = self._active_run
-        old_phase = self._engine.advance(run, now_ms, snap.target, snap.perception, snap.act)
+        old_phase = self._engine.advance(
+            run,
+            now_ms,
+            snap.target,
+            snap.perception,
+            snap.act,
+            held_object_handle=snap.held_object_handle,
+        )
 
         if old_phase is not None:
             await self._handle_transition(old_phase)
@@ -311,7 +318,14 @@ class SkillRunnerService:
         if not self._sim_triggered:
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
 
-            old_phase = self._engine.advance(run, now_ms, snap.target, snap.perception, snap.act)
+            old_phase = self._engine.advance(
+                run,
+                now_ms,
+                snap.target,
+                snap.perception,
+                snap.act,
+                held_object_handle=snap.held_object_handle,
+            )
             if old_phase is not None:
                 await self._handle_transition(old_phase)
                 if not run.is_active:
@@ -514,7 +528,14 @@ class SkillRunnerService:
 
         now_ms = int(time.monotonic() * 1000)
         run = self._active_run
-        old_phase = self._engine.advance(run, now_ms, snap.target, snap.perception, snap.act)
+        old_phase = self._engine.advance(
+            run,
+            now_ms,
+            snap.target,
+            snap.perception,
+            snap.act,
+            held_object_handle=snap.held_object_handle,
+        )
 
         if old_phase is not None:
             await self._handle_transition(old_phase)

@@ -11,6 +11,8 @@ from pathlib import Path
 
 import litellm
 from google.adk.agents import Agent
+from google.adk.agents.invocation_context import LlmCallsLimitExceededError
+from google.adk.agents.run_config import RunConfig
 from google.adk.apps import App
 from google.adk.events import Event
 from google.adk.models.lite_llm import LiteLlm
@@ -139,6 +141,8 @@ class PlannerAgent:
         self._msg_history = MessageHistory()
         self._last_compaction: CompactionResult | None = None
 
+        self._run_config = RunConfig(max_llm_calls=25)
+
         # Build CompactionPlugin — handles snapshot deprecation (all backends)
         # and optional session compaction (cloud backend with config).
         cfg: CompactionConfig | None = None
@@ -148,6 +152,7 @@ class PlannerAgent:
             config=cfg,
             model_name=model_name,
             msg_history=self._msg_history,
+            agent_ctx=self._ctx,
         )
 
         app = App(
@@ -381,6 +386,8 @@ class PlannerAgent:
         self._ctx.epoch = epoch
         self._ctx.commands.clear()
         self._ctx.used_tools.clear()
+        self._ctx.call_counts.clear()
+        self._ctx.loop_detected = False
 
         # New operator instruction always resets loop detection so the
         # agent gets a clean slate to act on the command.
@@ -425,29 +432,38 @@ class PlannerAgent:
         self._litellm_nonce = uuid.uuid4().hex
         _decide_nonce.set(self._litellm_nonce)
 
-        async for event in self._runner.run_async(
-            user_id=_USER_ID,
-            session_id=_THREAD_ID,
-            new_message=message,
-        ):
-            if event.content and event.content.parts:
-                for part in event.content.parts:
-                    if part.text:
-                        last_text = part.text
-            # Accumulate token usage across events (last event with data wins for
-            # cumulative fields; ADK may emit partial usage on intermediate events).
-            um = event.usage_metadata
-            if um is not None:
-                if um.prompt_token_count is not None:
-                    token_usage["prompt_tokens"] = um.prompt_token_count
-                if um.candidates_token_count is not None:
-                    token_usage["completion_tokens"] = um.candidates_token_count
-                if um.total_token_count is not None:
-                    token_usage["total_tokens"] = um.total_token_count
-                if um.thoughts_token_count:
-                    token_usage["thoughts_tokens"] = um.thoughts_token_count
-                if um.cached_content_token_count:
-                    token_usage["cached_tokens"] = um.cached_content_token_count
+        try:
+            async for event in self._runner.run_async(
+                user_id=_USER_ID,
+                session_id=_THREAD_ID,
+                new_message=message,
+                run_config=self._run_config,
+            ):
+                if event.content and event.content.parts:
+                    for part in event.content.parts:
+                        if part.text:
+                            last_text = part.text
+                # Accumulate token usage across events (last event with data wins for
+                # cumulative fields; ADK may emit partial usage on intermediate events).
+                um = event.usage_metadata
+                if um is not None:
+                    if um.prompt_token_count is not None:
+                        token_usage["prompt_tokens"] = um.prompt_token_count
+                    if um.candidates_token_count is not None:
+                        token_usage["completion_tokens"] = um.candidates_token_count
+                    if um.total_token_count is not None:
+                        token_usage["total_tokens"] = um.total_token_count
+                    if um.thoughts_token_count:
+                        token_usage["thoughts_tokens"] = um.thoughts_token_count
+                    if um.cached_content_token_count:
+                        token_usage["cached_tokens"] = um.cached_content_token_count
+        except LlmCallsLimitExceededError:
+            logging.getLogger(__name__).warning("LLM call limit exceeded — stopping agent loop")
+            last_text = (
+                "LLM call limit exceeded — agent was looping. "
+                "Stopping to avoid runaway costs. Awaiting operator intervention."
+            )
+            self._ctx.commands.clear()
 
         # Deactivate capture; fall back to litellm data if ADK provided nothing.
         self._litellm_nonce = ""

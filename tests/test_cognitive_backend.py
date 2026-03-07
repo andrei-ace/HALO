@@ -8,16 +8,14 @@ import httpx
 import pytest
 
 from halo.cognitive import CognitiveStack, make_cognitive_stack
-from halo.cognitive.backend import CognitiveBackend, WarmableBackend
+from halo.cognitive.backend import CognitiveBackend
 from halo.cognitive.config import (
-    BackendReadiness,
     BackendType,
     CloudConfig,
     CognitiveConfig,
     LocalConfig,
     RemoteCloudConfig,
 )
-from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.cognitive.local_backend import LocalCognitiveBackend
 from halo.cognitive.remote_backend import RemoteCognitiveBackend
 from halo.contracts.enums import (
@@ -78,8 +76,6 @@ class _StubCloudBackend:
         self.health_check = AsyncMock(return_value=False)
         self.reset_loop_state = MagicMock()
         self._last_reasoning = ""
-        self._readiness = BackendReadiness.COLD
-        self._caught_up_cursor = -1
 
     @property
     def backend_type(self) -> str:
@@ -88,17 +84,6 @@ class _StubCloudBackend:
     @property
     def last_reasoning(self) -> str:
         return self._last_reasoning
-
-    async def warm_up(self, state: CognitiveState | None, journal_entries: list[ContextEntry]) -> bool:
-        return False
-
-    @property
-    def readiness(self) -> str:
-        return self._readiness
-
-    @property
-    def caught_up_cursor(self) -> int:
-        return self._caught_up_cursor
 
 
 # ---------------------------------------------------------------------------
@@ -318,189 +303,17 @@ async def test_remote_backend_health_check_failure():
 
 
 @pytest.mark.asyncio
-async def test_remote_backend_reset_loop_state_resets_readiness():
-    """reset_loop_state resets readiness to COLD so next failback does full warm-up."""
+async def test_remote_backend_reset_loop_state_clears_reasoning():
+    """reset_loop_state clears reasoning but preserves session state."""
     backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-    # Simulate a warmed backend
-    backend._readiness = BackendReadiness.READY
-    backend._caught_up_cursor = 5
     backend._last_reasoning = "some reasoning"
 
     old_session_id = backend._session_id
     backend.reset_loop_state()
 
-    # Readiness must reset to COLD (forces full warm-up on next failback)
-    assert backend.readiness == BackendReadiness.COLD
-    assert backend.caught_up_cursor == -1
     assert backend.last_reasoning == ""
     # Session ID must stay stable so the server can rehydrate the same session.
     assert backend._session_id == old_session_id
-
-
-# ---------------------------------------------------------------------------
-# WarmableBackend compliance
-# ---------------------------------------------------------------------------
-
-
-def test_local_backend_is_warmable():
-    """LocalCognitiveBackend satisfies the WarmableBackend protocol."""
-    with (
-        patch(
-            "halo.cognitive.local_backend.PlannerAgent",
-            return_value=MagicMock(decide=AsyncMock(return_value=[]), last_reasoning="", reset_loop_state=MagicMock()),
-        ),
-        patch(
-            "halo.cognitive.local_backend.make_vlm_fn",
-            return_value=AsyncMock(return_value=VlmScene(scene="", detections=[])),
-        ),
-    ):
-        backend = LocalCognitiveBackend()
-    assert isinstance(backend, WarmableBackend)
-    assert backend.readiness == BackendReadiness.READY
-    assert backend.caught_up_cursor == -1
-
-
-def test_remote_backend_is_warmable():
-    """RemoteCognitiveBackend satisfies the WarmableBackend protocol."""
-    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-    assert isinstance(backend, WarmableBackend)
-    assert backend.readiness == BackendReadiness.COLD
-    assert backend.caught_up_cursor == -1
-
-
-@pytest.mark.asyncio
-async def test_local_backend_warm_up_always_ready():
-    with (
-        patch(
-            "halo.cognitive.local_backend.PlannerAgent",
-            return_value=MagicMock(decide=AsyncMock(), last_reasoning="", reset_loop_state=MagicMock()),
-        ),
-        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
-    ):
-        backend = LocalCognitiveBackend()
-
-    ready = await backend.warm_up(state=None, journal_entries=[])
-    assert ready is True
-    assert backend.readiness == BackendReadiness.READY
-
-
-@pytest.mark.asyncio
-async def test_remote_backend_warm_up_success():
-    response_json = {"readiness": "ready", "cursor": 10}
-    mock_response = _mock_response(200, response_json)
-    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-
-    state = CognitiveState(
-        ts_ms=100,
-        epoch=1,
-        cursor=10,
-        active_target_handle="cube",
-        held_object_handle=None,
-        known_scene_handles=["cube"],
-        last_scene_description="table",
-        pending_operator_instruction=None,
-        recent_decisions=["d1"],
-        last_snapshot_id="snap-1",
-        last_arm_id="arm0",
-        last_skill_phase=None,
-        last_skill_name=None,
-        last_outcome_state=None,
-    )
-    entries = [
-        ContextEntry(cursor=9, ts_ms=90, epoch=1, backend="local", entry_type="decision", summary="d0"),
-        ContextEntry(cursor=10, ts_ms=100, epoch=1, backend="local", entry_type="decision", summary="d1"),
-    ]
-
-    with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
-        ready = await backend.warm_up(state=state, journal_entries=entries)
-
-    assert ready is True
-    assert backend.readiness == BackendReadiness.READY
-    assert backend.caught_up_cursor == 10
-
-
-@pytest.mark.asyncio
-async def test_remote_backend_warm_up_warming():
-    """Remote service returns warming (not ready yet)."""
-    response_json = {"readiness": "warming", "cursor": 5}
-    mock_response = _mock_response(200, response_json)
-    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-
-    with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
-        ready = await backend.warm_up(state=None, journal_entries=[])
-
-    assert ready is False
-    assert backend.readiness == BackendReadiness.WARMING
-    assert backend.caught_up_cursor == 5
-
-
-@pytest.mark.asyncio
-async def test_remote_backend_warm_up_failure():
-    """warm_up handles HTTP errors gracefully."""
-    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-
-    with patch.object(backend._client, "post", new_callable=AsyncMock, side_effect=httpx.ConnectError("refused")):
-        ready = await backend.warm_up(state=None, journal_entries=[])
-
-    assert ready is False
-    assert backend.readiness == BackendReadiness.FAILED
-
-
-# ---------------------------------------------------------------------------
-# Nonce-based restart detection (RemoteCognitiveBackend)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_remote_backend_nonce_mismatch_resets_readiness():
-    """health_check detects nonce change and resets readiness to COLD."""
-    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-    # Simulate a prior warm-up made it READY
-    backend._readiness = BackendReadiness.READY
-    backend._caught_up_cursor = 10
-
-    # First health check — establishes nonce
-    resp1 = httpx.Response(
-        200,
-        json={"status": "ok", "nonce": "nonce-1", "sessions": []},
-        request=httpx.Request("GET", "http://test:8080"),
-    )
-    with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=resp1):
-        healthy = await backend.health_check()
-    assert healthy is True
-    assert backend._last_nonce == "nonce-1"
-    assert backend.readiness == BackendReadiness.READY  # unchanged
-
-    # Second health check — nonce changed (instance restarted)
-    resp2 = httpx.Response(
-        200,
-        json={"status": "ok", "nonce": "nonce-2", "sessions": []},
-        request=httpx.Request("GET", "http://test:8080"),
-    )
-    with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=resp2):
-        healthy = await backend.health_check()
-    assert healthy is True
-    assert backend._last_nonce == "nonce-2"
-    assert backend.readiness == BackendReadiness.COLD
-    assert backend.caught_up_cursor == -1
-
-
-@pytest.mark.asyncio
-async def test_remote_backend_nonce_first_check_no_reset():
-    """First health_check (no prior nonce) should not reset readiness."""
-    backend = RemoteCognitiveBackend(config=RemoteCloudConfig(service_url="http://test:8080"))
-    backend._readiness = BackendReadiness.READY
-
-    resp = httpx.Response(
-        200,
-        json={"status": "ok", "nonce": "nonce-1", "sessions": []},
-        request=httpx.Request("GET", "http://test:8080"),
-    )
-    with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=resp):
-        healthy = await backend.health_check()
-
-    assert healthy is True
-    assert backend.readiness == BackendReadiness.READY  # no reset on first check
 
 
 # ---------------------------------------------------------------------------
@@ -561,58 +374,3 @@ def test_make_cognitive_stack_cloud_active_without_backend_raises():
             patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
         ):
             make_cognitive_stack(config=cfg)
-
-
-@pytest.mark.asyncio
-async def test_local_backend_journal_buffer_bounded_across_batches():
-    """Journal buffer stays within _max_journal_lines across multiple incremental batches."""
-    with (
-        patch(
-            "halo.cognitive.local_backend.PlannerAgent",
-            return_value=MagicMock(
-                decide=AsyncMock(),
-                last_reasoning="",
-                reset_loop_state=MagicMock(),
-                reset_session=AsyncMock(),
-                inject_handoff_context=AsyncMock(),
-            ),
-        ),
-        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
-    ):
-        backend = LocalCognitiveBackend()
-
-    # Full warm-up with state
-    state = CognitiveState(
-        ts_ms=0,
-        epoch=1,
-        cursor=0,
-        active_target_handle=None,
-        held_object_handle=None,
-        known_scene_handles=[],
-        last_scene_description="",
-        pending_operator_instruction=None,
-        recent_decisions=[],
-        last_snapshot_id=None,
-        last_arm_id="arm0",
-        last_skill_phase=None,
-        last_skill_name=None,
-        last_outcome_state=None,
-    )
-    entries = [
-        ContextEntry(cursor=i, ts_ms=i, epoch=1, backend="cloud", entry_type="event", summary=f"e{i}")
-        for i in range(20)
-    ]
-    await backend.warm_up(state=state, journal_entries=entries)
-    assert backend.caught_up_cursor == 19
-
-    # Send 4 incremental batches of 20 entries each (80 total new entries)
-    for batch_start in range(20, 100, 20):
-        entries = [
-            ContextEntry(cursor=i, ts_ms=i, epoch=1, backend="cloud", entry_type="event", summary=f"e{i}")
-            for i in range(batch_start, batch_start + 20)
-        ]
-        await backend.warm_up(state=None, journal_entries=entries)
-
-    assert backend.caught_up_cursor == 99
-    # Buffer must be capped at _max_journal_lines (40)
-    assert len(backend._journal_buffer) <= backend._max_journal_lines

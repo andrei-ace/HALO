@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from google.adk.models.llm_request import LlmRequest
     from google.adk.models.llm_response import LlmResponse
 
+    from halo.services.planner_service.tools import AgentContext
+
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_PREFIX = "Current robot state:"
@@ -84,11 +86,13 @@ class CompactionPlugin(BasePlugin):
         config: CompactionConfig | None = None,
         model_name: str = "",
         msg_history: MessageHistory | None = None,
+        agent_ctx: AgentContext | None = None,
     ) -> None:
         super().__init__(name="compaction")
         self._config = config
         self._model_name = model_name
         self._msg_history = msg_history
+        self._agent_ctx = agent_ctx
         self._last_compaction_end_ts: float = 0.0
         self.last_compaction: CompactionResult | None = None
         self._pending: _PendingHistoryCompaction | None = None
@@ -107,13 +111,39 @@ class CompactionPlugin(BasePlugin):
         callback_context: CallbackContext,
         llm_request: LlmRequest,
     ) -> Optional[LlmResponse]:
-        """Enforce exactly-one-snapshot invariant.
+        """Enforce exactly-one-snapshot invariant + loop guard.
 
-        Strip the JSON snapshot block from all but the most recent
+        If ``AgentContext.loop_detected`` is True, return an LlmResponse
+        to force-break the ADK run loop — this is the reliable kill switch
+        even if the LLM ignores tool rejection messages.
+
+        Also strips the JSON snapshot block from all but the most recent
         ``Current robot state:`` user message.  Preserves operator
         instructions and other text.
         """
+        if self._agent_ctx is not None and self._agent_ctx.loop_detected:
+            from google.adk.models.llm_response import LlmResponse
+
+            return LlmResponse(
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text="Tool call loop detected — stopping agent.")],
+                ),
+            )
+
         contents = llm_request.contents or []
+
+        # Log what the LLM is about to see — essential for verifying compaction.
+        if logger.isEnabledFor(logging.DEBUG):
+            for i, c in enumerate(contents):
+                first_text = ""
+                for p in c.parts or []:
+                    t = getattr(p, "text", None)
+                    if t:
+                        first_text = t[:120].replace("\n", "\\n")
+                        break
+                logger.debug("  contents[%d] role=%s: %s", i, c.role, first_text)
+
         indices = [
             i
             for i, c in enumerate(contents)
@@ -196,6 +226,13 @@ class CompactionPlugin(BasePlugin):
             )
             await invocation_context.session_service.append_event(session, compaction_event)
             self._last_compaction_end_ts = end_ts
+            logger.info(
+                "Compaction triggered: %d invocations compacted, summary=%d chars, ts=%.1f..%.1f",
+                len(new_inv_ids) - self._config.overlap_size,
+                len(summary),
+                start_ts,
+                end_ts,
+            )
 
             # Defer MessageHistory compaction — model response not yet tracked.
             if self._msg_history is not None:

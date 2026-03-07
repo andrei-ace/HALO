@@ -99,10 +99,13 @@ def rt() -> HALORuntime:
     return r
 
 
-async def _seed_store(rt: HALORuntime, distance_m: float = 0.5, handle: str = "ref-1") -> None:
+async def _seed_store(
+    rt: HALORuntime, distance_m: float = 0.5, handle: str = "ref-1", held_object: str | None = "obj-held"
+) -> None:
     await rt.store.update_target(ARM, _target(distance_m=distance_m, handle=handle))
     await rt.store.update_perception(ARM, _perception())
     await rt.store.update_act(ARM, _act(fill_ms=0))
+    await rt.store.update_held_object_handle(ARM, held_object)
     await rt.get_latest_runtime_snapshot(ARM)
 
 
@@ -173,6 +176,24 @@ async def test_place_options_stored_in_state_bag(rt: HALORuntime):
 
     assert svc._active_run is not None
     assert svc._active_run.state_bag.get("modifier") == "PLACE_NEXT_TO"
+
+
+# --- Guard: no held object ---
+
+
+async def test_place_fails_without_held_object(rt: HALORuntime):
+    """PLACE fails immediately with PLACE_MISS if no object is held."""
+    svc = _make_svc(rt, cfg=_happy_cfg())
+    await svc.start_skill(SkillName.PLACE, RUN_ID, "ref-1")
+
+    await _seed_store(rt, distance_m=0.5, held_object=None)
+    result = await svc.tick()
+    assert result == PhaseId.DONE
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_FAILED for e in events)
+    failed = next(e for e in events if e.type == EventType.SKILL_FAILED)
+    assert failed.data.get("failure_code") == SkillFailureCode.PLACE_MISS.value
 
 
 # --- Timeouts and failures ---

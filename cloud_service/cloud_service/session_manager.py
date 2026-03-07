@@ -1,17 +1,17 @@
-"""SessionManager — per-arm_id PlannerAgent sessions with warm-up and idle eviction."""
+"""SessionManager — per-arm_id PlannerAgent sessions with sync protocol and idle eviction."""
 
 from __future__ import annotations
 
 import logging
 import time
-import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
+from halo.cognitive.compactor import MessageRecord
 from halo.cognitive.config import BackendReadiness, CompactionConfig
-from halo.cognitive.context_store import CognitiveState, ContextEntry, ContextStore
-from halo.contracts.serde import cognitive_state_from_dict, context_entry_from_dict
+from halo.cognitive.context_store import ContextStore
+from halo.contracts.serde import context_entry_from_dict, message_record_from_dict
 from halo.services.planner_service.agent import PlannerAgent
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ArmSession:
-    """Per-arm PlannerAgent session with warm-up state tracking."""
+    """Per-arm PlannerAgent session."""
 
     arm_id: str
     agent: PlannerAgent
@@ -35,6 +35,14 @@ class ArmSession:
 
     def touch(self) -> None:
         self.last_active_ms = int(time.monotonic() * 1000)
+
+
+@dataclass
+class SyncResult:
+    """Outcome of sync_session()."""
+
+    status: str  # "ok" | "need_history"
+    session: ArmSession | None = None
 
 
 VlmFn = Callable  # relaxed type for vlm_fn
@@ -63,7 +71,6 @@ class SessionManager:
         self._compaction_overlap = compaction_overlap
         self._sessions: dict[str, ArmSession] = {}
         self._vlm_fn: VlmFn | None = None  # shared VLM fn (created once)
-        self._nonce: str = uuid.uuid4().hex  # unique per process lifetime
         self._firestore_store = firestore_store
 
     @property
@@ -71,6 +78,69 @@ class SessionManager:
         if self._vlm_fn is None:
             self._vlm_fn = self._vlm_fn_factory()
         return self._vlm_fn
+
+    async def sync_session(
+        self,
+        arm_id: str,
+        last_msg_id: str | None,
+        msg_history: list[dict] | None,
+        client_session_id: str | None = None,
+    ) -> SyncResult:
+        """Sync session using last_msg_id protocol.
+
+        Flow:
+        1. msg_history provided → rebuild session from it, persist to Firestore
+        2. last_msg_id is None → create fresh session
+        3. in-memory session matches → proceed (happy path)
+        4. Firestore doc matches → rehydrate
+        5. nothing matches → return {status: "need_history"}
+        """
+        # 1. msg_history provided → rebuild session
+        if msg_history is not None:
+            session = await self._rebuild_from_history(arm_id, msg_history, client_session_id)
+            return SyncResult(status="ok", session=session)
+
+        # 2. last_msg_id is None → fresh session
+        if last_msg_id is None:
+            session = await self._create_fresh(arm_id, client_session_id)
+            return SyncResult(status="ok", session=session)
+
+        # 3. in-memory session matches?
+        if arm_id in self._sessions:
+            session = self._sessions[arm_id]
+            # Check client mismatch
+            if client_session_id and session.client_session_id and client_session_id != session.client_session_id:
+                logger.info("Client session mismatch for arm_id=%s, creating fresh", arm_id)
+                session = await self._create_fresh(arm_id, client_session_id)
+                return SyncResult(status="ok", session=session)
+            if client_session_id:
+                session.client_session_id = client_session_id
+            # Check if last_msg_id matches
+            records = session.agent.msg_history.get_all()
+            if records and records[-1].msg_id == last_msg_id:
+                session.touch()
+                return SyncResult(status="ok", session=session)
+
+        # 4. Try Firestore rehydration
+        if self._firestore_store is not None:
+            doc = await self._firestore_store.load(arm_id)
+            if doc is not None:
+                stored_last_msg_id = doc.get("last_msg_id")
+                stored_sid = doc.get("client_session_id")
+                # Client mismatch → skip stale doc
+                if client_session_id and stored_sid and client_session_id != stored_sid:
+                    pass  # fall through to need_history
+                elif stored_last_msg_id == last_msg_id:
+                    session = await self._rehydrate_from_firestore(arm_id, doc)
+                    if client_session_id:
+                        session.client_session_id = client_session_id
+                    session.touch()
+                    self._sessions[arm_id] = session
+                    logger.info("Rehydrated session from Firestore for arm_id=%s", arm_id)
+                    return SyncResult(status="ok", session=session)
+
+        # 5. Nothing matches → need history
+        return SyncResult(status="need_history")
 
     async def get_or_create(self, arm_id: str, client_session_id: str | None = None) -> ArmSession:
         """Get existing session or create a new one for the given arm_id.
@@ -141,6 +211,60 @@ class SessionManager:
             ),
         )
 
+    async def _create_fresh(self, arm_id: str, client_session_id: str | None) -> ArmSession:
+        """Create a fresh session (used when last_msg_id is None)."""
+        self._evict_if_needed()
+        # If there's an existing session, reset it
+        if arm_id in self._sessions:
+            await self.reset_session(arm_id)
+            session = self._sessions.get(arm_id)
+            if session is not None:
+                session.client_session_id = client_session_id
+                session.touch()
+                return session
+        agent = self._create_agent()
+        session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
+        session.touch()
+        self._sessions[arm_id] = session
+        logger.info("Created fresh session for arm_id=%s (total=%d)", arm_id, len(self._sessions))
+        return session
+
+    async def _rebuild_from_history(
+        self, arm_id: str, msg_history_dicts: list[dict], client_session_id: str | None
+    ) -> ArmSession:
+        """Rebuild session from client-provided msg_history."""
+        self._evict_if_needed()
+        agent = self._create_agent()
+        records = [message_record_from_dict(d) for d in msg_history_dicts]
+
+        # Split into summary + retained
+        summary: str | None = None
+        retained: list[MessageRecord] = []
+        for rec in records:
+            if rec.is_summary:
+                summary = rec.text
+            else:
+                retained.append(rec)
+
+        if summary is not None:
+            await agent.inject_compaction_state(summary, retained)
+        elif retained:
+            await agent.inject_compaction_state("", retained)
+
+        session = ArmSession(
+            arm_id=arm_id,
+            agent=agent,
+            client_session_id=client_session_id,
+            readiness=BackendReadiness.READY,
+        )
+        session.touch()
+        self._sessions[arm_id] = session
+
+        # Persist to Firestore
+        await self.persist_session(arm_id)
+        logger.info("Rebuilt session from client history for arm_id=%s (%d records)", arm_id, len(records))
+        return session
+
     @staticmethod
     def _apply_tracked_state(
         context_store: ContextStore,
@@ -151,63 +275,15 @@ class SessionManager:
         scene_desc: str,
         operator_instruction: str | None,
     ) -> None:
-        """Apply tracked state fields to a ContextStore (used by both warm-up and rehydration)."""
+        """Apply tracked state fields to a ContextStore (used by rehydration)."""
         context_store.set_active_target(active_target)
         context_store.set_held_object(held_object)
         context_store._known_scene_handles = list(known_handles)
         context_store._last_scene_description = scene_desc
         context_store._pending_operator_instruction = operator_instruction
 
-    @staticmethod
-    def _build_handoff_from_state(state: CognitiveState) -> str:
-        """Build a rich handoff from CognitiveState for empty-journal warm-ups."""
-        parts = ["[Context handoff from previous backend]"]
-
-        if state.last_scene_description:
-            parts.append(f"Last scene analysis: {state.last_scene_description}")
-        if state.known_scene_handles:
-            parts.append(f"Known objects: {', '.join(state.known_scene_handles)}")
-        if state.active_target_handle:
-            parts.append(f"Active target: {state.active_target_handle}")
-        if state.held_object_handle:
-            parts.append(f"Currently holding: {state.held_object_handle}")
-        if state.goal_summary:
-            parts.append(f"Goal summary: {state.goal_summary}")
-        if state.recent_decisions:
-            parts.append("Recent decisions:")
-            for decision in state.recent_decisions:
-                parts.append(f"  - {decision}")
-        if state.pending_operator_instruction:
-            parts.append(f"Pending operator instruction: {state.pending_operator_instruction}")
-        if state.recent_event_summaries:
-            parts.append("Recent events:")
-            for event_summary in state.recent_event_summaries:
-                parts.append(f"  - {event_summary}")
-
-        runtime_bits: list[str] = []
-        if state.last_skill_name:
-            runtime_bits.append(f"skill={state.last_skill_name}")
-        if state.last_skill_phase:
-            runtime_bits.append(f"phase={state.last_skill_phase}")
-        if state.last_outcome_state:
-            runtime_bits.append(f"outcome={state.last_outcome_state}")
-        if state.last_snapshot_id:
-            runtime_bits.append(f"snapshot={state.last_snapshot_id}")
-        if runtime_bits:
-            parts.append(f"Latest runtime: {', '.join(runtime_bits)}")
-
-        return "\n".join(parts)
-
     async def _rehydrate_from_firestore(self, arm_id: str, doc: dict) -> ArmSession:
-        """Rebuild an ArmSession from a Firestore document.
-
-        Restores ContextStore, tracked state, and — when available — replays
-        the persisted MessageHistory into the fresh PlannerAgent's ADK session
-        so cross-instance rehydration preserves the planner conversation
-        (including compaction summaries).
-        """
-        from cloud_service.firestore_store import _message_record_from_dict
-
+        """Rebuild an ArmSession from a Firestore document."""
         agent = self._create_agent()
         cs = ContextStore()
 
@@ -216,7 +292,7 @@ class SessionManager:
         if entries:
             cs.apply_entries(entries)
 
-        # Restore tracked state (reuse shared helper)
+        # Restore tracked state
         self._apply_tracked_state(
             cs,
             active_target=doc.get("active_target_handle"),
@@ -226,13 +302,10 @@ class SessionManager:
             operator_instruction=doc.get("pending_operator_instruction"),
         )
 
-        # Replay persisted message history into the fresh PlannerAgent.
-        # This reconstructs the ADK session so the planner continues with
-        # full conversation context instead of just a handoff string.
+        # Replay persisted message history into the fresh PlannerAgent
         raw_history = doc.get("msg_history", [])
         if raw_history:
-            records = [_message_record_from_dict(rd) for rd in raw_history]
-            # Split into summary (if any) + retained records for inject_compaction_state
+            records = [message_record_from_dict(rd) for rd in raw_history]
             summary: str | None = None
             retained: list = []
             for rec in records:
@@ -243,12 +316,9 @@ class SessionManager:
             if summary is not None:
                 await agent.inject_compaction_state(summary, retained)
             else:
-                # No compaction yet — replay the raw transcript without inventing a summary turn.
                 await agent.inject_compaction_state("", retained)
-            pending_handoff = None  # agent has full conversation — no handoff needed
+            pending_handoff = None
         else:
-            # No message history — prefer the persisted handoff (may be richer than
-            # what ContextStore can regenerate, e.g. goal_summary, recent_decisions).
             persisted_handoff = doc.get("pending_handoff")
             if persisted_handoff:
                 pending_handoff = persisted_handoff
@@ -273,87 +343,12 @@ class SessionManager:
         if self._firestore_store is not None and arm_id in self._sessions:
             await self._firestore_store.save(arm_id, self._sessions[arm_id])
 
-    async def warm_up_session(
-        self,
-        arm_id: str,
-        state_dict: dict | None,
-        journal_dicts: list[dict],
-        client_session_id: str | None = None,
-    ) -> ArmSession:
-        """Warm up a session with CognitiveState and journal entries.
-
-        Returns the session with updated readiness and cursor.
-        """
-        session = await self.get_or_create(arm_id, client_session_id=client_session_id)
-
-        # Apply journal entries incrementally (supports batched catch-up from Switchboard)
-        entries: list[ContextEntry] = [context_entry_from_dict(jd) for jd in journal_dicts]
-        changed = False
-        if entries:
-            new_entries = [e for e in entries if e.cursor > session.cursor]
-            if new_entries:
-                try:
-                    session.context_store.apply_entries(new_entries)
-                    session.cursor = session.context_store.latest_cursor
-                except ValueError:
-                    logger.warning("Cursor monotonicity issue for arm_id=%s, resetting store", arm_id)
-                    session.context_store = ContextStore()
-                    session.context_store.apply_entries(entries)
-                    session.cursor = session.context_store.latest_cursor
-                changed = True
-        elif state_dict is not None and session.agent.msg_history.count() == 0:
-            # Empty journal with state on a fresh agent (no Firestore history) =
-            # full warm-up from a new client — clear stale context.
-            # Skip when the agent already has conversation history (e.g. just
-            # rehydrated from Firestore) to avoid destroying the recovered session.
-            await session.agent.reset_session()
-            session.context_store = ContextStore()
-            session.cursor = -1
-            changed = True
-
-        # If state was provided, apply tracked state
-        epoch = 0
-        state: CognitiveState | None = None
-        if state_dict is not None:
-            state = cognitive_state_from_dict(state_dict)
-            self._apply_tracked_state(
-                session.context_store,
-                active_target=state.active_target_handle,
-                held_object=state.held_object_handle,
-                known_handles=state.known_scene_handles,
-                scene_desc=state.last_scene_description,
-                operator_instruction=state.pending_operator_instruction,
-            )
-            epoch = state.epoch
-            changed = True
-
-        # Build handoff text — consumed once on next /decide.
-        # If Firestore already restored planner history into msg_history, the
-        # next /decide should continue from that transcript directly instead of
-        # prepending a synthetic handoff that duplicates context.
-        if session.agent.msg_history.count() > 0:
-            session.pending_handoff = None
-        elif state is not None and not entries:
-            session.pending_handoff = self._build_handoff_from_state(state)
-        else:
-            session.pending_handoff = session.context_store.get_handoff_context(epoch)
-        session.readiness = BackendReadiness.READY
-        session.touch()
-
-        if changed:
-            await self.persist_session(arm_id)
-        return session
-
     def get_session(self, arm_id: str) -> ArmSession | None:
         """Get session without creating a new one."""
         return self._sessions.get(arm_id)
 
     def evict_session(self, arm_id: str) -> None:
-        """Remove an in-memory session without touching Firestore.
-
-        Used to discard tainted state after a persist failure so the next
-        request rehydrates from the last good Firestore snapshot.
-        """
+        """Remove an in-memory session without touching Firestore."""
         if arm_id in self._sessions:
             del self._sessions[arm_id]
             logger.warning("Evicted tainted session for arm_id=%s", arm_id)
@@ -370,11 +365,6 @@ class SessionManager:
             logger.info("Reset session for arm_id=%s", arm_id)
         if self._firestore_store is not None:
             await self._firestore_store.delete(arm_id)
-
-    @property
-    def nonce(self) -> str:
-        """Unique identifier for this process lifetime. Changes on restart."""
-        return self._nonce
 
     @property
     def active_arm_ids(self) -> list[str]:

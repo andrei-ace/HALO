@@ -13,14 +13,12 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 import httpx
 import numpy as np
 
-from halo.cognitive.compactor import CompactionResult
-from halo.cognitive.config import BackendReadiness, BackendType, RemoteCloudConfig
-from halo.cognitive.context_store import CognitiveState, ContextEntry
+from halo.cognitive.compactor import CompactionResult, MessageRecord
+from halo.cognitive.config import BackendType, RemoteCloudConfig
 from halo.contracts.commands import CommandEnvelope
 from halo.contracts.serde import (
-    cognitive_state_to_dict,
     command_envelope_from_dict,
-    context_entry_to_dict,
+    message_record_from_dict,
     snapshot_to_dict,
     vlm_scene_from_dict,
 )
@@ -52,8 +50,10 @@ def _encode_jpeg(image: object, quality: int = 85) -> bytes:
 class RemoteCognitiveBackend:
     """Brain + eyes backed by remote GCP cognitive service (HTTP client).
 
-    NOTE: This backend uses HTTP request-response only. WebSocket or other
-    bidirectional streaming support to the cloud service is a future milestone.
+    Uses a ``last_msg_id`` sync protocol instead of warm-up/nonce:
+    each ``decide()`` sends the UUID of the last conversation message.
+    The server detects sync state inline — if out of sync, returns
+    ``status: "need_history"`` and the client resends full msg_history.
     """
 
     def __init__(
@@ -77,11 +77,13 @@ class RemoteCognitiveBackend:
         )
         self._last_reasoning = ""
         self._last_token_usage: dict[str, int] = {}
-        self._readiness = BackendReadiness.COLD
-        self._caught_up_cursor = -1
-        self._last_nonce: str | None = None
         self._session_id: str = uuid.uuid4().hex
         self._on_compaction: Callable[[CompactionResult], Awaitable[None]] | None = None
+
+        # last_msg_id sync protocol
+        self._last_msg_id: str | None = None
+        self._msg_history: list[dict] | None = None
+        self._pending_handoff: str | None = None
 
     @property
     def backend_type(self) -> str:
@@ -93,17 +95,43 @@ class RemoteCognitiveBackend:
         operator_cmd: str | None = None,
         epoch: int | None = None,
     ) -> list[CommandEnvelope]:
-        body: dict = {"snapshot": snapshot_to_dict(snap), "operator_cmd": operator_cmd, "session_id": self._session_id}
+        body: dict = {
+            "snapshot": snapshot_to_dict(snap),
+            "operator_cmd": operator_cmd,
+            "session_id": self._session_id,
+            "last_msg_id": self._last_msg_id,
+        }
+        if self._pending_handoff:
+            body["handoff_context"] = self._pending_handoff
         if epoch is not None:
             body["epoch"] = epoch
+
         resp = await self._client.post("/decide", json=body)
         resp.raise_for_status()
         data = resp.json()
+
+        # Handle need_history: resend with full msg_history
+        if data.get("status") == "need_history":
+            logger.info("Cloud needs history resync — resending msg_history")
+            body["msg_history"] = self._msg_history or []
+            resp = await self._client.post("/decide", json=body)
+            resp.raise_for_status()
+            data = resp.json()
+
         self._last_reasoning = data.get("reasoning", "")
         self._last_token_usage = data.get("token_usage") or {}
+        self._pending_handoff = None  # consumed by the server
 
-        # Notify Switchboard of compaction (it publishes SESSION_COMPACTED
-        # to EventBus, syncs to inactive backend, and the TUI logs it)
+        # Update local sync state from response
+        resp_history = data.get("msg_history")
+        if resp_history is not None:
+            self._msg_history = resp_history
+            if resp_history:
+                self._last_msg_id = resp_history[-1].get("msg_id")
+            else:
+                self._last_msg_id = None
+
+        # Notify Switchboard of compaction
         if data.get("compacted") and self._on_compaction is not None:
             c = data.get("compaction", {})
             result = CompactionResult(
@@ -166,17 +194,7 @@ class RemoteCognitiveBackend:
     async def health_check(self) -> bool:
         try:
             resp = await self._client.get("/health", timeout=5.0)
-            if resp.status_code != 200:
-                return False
-            data = resp.json()
-            nonce = data.get("nonce")
-            if nonce and self._last_nonce and nonce != self._last_nonce:
-                logger.warning("Cloud instance restarted (nonce changed: %s → %s)", self._last_nonce, nonce)
-                self._readiness = BackendReadiness.COLD
-                self._caught_up_cursor = -1
-            if nonce:
-                self._last_nonce = nonce
-            return True
+            return resp.status_code == 200
         except Exception:
             return False
 
@@ -192,55 +210,32 @@ class RemoteCognitiveBackend:
         return self._last_reasoning
 
     @property
+    def msg_history_records(self) -> list[MessageRecord]:
+        """Convert internal msg_history dicts to MessageRecord list for cross-backend mirroring."""
+        if not self._msg_history:
+            return []
+        return [message_record_from_dict(d) for d in self._msg_history]
+
+    @property
     def last_token_usage(self) -> dict[str, int]:
         return self._last_token_usage
 
     def reset_loop_state(self) -> None:
-        """Clear local tracking state while preserving remote session identity.
-
-        The inactive backend is reset on every backend switch. Readiness/cursor
-        must drop back to COLD so the next failback performs a full warm-up,
-        but the remote ``session_id`` must stay stable so a restarted cloud
-        instance can rehydrate the existing persisted session instead of
-        creating a brand-new one.
-        """
+        """Clear reasoning only; session state (last_msg_id, msg_history) survives switches."""
         self._last_reasoning = ""
-        self._readiness = BackendReadiness.COLD
-        self._caught_up_cursor = -1
 
-    # -- WarmableBackend --
+    def reset_session(self, handoff_context: str | None = None) -> None:
+        """Prepare for the next cloud decide() after a backend switch.
 
-    async def warm_up(
-        self,
-        state: CognitiveState | None,
-        journal_entries: list[ContextEntry],
-    ) -> bool:
-        """POST CognitiveState + journal to cloud service's /warm-up endpoint."""
-        try:
-            body: dict = {
-                "arm_id": self._arm_id,
-                "session_id": self._session_id,
-                "state": cognitive_state_to_dict(state) if state else None,
-                "journal": [context_entry_to_dict(e) for e in journal_entries],
-            }
-            resp = await self._client.post("/warm-up", json=body)
-            resp.raise_for_status()
-            data = resp.json()
-            self._readiness = BackendReadiness(data.get("readiness", "cold"))
-            self._caught_up_cursor = data.get("cursor", -1)
-            return self._readiness == BackendReadiness.READY
-        except Exception:
-            logger.exception("warm_up() failed")
-            self._readiness = BackendReadiness.FAILED
-            return False
+        Called by Switchboard when this backend becomes the *new* active after
+        a switch.  Preserves ``_last_msg_id`` and ``_msg_history`` so the
+        sync protocol can detect server-side session loss and resend history
+        (``need_history`` flow) instead of silently creating a blank session.
 
-    @property
-    def readiness(self) -> str:
-        return self._readiness
-
-    @property
-    def caught_up_cursor(self) -> int:
-        return self._caught_up_cursor
+        If *handoff_context* is provided, it is sent with the first ``decide()``
+        so the cloud agent starts with prior context.
+        """
+        self._pending_handoff = handoff_context
 
     async def aclose(self) -> None:
         await self._client.aclose()

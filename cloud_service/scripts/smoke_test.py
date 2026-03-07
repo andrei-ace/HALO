@@ -43,7 +43,7 @@ async def main() -> int:
         resp = await client.get("/health")
         resp.raise_for_status()
         health = resp.json()
-        print(f"    status={health['status']}  nonce={health['nonce']}")
+        print(f"    status={health['status']}  sessions={health['sessions']}")
 
         # 2. Decide with idle snapshot
         snap = idle_snapshot()

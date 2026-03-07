@@ -1,4 +1,4 @@
-"""Unit tests for Switchboard — failover, failback, context handoff, warm-up."""
+"""Unit tests for Switchboard — failover, failback, context handoff."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
-from halo.cognitive.config import BackendReadiness, BackendType, CognitiveConfig
+from halo.cognitive.config import BackendType, CognitiveConfig
 from halo.cognitive.switchboard import CONSECUTIVE_FAILURES_BEFORE_SWITCH, Switchboard
 from halo.contracts.enums import (
     ActStatus,
@@ -120,7 +120,7 @@ async def test_switch_to():
     await sb.switch_to(BackendType.CLOUD, reason="manual switch")
     assert sb.active_type == BackendType.CLOUD
     assert sb.active_backend is cloud
-    # Only the OLD backend gets reset_loop_state (drain stale state / mark COLD)
+    # Only the OLD backend gets reset_loop_state
     local.reset_loop_state.assert_called_once()
     cloud.reset_loop_state.assert_not_called()
 
@@ -173,6 +173,134 @@ async def test_handoff_context_includes_decisions():
     await sb.decide(snap)
     ctx = sb.get_handoff_context()
     assert "[Context handoff" in ctx
+
+
+# ---------------------------------------------------------------------------
+# Handoff injection on switch
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_switch_to_local_resets_stale_session_then_injects_handoff():
+    """switch_to(LOCAL) resets a stale session (no synced history) then injects handoff."""
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(return_value=[])
+    mock_agent.last_reasoning = ""
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.reset_session = AsyncMock()
+    mock_agent.inject_handoff_context = AsyncMock()
+    mock_agent._pending_handoff = None
+    mock_agent.msg_history = MessageHistory()  # empty — no compaction sync
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    cloud = _make_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
+
+    # Add context so handoff isn't empty
+    snap = _idle_snap()
+    await sb.decide(snap, operator_cmd="pick the red cube")
+
+    # Switch to LOCAL
+    await sb.switch_to(BackendType.LOCAL, reason="test handoff")
+
+    # No synced history → reset_session must be called before inject
+    mock_agent.reset_session.assert_awaited_once()
+    mock_agent.inject_handoff_context.assert_awaited_once()
+
+    handoff = mock_agent.inject_handoff_context.call_args[0][0]
+    assert "[Context handoff" in handoff
+    assert "Recent decisions:" in handoff
+
+
+@pytest.mark.asyncio
+async def test_switch_to_local_preserves_compaction_synced_history():
+    """switch_to(LOCAL) skips reset when local agent has compaction-synced history."""
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(return_value=[])
+    mock_agent.last_reasoning = ""
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.reset_session = AsyncMock()
+    mock_agent.inject_handoff_context = AsyncMock()
+    mock_agent.inject_compaction_state = AsyncMock()
+    mock_agent._pending_handoff = None
+    # Simulate compaction-synced history (non-empty)
+    synced_history = MessageHistory()
+    synced_history.append("model", "Session summary: picked red cube")
+    synced_history.append("user", "snapshot...")
+    mock_agent.msg_history = synced_history
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    cloud = _make_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
+
+    snap = _idle_snap()
+    await sb.decide(snap, operator_cmd="pick the red cube")
+
+    # Switch to LOCAL — should NOT reset the synced session
+    await sb.switch_to(BackendType.LOCAL, reason="test compaction preserve")
+
+    mock_agent.reset_session.assert_not_awaited()  # reset happens inside inject_compaction_state
+    mock_agent.inject_compaction_state.assert_awaited_once()
+    mock_agent.inject_handoff_context.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_switch_to_cloud_preserves_sync_state_and_forwards_handoff():
+    """switch_to(CLOUD) preserves sync state for need_history protocol and forwards handoff."""
+    from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+    remote = RemoteCognitiveBackend.__new__(RemoteCognitiveBackend)
+    remote._last_reasoning = ""
+    remote._last_msg_id = "old-msg-id"
+    remote._msg_history = [{"msg_id": "old-msg-id", "role": "user", "text": "old"}]
+    remote._on_compaction = None
+    remote._last_token_usage = {}
+    remote._session_id = "test"
+    remote._config = MagicMock()
+    remote._pending_handoff = None
+
+    local = _make_mock_backend("local")
+    local.decide = AsyncMock(return_value=[])
+    local.last_reasoning = "I will pick the cube"
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=remote, max_retries=1, retry_delays=(0.0,))
+
+    # Add context so handoff is non-empty
+    snap = _idle_snap()
+    await sb.decide(snap, operator_cmd="pick the red cube")
+
+    # Switch to CLOUD
+    await sb.switch_to(BackendType.CLOUD, reason="test reset")
+
+    # Sync state preserved so need_history protocol works on server restart
+    assert remote._last_msg_id == "old-msg-id"
+    assert remote._msg_history == [{"msg_id": "old-msg-id", "role": "user", "text": "old"}]
+
+    # Handoff context must be forwarded
+    assert remote._pending_handoff is not None
+    assert "[Context handoff" in remote._pending_handoff
 
 
 # ---------------------------------------------------------------------------
@@ -281,136 +409,33 @@ async def test_decide_passes_epoch():
 
 
 # ---------------------------------------------------------------------------
-# Warm-up failback protocol
+# Failback — immediate switch when preferred backend recovers
 # ---------------------------------------------------------------------------
 
 
-def _make_warmable_mock_backend(backend_type: str = "local") -> MagicMock:
-    """Create a mock that implements both CognitiveBackend and WarmableBackend."""
-    backend = _make_mock_backend(backend_type)
-    backend.warm_up = AsyncMock(return_value=False)
-    type(backend).readiness = PropertyMock(return_value=BackendReadiness.COLD)
-    type(backend).caught_up_cursor = PropertyMock(return_value=-1)
-    return backend
-
-
 @pytest.mark.asyncio
-async def test_failback_sends_full_warmup_when_cold():
-    """When preferred backend is COLD, _check_failback sends full state + journal."""
-    local = _make_warmable_mock_backend("local")
-    cloud = _make_warmable_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
-
-    # Simulate: switched to cloud (local is preferred but failed)
-    await sb.switch_to(BackendType.CLOUD, reason="test failover")
-    assert sb.active_type == BackendType.CLOUD
-
-    # Local is COLD but healthy — should trigger warm_up with full state
-    type(local).readiness = PropertyMock(return_value=BackendReadiness.COLD)
-    local.health_check = AsyncMock(return_value=True)
-    local.warm_up = AsyncMock(return_value=False)  # not ready yet
-
-    await sb._check_failback()
-
-    local.warm_up.assert_awaited_once()
-    call_kwargs = local.warm_up.call_args[1]
-    assert call_kwargs["state"] is not None  # CognitiveState was built
-    assert isinstance(call_kwargs["journal_entries"], list)
-    # Still on cloud (warm_up returned False)
-    assert sb.active_type == BackendType.CLOUD
-
-
-@pytest.mark.asyncio
-async def test_failback_sends_incremental_when_warming():
-    """When preferred backend is WARMING, _check_failback sends incremental entries."""
-    local = _make_warmable_mock_backend("local")
-    cloud = _make_warmable_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
-
-    await sb.switch_to(BackendType.CLOUD, reason="test")
-
-    # Local is WARMING with cursor=5
-    type(local).readiness = PropertyMock(return_value=BackendReadiness.WARMING)
-    type(local).caught_up_cursor = PropertyMock(return_value=5)
-    local.health_check = AsyncMock(return_value=True)
-    local.warm_up = AsyncMock(return_value=False)
-
-    await sb._check_failback()
-
-    local.warm_up.assert_awaited_once()
-    call_kwargs = local.warm_up.call_args[1]
-    assert call_kwargs["state"] is None  # incremental — no full state
-
-
-@pytest.mark.asyncio
-async def test_failback_switches_when_ready():
-    """When preferred backend is READY, _check_failback switches to it."""
-    local = _make_warmable_mock_backend("local")
-    cloud = _make_warmable_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
-
-    await sb.switch_to(BackendType.CLOUD, reason="test")
-    assert sb.active_type == BackendType.CLOUD
-
-    # Local is READY — should switch back
-    type(local).readiness = PropertyMock(return_value=BackendReadiness.READY)
-    local.health_check = AsyncMock(return_value=True)
-
-    await sb._check_failback()
-
-    assert sb.active_type == BackendType.LOCAL
-
-
-@pytest.mark.asyncio
-async def test_failback_immediate_for_non_warmable():
-    """Non-warmable backends get immediate switch (backward compat)."""
-    # Use plain mocks without warm_up/readiness/caught_up_cursor
+async def test_failback_switches_when_healthy():
+    """When preferred backend is healthy, _check_failback switches to it."""
     sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
     await sb.switch_to(BackendType.CLOUD, reason="test")
     assert sb.active_type == BackendType.CLOUD
 
+    # Local is healthy — should switch back
     local.health_check = AsyncMock(return_value=True)
     await sb._check_failback()
-
-    # Should switch immediately (no warm-up)
     assert sb.active_type == BackendType.LOCAL
 
 
 @pytest.mark.asyncio
-async def test_failback_warmup_with_snapshot_fn():
-    """When snapshot_fn is provided, it's used to build CognitiveState for warm-up."""
-    local = _make_warmable_mock_backend("local")
-    cloud = _make_warmable_mock_backend("cloud")
-    snap = _idle_snap()
-    snapshot_fn = AsyncMock(return_value=snap)
-    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
-    sb = Switchboard(
-        config=config,
-        local=local,
-        cloud=cloud,
-        snapshot_fn=snapshot_fn,
-        max_retries=1,
-        retry_delays=(0.0,),
-    )
-
+async def test_failback_no_switch_when_unhealthy():
+    """When preferred backend is unhealthy, _check_failback does not switch."""
+    sb, local, cloud = _make_switchboard(enable_failover=True, active=BackendType.LOCAL)
     await sb.switch_to(BackendType.CLOUD, reason="test")
+    assert sb.active_type == BackendType.CLOUD
 
-    # Reset snapshot_fn call count after switch_to (which also calls it for handoff)
-    snapshot_fn.reset_mock()
-
-    type(local).readiness = PropertyMock(return_value=BackendReadiness.COLD)
-    local.health_check = AsyncMock(return_value=True)
-    local.warm_up = AsyncMock(return_value=False)
-
+    local.health_check = AsyncMock(return_value=False)
     await sb._check_failback()
-
-    snapshot_fn.assert_awaited_once_with("arm0")
-    call_kwargs = local.warm_up.call_args[1]
-    # State should contain snapshot-derived fields
-    assert call_kwargs["state"].last_snapshot_id == "snap-001"
+    assert sb.active_type == BackendType.CLOUD
 
 
 # ---------------------------------------------------------------------------
@@ -456,50 +481,6 @@ async def test_lease_expires_without_renewal():
     # After renewal, lease should be valid again
     mgr.renew(lease.epoch)
     assert mgr.is_valid(lease.epoch)
-
-
-# ---------------------------------------------------------------------------
-# Active backend re-warm on COLD detection
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_rewarm_active_on_cold_detection():
-    """When active WarmableBackend drops to COLD, _rewarm_active() sends warm-up."""
-    local = _make_warmable_mock_backend("local")
-    cloud = _make_warmable_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
-
-    # Cloud is active and drops to COLD (e.g. instance restart)
-    type(cloud).readiness = PropertyMock(return_value=BackendReadiness.COLD)
-    cloud.warm_up = AsyncMock(return_value=True)
-
-    await sb._rewarm_active()
-
-    cloud.warm_up.assert_awaited_once()
-    call_kwargs = cloud.warm_up.call_args[1]
-    assert call_kwargs["state"] is not None
-
-
-# ---------------------------------------------------------------------------
-# Active backend re-warm on COLD detection
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_rewarm_active_skips_when_ready():
-    """_rewarm_active() is a no-op when active backend readiness is not COLD."""
-    local = _make_warmable_mock_backend("local")
-    cloud = _make_warmable_mock_backend("cloud")
-    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
-    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
-
-    type(cloud).readiness = PropertyMock(return_value=BackendReadiness.READY)
-
-    await sb._rewarm_active()
-
-    cloud.warm_up.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -613,3 +594,139 @@ async def test_backend_switched_filtered_from_snapshot():
     event_types = [e.type for e in snap.recent_events]
     assert EventType.BACKEND_SWITCHED not in event_types
     assert EventType.SKILL_SUCCEEDED in event_types
+
+
+# ---------------------------------------------------------------------------
+# History mirroring (cloud → local)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mirror_history_after_cloud_decide():
+    """Local msg_history is updated after a successful cloud decide."""
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+    from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+    # Set up local with real MessageHistory
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(return_value=[])
+    mock_agent.last_reasoning = ""
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.msg_history = MessageHistory()
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    # Set up remote with msg_history containing records
+    remote = RemoteCognitiveBackend.__new__(RemoteCognitiveBackend)
+    remote._last_reasoning = "I will pick"
+    remote._on_compaction = None
+    remote._last_token_usage = {}
+    remote._session_id = "test"
+    remote._config = MagicMock()
+    remote._pending_handoff = None
+    remote._last_msg_id = "msg-2"
+    remote._msg_history = [
+        {"msg_id": "msg-1", "role": "user", "text": "snap1", "ts_ms": 1, "is_summary": False},
+        {"msg_id": "msg-2", "role": "model", "text": "reply1", "ts_ms": 2, "is_summary": False},
+    ]
+
+    # Mock HTTP response
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "commands": [],
+        "reasoning": "I will pick the cube",
+        "msg_history": remote._msg_history,
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    remote._client = mock_client
+
+    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=remote, max_retries=1, retry_delays=(0.0,))
+
+    snap = _idle_snap()
+    await sb.decide(snap)
+
+    # Local MessageHistory should now have the mirrored records
+    records = local.agent.msg_history.get_all()
+    assert len(records) == 2
+    assert records[0].role == "user"
+    assert records[0].text == "snap1"
+    assert records[1].role == "model"
+    assert records[1].text == "reply1"
+
+
+@pytest.mark.asyncio
+async def test_mirror_history_noop_when_local_active():
+    """No mirror occurs when local is the active backend."""
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(return_value=[])
+    mock_agent.last_reasoning = "ok"
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.msg_history = MessageHistory()
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    cloud = _make_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
+
+    snap = _idle_snap()
+    await sb.decide(snap)
+
+    # Local history should stay empty — no mirroring when local is active
+    assert local.agent.msg_history.count() == 0
+
+
+@pytest.mark.asyncio
+async def test_mirror_error_does_not_break_decide():
+    """Mirror exception is swallowed — decide() still returns commands."""
+
+    from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+    # Set up remote that will return commands
+    remote = RemoteCognitiveBackend.__new__(RemoteCognitiveBackend)
+    remote._last_reasoning = "picking"
+    remote._on_compaction = None
+    remote._last_token_usage = {}
+    remote._session_id = "test"
+    remote._config = MagicMock()
+    remote._pending_handoff = None
+    remote._last_msg_id = None
+    remote._msg_history = None
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {"commands": [], "reasoning": "ok"}
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    remote._client = mock_client
+
+    # Local backend whose msg_history.replace_all raises
+    local = _make_mock_backend("local")
+
+    config = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=remote, max_retries=1, retry_delays=(0.0,))
+
+    # Force the mirror to fail — local is a MagicMock, no real agent
+    snap = _idle_snap()
+    # Should NOT raise despite mirroring failure
+    result = await sb.decide(snap)
+    assert result == []  # empty commands but no exception

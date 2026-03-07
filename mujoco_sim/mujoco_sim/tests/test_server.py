@@ -463,6 +463,16 @@ class TestHandlers:
         )
         assert reply["type"] == "start_place_ok"
 
+    def test_start_place_tray_color_agnostic(self, env_state):
+        """VLM returns 'beige_tray_01' — should resolve to yellow_tray via color-agnostic fallback."""
+        from mujoco_sim.server.handlers import dispatch_command
+
+        env, state = env_state
+        reply, _ = dispatch_command(
+            {"type": "start_place", "target_body": "beige_tray_01", "held_body": "green_cube"}, env, state
+        )
+        assert reply["type"] == "start_place_ok"
+
     def test_start_place_tray_rejects_unknown_held(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 

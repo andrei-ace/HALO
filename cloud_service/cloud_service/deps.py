@@ -25,6 +25,8 @@ _config: ServiceConfig | None = None
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     global _session_mgr, _config  # noqa: PLW0603
 
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+
     _config = ServiceConfig.from_env()
     if not _config.google_api_key:
         raise RuntimeError(

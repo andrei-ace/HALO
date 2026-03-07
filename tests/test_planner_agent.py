@@ -59,23 +59,6 @@ def test_abort_skill_tool_appends_command() -> None:
 
 
 # ---------------------------------------------------------------------------
-# override_target
-# ---------------------------------------------------------------------------
-
-
-def test_override_target_tool_appends_command() -> None:
-    ctx = _make_ctx()
-    tools = _tools_by_name(ctx)
-    tools["override_target"](skill_run_id="run-7", target_handle="mug-2")
-
-    assert len(ctx.commands) == 1
-    cmd = ctx.commands[0]
-    assert cmd.type == CommandType.OVERRIDE_TARGET
-    assert cmd.payload.skill_run_id == "run-7"
-    assert cmd.payload.target_handle == "mug-2"
-
-
-# ---------------------------------------------------------------------------
 # describe_scene
 # ---------------------------------------------------------------------------
 
@@ -101,7 +84,6 @@ def test_tool_commands_have_correct_arm_id() -> None:
     tools = _tools_by_name(ctx)
     tools["start_skill"](skill_name="PICK", target_handle="cube-1")
     tools["abort_skill"](skill_run_id="run-1", reason="test")
-    tools["override_target"](skill_run_id="run-1", target_handle="box-2")
     tools["describe_scene"](reason="")
 
     for cmd in ctx.commands:

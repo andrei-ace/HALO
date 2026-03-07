@@ -55,12 +55,13 @@ class FsmEngine:
         target: TargetInfo | None,
         perception: PerceptionInfo,
         act: ActInfo,
+        held_object_handle: str | None = None,
     ) -> PhaseId | None:
         """Returns old PhaseId on transition, None if stayed. One transition per tick max."""
         if not run.is_active:
             return None
 
-        ctx = self._build_context(run, now_ms, target, perception, act)
+        ctx = self._build_context(run, now_ms, target, perception, act, held_object_handle=held_object_handle)
 
         # Global guards
         for guard in self._global_guards:
@@ -133,6 +134,7 @@ class FsmEngine:
         target: TargetInfo | None,
         perception: PerceptionInfo,
         act: ActInfo,
+        held_object_handle: str | None = None,
     ) -> StateContext:
         node = self._graph.nodes[run.current_node]
         return StateContext(
@@ -145,6 +147,7 @@ class FsmEngine:
             state_bag=run.state_bag,
             target_handle=run.target_handle,
             successors=node.successors,
+            held_object_handle=held_object_handle,
         )
 
     def _apply_result(self, run: SkillRun, now_ms: int, result: HandlerResult) -> PhaseId | None:

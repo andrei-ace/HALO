@@ -38,7 +38,6 @@ async def test_health_integration(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
-    assert "nonce" in data
 
 
 async def test_decide_idle(client):
@@ -56,45 +55,36 @@ async def test_decide_idle(client):
     assert len(data["reasoning"]) > 0
     assert "commands" in data
     assert isinstance(data["commands"], list)
+    assert "msg_history" in data
 
 
-async def test_warm_up_and_decide(client):
-    """Warm-up then decide verifies session continuity."""
-    warm_body = {
-        "arm_id": "arm0",
-        "state": {
-            "ts_ms": 100,
-            "epoch": 1,
-            "cursor": 0,
-            "active_target_handle": None,
-            "held_object_handle": None,
-            "known_scene_handles": [],
-            "last_scene_description": "A table with a red cube and a green cube.",
-            "pending_operator_instruction": None,
-            "recent_decisions": [],
-            "last_snapshot_id": "snap-0",
-            "last_arm_id": "arm0",
-            "last_skill_phase": None,
-            "last_skill_name": None,
-            "last_outcome_state": None,
-            "recent_event_summaries": [],
-            "goal_summary": None,
-        },
-        "journal": [],
-    }
-    resp = await client.post("/warm-up", json=warm_body)
-    assert resp.status_code == 200
-    warm_data = resp.json()
-    assert warm_data["readiness"] == "ready"
-
-    # Now decide — session should be warm
+async def test_decide_with_last_msg_id(client):
+    """First decide (no last_msg_id) then second with last_msg_id verifies session continuity."""
     snap = idle_snapshot()
-    body = {
+    # First call — fresh session
+    body1 = {
+        "snapshot": snapshot_to_dict(snap),
+        "operator_cmd": "What do you see?",
+    }
+    resp1 = await client.post("/decide", json=body1)
+    assert resp1.status_code == 200
+    data1 = resp1.json()
+    assert data1["status"] == "ok"
+    assert "msg_history" in data1
+    assert len(data1["msg_history"]) > 0
+
+    # Extract last msg_id from the response
+    last_msg_id = data1["msg_history"][-1]["msg_id"]
+
+    # Second call — with last_msg_id for sync
+    body2 = {
         "snapshot": snapshot_to_dict(snap),
         "operator_cmd": "Pick the red cube.",
+        "last_msg_id": last_msg_id,
     }
-    resp = await client.post("/decide", json=body)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "reasoning" in data
-    assert isinstance(data["commands"], list)
+    resp2 = await client.post("/decide", json=body2)
+    assert resp2.status_code == 200
+    data2 = resp2.json()
+    assert data2["status"] == "ok"
+    assert "reasoning" in data2
+    assert isinstance(data2["commands"], list)

@@ -83,7 +83,7 @@ run-headless-live:
 run-cloud-service:
 	HALO_COMPACTION_INTERVAL=$(COMPACTION_INTERVAL) \
 	HALO_COMPACTION_OVERLAP=$(COMPACTION_OVERLAP) \
-	uv run --project cloud_service uvicorn cloud_service.app:app --host 0.0.0.0 --port 8080 --reload --reload-dir cloud_service
+	uv run --project cloud_service uvicorn cloud_service.app:app --host 0.0.0.0 --port 8080 --reload --reload-dir .
 
 test-cloud-service:
 	uv run pytest cloud_service/tests/ -v --ignore=cloud_service/tests/test_integration.py

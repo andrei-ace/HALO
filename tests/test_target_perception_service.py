@@ -11,7 +11,7 @@ from halo.contracts.snapshots import TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.target_perception_service.config import TargetPerceptionServiceConfig
 from halo.services.target_perception_service.frame_buffer import CapturedFrame
-from halo.services.target_perception_service.handle_match import dedupe_detection_handles
+from halo.services.target_perception_service.handle_match import dedupe_detection_handles, find_detection_by_handle
 from halo.services.target_perception_service.mock_fns import make_mock_capture_fn, make_mock_tracker_factory_fn
 from halo.services.target_perception_service.service import (
     CaptureFn,
@@ -433,6 +433,37 @@ def test_dedupe_detection_handles_skips_taken_suffixes():
 
     assert handles == ["cube_01", "cube_01_dup2", "cube_01_dup3", "cube_01_dup4"]
     assert len(handles) == len(set(handles))
+
+
+def test_find_detection_color_agnostic_fallback():
+    """beige_tray_01 (VLM) should match yellow_tray (sim body name) and vice versa."""
+    dets = _scene("beige_tray_01").detections
+    # Sim expects 'yellow_tray' — color-agnostic fallback should find beige_tray_01
+    match = find_detection_by_handle("yellow_tray", dets)
+    assert match is not None
+    assert match.handle == "beige_tray_01"
+
+    # Reverse: VLM handle as target, sim handle in detections
+    dets2 = _scene("yellow_tray").detections
+    match2 = find_detection_by_handle("beige_tray_01", dets2)
+    assert match2 is not None
+    assert match2.handle == "yellow_tray"
+
+
+def test_find_detection_color_agnostic_skipped_when_exact_match():
+    """Exact match takes priority over color-agnostic fallback."""
+    dets = _scene("yellow_tray", "beige_tray_01").detections
+    match = find_detection_by_handle("yellow_tray", dets)
+    assert match is not None
+    assert match.handle == "yellow_tray"
+
+
+def test_find_detection_suffix_match_before_color():
+    """Suffix-stripped match (tier 2) takes priority over color-agnostic (tier 3)."""
+    dets = _scene("red_cube_01", "green_cube_02").detections
+    match = find_detection_by_handle("red_cube_05", dets)
+    assert match is not None
+    assert match.handle == "red_cube_01"
 
 
 # ─── VLM async path ───────────────────────────────────────────────────────────

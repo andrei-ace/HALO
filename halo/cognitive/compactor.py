@@ -107,5 +107,9 @@ class MessageHistory:
             ts_ms=int(time.time() * 1000),
         )
 
+    def replace_all(self, records: list[MessageRecord]) -> None:
+        """Replace all records (used for cross-backend mirroring)."""
+        self._records = list(records)
+
     def clear(self) -> None:
         self._records.clear()

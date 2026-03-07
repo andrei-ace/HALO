@@ -40,6 +40,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _TARGET_SUFFIX_RE = re.compile(r"_\d+$")
+_COLOR_PREFIX_RE = re.compile(
+    r"^(red|green|blue|yellow|orange|purple|pink|black|white|grey|gray|brown|beige|tan|dark|light)_"
+)
 
 
 def _resolve_target_body(
@@ -53,6 +56,8 @@ def _resolve_target_body(
     Resolution order:
     1) Exact body name
     2) Trailing numeric suffix stripped (e.g. ``red_cube_01`` -> ``red_cube``)
+    3) Color-agnostic: strip color prefix + suffix, match known bodies by base type
+       (e.g. ``beige_tray_01`` -> ``tray`` matches ``yellow_tray``)
     """
     candidates = [requested_body]
     stripped = _TARGET_SUFFIX_RE.sub("", requested_body)
@@ -64,9 +69,19 @@ def _resolve_target_body(
         if body_id != -1:
             return candidate, body_id
 
-    known = ", ".join(repr(name) for name in known_bodies)
+    # Color-agnostic fallback: match known bodies by base object type
+    base = _COLOR_PREFIX_RE.sub("", stripped)
+    if base != stripped:
+        for known in known_bodies:
+            known_base = _COLOR_PREFIX_RE.sub("", _TARGET_SUFFIX_RE.sub("", known))
+            if known_base == base:
+                body_id = name_to_body_id(known)
+                if body_id != -1:
+                    return known, body_id
+
+    known_str = ", ".join(repr(name) for name in known_bodies)
     tried = ", ".join(repr(name) for name in candidates)
-    raise KeyError(f"Unknown body: {requested_body!r}. Tried: [{tried}]. Known: [{known}]")
+    raise KeyError(f"Unknown body: {requested_body!r}. Tried: [{tried}]. Known: [{known_str}]")
 
 
 def dispatch_command(

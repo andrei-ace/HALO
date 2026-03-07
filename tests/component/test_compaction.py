@@ -406,13 +406,12 @@ async def test_compaction_entry_included_in_failover_warmup():
     assert len(compaction_entries) == 1
     assert "20 messages" in compaction_entries[0].summary
 
-    # Now switch to local — warm_up should receive the compaction entry in journal
+    # Now switch to local — compaction entry is preserved in context store
     mock_local_agent.reset_session.reset_mock()
     mock_local_agent.inject_handoff_context.reset_mock()
     await sb.switch_to(BackendType.LOCAL, reason="test failover")
 
-    # Local warm_up was called (via switch_to pre-warm)
-    # The journal entries passed to warm_up include the compaction entry
+    # Switch completed; compaction entry remains in context store for handoff
     assert sb.active_type == BackendType.LOCAL
 
 

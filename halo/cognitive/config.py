@@ -13,7 +13,6 @@ class BackendType(StrEnum):
 
 class BackendReadiness(StrEnum):
     COLD = "cold"
-    WARMING = "warming"
     READY = "ready"
     ACTIVE = "active"
     FAILED = "failed"

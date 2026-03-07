@@ -39,6 +39,16 @@ def dedupe_detection_handles(detections: list[VlmDetection]) -> list[VlmDetectio
     return deduped
 
 
+_COLOR_PREFIX_RE = re.compile(
+    r"^(red|green|blue|yellow|orange|purple|pink|black|white|grey|gray|brown|beige|tan|dark|light)_"
+)
+
+
+def _strip_color(name: str) -> str:
+    """Strip a leading color adjective from *name* (e.g. ``beige_tray`` → ``tray``)."""
+    return _COLOR_PREFIX_RE.sub("", name)
+
+
 def find_detection_by_handle(
     target_handle: str,
     detections: list[VlmDetection],
@@ -49,7 +59,8 @@ def find_detection_by_handle(
 
     1. Exact handle match.
     2. Fuzzy fallback: strip trailing ``_NN`` and match on prefix.
-       If multiple candidates share the prefix, pick the first.
+    3. Color-agnostic fallback: strip leading color adjective + trailing ``_NN``
+       and match on base object type (e.g. ``beige_tray_01`` matches ``yellow_tray``).
     """
     exact = [d for d in detections if d.handle == target_handle]
     if exact:
@@ -57,7 +68,16 @@ def find_detection_by_handle(
 
     prefix = re.sub(r"_\d+$", "", target_handle)
     candidates = [d for d in detections if re.sub(r"_\d+$", "", d.handle) == prefix]
-    return _choose_candidate(candidates, reference_center_px)
+    if candidates:
+        return _choose_candidate(candidates, reference_center_px)
+
+    # Color-agnostic: strip color adjective + numeric suffix, match on base type
+    base = _strip_color(prefix)
+    if base != prefix:
+        candidates = [d for d in detections if _strip_color(re.sub(r"_\d+$", "", d.handle)) == base]
+        return _choose_candidate(candidates, reference_center_px)
+
+    return None
 
 
 def _choose_candidate(

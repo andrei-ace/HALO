@@ -200,7 +200,6 @@ def _format_cmd(cmd: object) -> str:
     from halo.contracts.commands import (
         AbortSkillPayload,
         DescribeScenePayload,
-        OverrideTargetPayload,
         StartSkillPayload,
     )
 
@@ -209,8 +208,6 @@ def _format_cmd(cmd: object) -> str:
         return f"START_SKILL({p.skill_name.value}, {p.target_handle})"
     if isinstance(p, AbortSkillPayload):
         return f"ABORT_SKILL({p.skill_run_id[-4:]}, {p.reason})"
-    if isinstance(p, OverrideTargetPayload):
-        return f"OVERRIDE_TARGET({p.target_handle})"
     if isinstance(p, DescribeScenePayload):
         return f"DESCRIBE_SCENE({p.reason})"
     return str(cmd.type)  # type: ignore[attr-defined]
@@ -1202,7 +1199,6 @@ class HALOApp(App):
         if self._cognitive_stack is not None:
             sb = self._cognitive_stack.switchboard
             cfg = self._cognitive_stack.config
-            from halo.cognitive.backend import WarmableBackend
             from halo.cognitive.config import BackendType
 
             if cfg.active == BackendType.CLOUD:
@@ -1211,10 +1207,7 @@ class HALOApp(App):
                 cloud_be = sb.active_backend
                 while _time.monotonic() < deadline:
                     try:
-                        if isinstance(cloud_be, WarmableBackend):
-                            cloud_ready = await cloud_be.warm_up(state=None, journal_entries=[])
-                        else:
-                            cloud_ready = await cloud_be.health_check()
+                        cloud_ready = await cloud_be.health_check()
                         if cloud_ready:
                             break
                     except Exception:

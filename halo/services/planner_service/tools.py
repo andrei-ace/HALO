@@ -8,7 +8,6 @@ from halo.contracts.commands import (
     AbortSkillPayload,
     CommandEnvelope,
     DescribeScenePayload,
-    OverrideTargetPayload,
     StartSkillPayload,
 )
 from halo.contracts.enums import CommandType, SkillName
@@ -21,13 +20,27 @@ class AgentContext:
     commands: list[CommandEnvelope] = field(default_factory=list)
     used_tools: set[str] = field(default_factory=set)
     epoch: int | None = None
+    call_counts: dict[str, int] = field(default_factory=dict)
+    loop_detected: bool = False
 
 
 def build_tools(ctx: AgentContext) -> list:
     """Build tool list that close over ctx. ADK introspects name/signature/docstring."""
 
     def _once(name: str) -> str | None:
-        """Return an error string if tool was already called this tick, else mark it used."""
+        """Return an error string if tool was already called this tick, else mark it used.
+
+        Also tracks per-tool call counts within a tick. If any tool is called
+        5+ times (including rejected attempts), sets loop_detected=True and
+        returns a hard stop message.
+        """
+        ctx.call_counts[name] = ctx.call_counts.get(name, 0) + 1
+        if ctx.call_counts[name] >= 5:
+            ctx.loop_detected = True
+            return (
+                f"LOOP DETECTED: {name} called {ctx.call_counts[name]} times. "
+                "Stop calling tools and respond with your reasoning."
+            )
         if name in ctx.used_tools:
             return f"REJECTED: {name} already called this tick. Wait for the next tick."
         ctx.used_tools.add(name)
@@ -103,30 +116,6 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued ABORT_SKILL run_id={skill_run_id} reason={reason}"
 
-    def override_target(skill_run_id: str, target_handle: str) -> str:
-        """Override the target for the currently running skill.
-
-        Args:
-            skill_run_id: ID of the skill run to update.
-            target_handle: New target object handle.
-        """
-        if err := _once("override_target"):
-            return err
-        cmd = CommandEnvelope(
-            command_id=str(uuid.uuid4()),
-            arm_id=ctx.arm_id,
-            issued_at_ms=int(time.time() * 1000),
-            type=CommandType.OVERRIDE_TARGET,
-            payload=OverrideTargetPayload(
-                skill_run_id=skill_run_id,
-                target_handle=target_handle,
-            ),
-            precondition_snapshot_id=ctx.snapshot_id,
-            epoch=ctx.epoch,
-        )
-        ctx.commands.append(cmd)
-        return f"Queued OVERRIDE_TARGET run_id={skill_run_id} target={target_handle}"
-
     def describe_scene(reason: str = "") -> str:
         """Ask TargetPerceptionService to run VLM scene analysis.
 
@@ -156,4 +145,4 @@ def build_tools(ctx: AgentContext) -> list:
         ctx.commands.append(cmd)
         return f"Queued DESCRIBE_SCENE reason={reason}"
 
-    return [start_skill, abort_skill, override_target, describe_scene]
+    return [start_skill, abort_skill, describe_scene]

@@ -17,9 +17,8 @@ import logging
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from halo.cognitive.backend import WarmableBackend
 from halo.cognitive.compactor import CompactionResult
-from halo.cognitive.config import BackendReadiness, BackendType, CognitiveConfig
+from halo.cognitive.config import BackendType, CognitiveConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.contracts.commands import CommandEnvelope
@@ -34,7 +33,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CONSECUTIVE_FAILURES_BEFORE_SWITCH = 3
-_CATCHUP_BATCH_SIZE = 20
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
@@ -157,6 +155,7 @@ class Switchboard:
                     return []
 
                 self._on_success()
+                self._mirror_history_to_inactive()
 
                 # Stamp epoch + lease_token on all returned commands
                 from dataclasses import replace as _dc_replace
@@ -207,6 +206,7 @@ class Switchboard:
                     epoch=self._lease_mgr.current_epoch,
                 )
                 self._on_success()
+                self._mirror_history_to_inactive()
                 from dataclasses import replace as _dc_replace
 
                 epoch = self._lease_mgr.current_epoch
@@ -315,14 +315,14 @@ class Switchboard:
     # ------------------------------------------------------------------
 
     async def switch_to(self, target: BackendType, reason: str = "") -> None:
-        """Switch to *target* backend with context handoff.
+        """Switch to *target* backend.
 
         Protocol:
-        1. Snapshot context from current backend
-        2. Pre-warm new backend (best-effort, while old lease still valid)
-        3. Revoke old lease
-        4. Grant new lease to target backend
-        5. Reset loop state on new backend
+        1. Build handoff context from ContextStore (while old backend is still active)
+        2. Revoke old lease
+        3. Grant new lease to target backend
+        4. Reset loop state on old backend
+        5. Inject handoff context into new backend
         6. Publish BACKEND_SWITCHED event (if bus available)
         """
         if target == self._active_type:
@@ -330,47 +330,28 @@ class Switchboard:
             return
 
         old_type = self._active_type
-        old_epoch = self._lease_mgr.current_epoch
 
         logger.info("Switching backend: %s -> %s (reason: %s)", old_type, target, reason)
 
-        # 1. Snapshot context
-        _snapshot = self._context_store.take_snapshot(old_epoch)
+        # 1. Build handoff context (while old backend is still active)
+        old_epoch = self._lease_mgr.current_epoch
+        handoff_text = self._context_store.get_handoff_context(old_epoch)
 
-        # 2. Pre-warm new backend (best-effort, old lease still active)
-        new_backend = self._backends[target]
-        if isinstance(new_backend, WarmableBackend):
-            try:
-                snapshot = None
-                if self._snapshot_fn is not None:
-                    try:
-                        snapshot = await self._snapshot_fn(self._arm_id)
-                    except Exception:
-                        pass
-                state = self._context_store.build_cognitive_state(
-                    epoch=old_epoch,
-                    snapshot=snapshot,
-                )
-                entries = self._context_store.get_entries_after(-1)
-                await new_backend.warm_up(state=state, journal_entries=entries)
-            except Exception:
-                logger.warning("Pre-warm failed for %s during switch", target)
-
-        # 3. Revoke old lease
+        # 2. Revoke old lease
         self._lease_mgr.revoke(old_epoch)
 
-        # 4. Grant new lease
+        # 3. Grant new lease
         self._active_type = target
         self._lease_mgr.grant(target)
         self._consecutive_failures = 0
 
-        # 5. Reset loop state on old backend only (drain stale commands / mark
-        #    COLD for future failback).  The new backend was just warmed up in
-        #    step 2 — resetting it would undo that warm-up and force a redundant
-        #    re-warm on the next health tick.
+        # 4. Reset loop state on old backend only
         self._backends[old_type].reset_loop_state()
 
-        # 6. Publish event + log to run logger
+        # 5. Inject handoff context into new backend
+        await self._inject_handoff(target, handoff_text)
+
+        # 6. Publish event
         switch_data = {
             "from": old_type,
             "to": target,
@@ -394,6 +375,46 @@ class Switchboard:
     def get_handoff_context(self) -> str:
         """Get handoff context text for the new backend's first message."""
         return self._context_store.get_handoff_context(self._lease_mgr.current_epoch)
+
+    async def _inject_handoff(self, target: BackendType, handoff_text: str) -> None:
+        """Inject handoff context into the target backend.
+
+        - LocalCognitiveBackend: if the agent already has compaction-synced
+          conversation history, preserve it and just queue the handoff text.
+          Otherwise, reset the stale session before injecting.
+        - RemoteCognitiveBackend: clears sync state and sends handoff_text with
+          the first decide() so the cloud agent starts with prior context.
+        """
+        new_backend = self._backends[target]
+
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+        from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+        if isinstance(new_backend, LocalCognitiveBackend):
+            try:
+                has_synced_history = new_backend.agent.msg_history.count() > 0
+                if has_synced_history:
+                    # Rebuild ADK session from the mirrored MessageHistory
+                    records = new_backend.agent.msg_history.get_all()
+                    summary = None
+                    retained = []
+                    for rec in records:
+                        if rec.is_summary:
+                            summary = rec.text
+                            retained.clear()
+                        else:
+                            retained.append(rec)
+                    await new_backend.agent.inject_compaction_state(summary or "", retained)
+                else:
+                    await new_backend.agent.reset_session()
+                # Handoff text injection stays AFTER inject_compaction_state
+                # (which clears _pending_handoff)
+                if handoff_text:
+                    await new_backend.agent.inject_handoff_context(handoff_text)
+            except Exception:
+                logger.debug("Failed to inject handoff into local backend", exc_info=True)
+        elif isinstance(new_backend, RemoteCognitiveBackend):
+            new_backend.reset_session(handoff_context=handoff_text or None)
 
     # ------------------------------------------------------------------
     # Health monitoring
@@ -427,8 +448,6 @@ class Switchboard:
                     healthy = await self.active_backend.health_check()
                     if healthy:
                         self._on_success()
-                        # Re-warm active backend if it dropped to COLD (e.g. instance restart)
-                        await self._rewarm_active()
                         # Check if preferred backend is healthy for failback
                         await self._check_failback()
                     else:
@@ -438,40 +457,8 @@ class Switchboard:
         except asyncio.CancelledError:
             pass
 
-    async def _rewarm_active(self) -> None:
-        """Re-warm the active backend if it dropped to COLD (e.g. cloud instance restart)."""
-        backend = self.active_backend
-        if not isinstance(backend, WarmableBackend):
-            return
-        if backend.readiness != BackendReadiness.COLD:
-            return
-
-        logger.info("Active backend %s dropped to COLD — re-warming", self._active_type)
-        try:
-            snapshot = None
-            if self._snapshot_fn is not None:
-                try:
-                    snapshot = await self._snapshot_fn(self._arm_id)
-                except Exception:
-                    pass
-            state = self._context_store.build_cognitive_state(
-                epoch=self._lease_mgr.current_epoch,
-                snapshot=snapshot,
-            )
-            entries = self._context_store.get_entries_after(-1)
-            await backend.warm_up(state=state, journal_entries=entries)
-        except Exception:
-            logger.debug("Re-warm of active backend failed", exc_info=True)
-
     async def _check_failback(self) -> None:
-        """If we're on the fallback backend and the preferred one is healthy, switch back.
-
-        Uses warm-up protocol for WarmableBackend implementations:
-        - COLD/FAILED: send full CognitiveState + journal via warm_up()
-        - WARMING: send incremental journal entries via warm_up()
-        - READY: switch to preferred backend
-        - Non-WarmableBackend: immediate switch (backward compat)
-        """
+        """If we're on the fallback backend and the preferred one is healthy, switch back."""
         preferred = self._config.active
         if self._active_type == preferred:
             return
@@ -479,55 +466,10 @@ class Switchboard:
         try:
             preferred_backend = self._backends[preferred]
             healthy = await preferred_backend.health_check()
-            if not healthy:
-                return
-
-            # Non-warmable backend: immediate switch (backward compat)
-            if not isinstance(preferred_backend, WarmableBackend):
+            if healthy:
                 await self.switch_to(preferred, reason="preferred backend recovered")
-                return
-
-            readiness = preferred_backend.readiness
-            if readiness in (BackendReadiness.COLD, BackendReadiness.FAILED):
-                # Full state + journal warm-up
-                snapshot = None
-                if self._snapshot_fn is not None:
-                    try:
-                        snapshot = await self._snapshot_fn(self._arm_id)
-                    except Exception:
-                        pass
-                state = self._context_store.build_cognitive_state(
-                    epoch=self._lease_mgr.current_epoch,
-                    snapshot=snapshot,
-                )
-                entries = self._context_store.get_entries_after(-1)
-                await preferred_backend.warm_up(state=state, journal_entries=entries)
-
-            elif readiness == BackendReadiness.WARMING:
-                # Incremental catch-up (bounded batch)
-                entries = self._context_store.get_entries_after(preferred_backend.caught_up_cursor)
-                await preferred_backend.warm_up(state=None, journal_entries=entries[:_CATCHUP_BATCH_SIZE])
-
-            elif readiness == BackendReadiness.READY:
-                # Verify cursor parity before switching
-                backend_cursor = preferred_backend.caught_up_cursor
-                store_cursor = self._context_store.latest_cursor
-                if backend_cursor < store_cursor:
-                    logger.info(
-                        "Preferred backend READY but cursor behind (%d < %d), sending catchup",
-                        backend_cursor,
-                        store_cursor,
-                    )
-                    entries = self._context_store.get_entries_after(backend_cursor)
-                    if not entries:
-                        entries = self._context_store.get_entries_after(-1)
-                    await preferred_backend.warm_up(state=None, journal_entries=entries[:_CATCHUP_BATCH_SIZE])
-                    return
-                # Caught up (backend_cursor >= store_cursor) — switch
-                await self.switch_to(preferred, reason="preferred backend recovered and warmed up")
-
         except Exception:
-            pass  # Preferred still unhealthy or warm-up failed
+            pass  # Preferred still unhealthy
 
     async def _event_journal_loop(self) -> None:
         """Subscribe to EventBus and journal key runtime events."""
@@ -563,12 +505,7 @@ class Switchboard:
                 self._bus.unsubscribe(self._arm_id, queue)
 
     async def _sync_compaction_to_inactive(self, result: CompactionResult) -> None:
-        """Propagate compaction summary + retained messages to the inactive backend.
-
-        After ADK compacts the cloud session, this rebuilds the local backend's
-        session with the compaction summary and retained conversation history so
-        that on failover the local model starts with proper context.
-        """
+        """Propagate compaction summary + retained messages to the inactive backend."""
         inactive_type = BackendType.LOCAL if self._active_type == BackendType.CLOUD else BackendType.CLOUD
         inactive = self._backends.get(inactive_type)
         if inactive is None:
@@ -578,7 +515,6 @@ class Switchboard:
             from halo.cognitive.local_backend import LocalCognitiveBackend
 
             if isinstance(inactive, LocalCognitiveBackend):
-                # Extract retained records from active backend's MessageHistory
                 active = self._backends[self._active_type]
                 retained = []
                 if hasattr(active, "agent") and hasattr(active.agent, "msg_history"):
@@ -597,7 +533,7 @@ class Switchboard:
             data={"up_to_msg_id": result.up_to_msg_id, "retained_count": result.retained_count},
         )
 
-        # Publish SESSION_COMPACTED event (filtered from planner history, like BACKEND_SWITCHED)
+        # Publish SESSION_COMPACTED event
         if self._bus is not None:
             from halo.contracts.events import EventEnvelope, EventType
 
@@ -615,6 +551,33 @@ class Switchboard:
                 },
             )
             await self._bus.publish(event)
+
+    def _mirror_history_to_inactive(self) -> None:
+        """Copy active backend's msg_history to inactive backend (cloud→local only).
+
+        After every successful cloud decide(), mirror the cloud's message history
+        into the local backend's MessageHistory so that on failover the local agent
+        has the full conversation context.  This is a cheap Python list replace.
+        Local→cloud direction is a no-op (cloud manages its own history server-side).
+        """
+        if self._active_type != BackendType.CLOUD:
+            return
+
+        try:
+            from halo.cognitive.local_backend import LocalCognitiveBackend
+            from halo.cognitive.remote_backend import RemoteCognitiveBackend
+
+            cloud = self._backends[BackendType.CLOUD]
+            local = self._backends[BackendType.LOCAL]
+
+            if not isinstance(cloud, RemoteCognitiveBackend) or not isinstance(local, LocalCognitiveBackend):
+                return
+
+            records = cloud.msg_history_records
+            if records:
+                local.agent.msg_history.replace_all(records)
+        except Exception:
+            logger.debug("Failed to mirror history to inactive backend", exc_info=True)
 
     def _on_success(self) -> None:
         """Reset consecutive failure counter and renew lease TTL on success."""

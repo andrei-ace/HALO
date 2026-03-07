@@ -498,6 +498,10 @@ async def test_remote_backend_compaction_callback():
     backend._last_reasoning = ""
     backend._on_compaction = AsyncMock()
     backend._run_logger = None
+    backend._last_msg_id = None
+    backend._msg_history = None
+    backend._last_token_usage = {}
+    backend._pending_handoff = None
 
     # Mock the HTTP client response
     mock_resp = MagicMock()
@@ -579,6 +583,10 @@ async def test_remote_backend_no_callback_when_not_compacted():
     backend._last_reasoning = ""
     backend._on_compaction = AsyncMock()
     backend._run_logger = None
+    backend._last_msg_id = None
+    backend._msg_history = None
+    backend._last_token_usage = {}
+    backend._pending_handoff = None
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
@@ -646,6 +654,10 @@ async def test_remote_backend_no_callback_when_none():
     backend._last_reasoning = ""
     backend._on_compaction = None
     backend._run_logger = None
+    backend._last_msg_id = None
+    backend._msg_history = None
+    backend._last_token_usage = {}
+    backend._pending_handoff = None
 
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
@@ -1126,3 +1138,236 @@ async def test_inject_compaction_state_clears_pending_handoff():
 
     # Pending handoff must be cleared — compaction state replaces it
     assert agent._pending_handoff is None
+
+
+# ---------------------------------------------------------------------------
+# Mirror + switch: cloud runs N ticks → switch to local → ADK session rebuilt
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_mirror_and_switch_rebuilds_session():
+    """Cloud runs N ticks, mirror keeps local in sync, switch rebuilds ADK session."""
+    from halo.cognitive.remote_backend import RemoteCognitiveBackend
+    from halo.contracts.enums import ActStatus, PerceptionFailureCode, SafetyState, SkillOutcomeState, TrackingStatus
+    from halo.contracts.snapshots import (
+        ActInfo,
+        OutcomeInfo,
+        PerceptionInfo,
+        PlannerSnapshot,
+        ProgressInfo,
+        SafetyInfo,
+        TargetInfo,
+    )
+
+    snap = PlannerSnapshot(
+        snapshot_id="snap-001",
+        ts_ms=1000,
+        arm_id="arm0",
+        skill=None,
+        target=TargetInfo(
+            handle=None,
+            hint_valid=False,
+            confidence=0.0,
+            obs_age_ms=0,
+            time_skew_ms=0,
+            delta_xyz_ee=(0, 0, 0),
+            distance_m=0.0,
+        ),
+        perception=PerceptionInfo(
+            tracking_status=TrackingStatus.IDLE,
+            failure_code=PerceptionFailureCode.OK,
+            reacquire_fail_count=0,
+            vlm_job_pending=False,
+        ),
+        act=ActInfo(status=ActStatus.IDLE, buffer_fill_ms=0, buffer_low=False),
+        progress=ProgressInfo(elapsed_ms=0, no_progress_ms=0, delta_distance=0.0),
+        outcome=OutcomeInfo(state=SkillOutcomeState.IN_PROGRESS, reason_code=None, needs_verify=False),
+        safety=SafetyInfo(state=SafetyState.OK, reflex_active=False, reason_codes=()),
+        command_acks=(),
+        recent_events=(),
+        held_object_handle=None,
+    )
+
+    # Build a remote backend with simulated msg_history growth
+    remote = RemoteCognitiveBackend.__new__(RemoteCognitiveBackend)
+    remote._last_reasoning = "I will track"
+    remote._on_compaction = None
+    remote._last_token_usage = {}
+    remote._session_id = "test"
+    remote._config = MagicMock()
+    remote._pending_handoff = None
+    remote._last_msg_id = None
+    remote._msg_history = []
+
+    # Simulate 3 ticks of cloud conversation
+    cloud_history = [
+        {"msg_id": "u1", "role": "user", "text": "pick the red cube", "ts_ms": 1, "is_summary": False},
+        {"msg_id": "m1", "role": "model", "text": "Starting TRACK for red cube", "ts_ms": 2, "is_summary": False},
+        {"msg_id": "u2", "role": "user", "text": "snap2", "ts_ms": 3, "is_summary": False},
+        {"msg_id": "m2", "role": "model", "text": "TRACK succeeded, starting PICK", "ts_ms": 4, "is_summary": False},
+        {"msg_id": "u3", "role": "user", "text": "snap3", "ts_ms": 5, "is_summary": False},
+        {"msg_id": "m3", "role": "model", "text": "PICK in progress", "ts_ms": 6, "is_summary": False},
+    ]
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "commands": [],
+        "reasoning": "PICK in progress",
+        "msg_history": cloud_history,
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    remote._client = mock_client
+
+    # Build local with real agent for inject_compaction_state
+    mock_local_agent = _mock_agent(backend="local")
+    # Track inject_compaction_state calls
+    inject_calls = []
+
+    async def _track_inject(summary, retained):
+        inject_calls.append((summary, retained))
+
+    mock_local_agent.inject_compaction_state = AsyncMock(side_effect=_track_inject)
+    mock_local_agent.msg_history = MessageHistory()
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_local_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+
+        local = LocalCognitiveBackend()
+
+    cfg = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=cfg, local=local, cloud=remote, max_retries=1, retry_delays=(0.0,))
+
+    # Cloud decide — should mirror history to local
+    await sb.decide(snap, operator_cmd="pick the red cube")
+
+    # Local should now have 6 records from mirroring
+    assert local.agent.msg_history.count() == 6
+
+    # Switch to local — should rebuild ADK session from mirrored history
+    await sb.switch_to(BackendType.LOCAL, reason="failover")
+
+    # inject_compaction_state should have been called with empty summary + all records as retained
+    assert len(inject_calls) == 1
+    summary, retained = inject_calls[0]
+    assert summary == ""  # no summary record in the history
+    assert len(retained) == 6
+
+
+@pytest.mark.asyncio
+async def test_mirror_with_compaction():
+    """Cloud compacts, mirror carries post-compaction state, switch works."""
+    cloud_history = [
+        {
+            "msg_id": "s1",
+            "role": "model",
+            "text": "Session summary: tracked and picked",
+            "ts_ms": 1,
+            "is_summary": True,
+        },
+        {"msg_id": "u4", "role": "user", "text": "snap4", "ts_ms": 2, "is_summary": False},
+        {"msg_id": "m4", "role": "model", "text": "Placing object", "ts_ms": 3, "is_summary": False},
+    ]
+
+    from halo.cognitive.remote_backend import RemoteCognitiveBackend
+    from halo.contracts.enums import ActStatus, PerceptionFailureCode, SafetyState, SkillOutcomeState, TrackingStatus
+    from halo.contracts.snapshots import (
+        ActInfo,
+        OutcomeInfo,
+        PerceptionInfo,
+        PlannerSnapshot,
+        ProgressInfo,
+        SafetyInfo,
+        TargetInfo,
+    )
+
+    snap = PlannerSnapshot(
+        snapshot_id="snap-001",
+        ts_ms=1000,
+        arm_id="arm0",
+        skill=None,
+        target=TargetInfo(
+            handle=None,
+            hint_valid=False,
+            confidence=0.0,
+            obs_age_ms=0,
+            time_skew_ms=0,
+            delta_xyz_ee=(0, 0, 0),
+            distance_m=0.0,
+        ),
+        perception=PerceptionInfo(
+            tracking_status=TrackingStatus.IDLE,
+            failure_code=PerceptionFailureCode.OK,
+            reacquire_fail_count=0,
+            vlm_job_pending=False,
+        ),
+        act=ActInfo(status=ActStatus.IDLE, buffer_fill_ms=0, buffer_low=False),
+        progress=ProgressInfo(elapsed_ms=0, no_progress_ms=0, delta_distance=0.0),
+        outcome=OutcomeInfo(state=SkillOutcomeState.IN_PROGRESS, reason_code=None, needs_verify=False),
+        safety=SafetyInfo(state=SafetyState.OK, reflex_active=False, reason_codes=()),
+        command_acks=(),
+        recent_events=(),
+        held_object_handle=None,
+    )
+
+    remote = RemoteCognitiveBackend.__new__(RemoteCognitiveBackend)
+    remote._last_reasoning = "Placing"
+    remote._on_compaction = None
+    remote._last_token_usage = {}
+    remote._session_id = "test"
+    remote._config = MagicMock()
+    remote._pending_handoff = None
+    remote._last_msg_id = "m4"
+    remote._msg_history = cloud_history
+
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status = MagicMock()
+    mock_resp.json.return_value = {
+        "commands": [],
+        "reasoning": "Placing object",
+        "msg_history": cloud_history,
+    }
+    mock_client = AsyncMock()
+    mock_client.post.return_value = mock_resp
+    remote._client = mock_client
+
+    mock_local_agent = _mock_agent(backend="local")
+    inject_calls = []
+
+    async def _track_inject(summary, retained):
+        inject_calls.append((summary, retained))
+
+    mock_local_agent.inject_compaction_state = AsyncMock(side_effect=_track_inject)
+    mock_local_agent.msg_history = MessageHistory()
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_local_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+
+        local = LocalCognitiveBackend()
+
+    cfg = CognitiveConfig(active=BackendType.CLOUD, enable_failover=True)
+    sb = Switchboard(config=cfg, local=local, cloud=remote, max_retries=1, retry_delays=(0.0,))
+
+    await sb.decide(snap)
+
+    # Local should have 3 records (post-compaction: summary + 2 retained)
+    assert local.agent.msg_history.count() == 3
+    records = local.agent.msg_history.get_all()
+    assert records[0].is_summary is True
+    assert records[0].text == "Session summary: tracked and picked"
+
+    # Switch to local — should rebuild with summary extracted
+    await sb.switch_to(BackendType.LOCAL, reason="failover")
+
+    assert len(inject_calls) == 1
+    summary, retained = inject_calls[0]
+    assert summary == "Session summary: tracked and picked"
+    assert len(retained) == 2  # u4, m4

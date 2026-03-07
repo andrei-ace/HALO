@@ -5,6 +5,7 @@ Both the local codebase and the remote cloud_service import from here.
 
 from __future__ import annotations
 
+from halo.cognitive.compactor import MessageRecord
 from halo.cognitive.context_store import CognitiveState, ContextEntry
 from halo.contracts.commands import (
     AbortSkillPayload,
@@ -424,4 +425,31 @@ def cognitive_state_from_dict(d: dict) -> CognitiveState:
         last_outcome_state=d.get("last_outcome_state"),
         recent_event_summaries=d.get("recent_event_summaries", []),
         goal_summary=d.get("goal_summary"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# MessageRecord
+# ---------------------------------------------------------------------------
+
+
+def message_record_to_dict(rec: MessageRecord) -> dict:
+    """Serialize a MessageRecord to a plain dict."""
+    return {
+        "msg_id": rec.msg_id,
+        "role": rec.role,
+        "text": rec.text,
+        "ts_ms": rec.ts_ms,
+        "is_summary": rec.is_summary,
+    }
+
+
+def message_record_from_dict(d: dict) -> MessageRecord:
+    """Reconstruct a MessageRecord from a plain dict."""
+    return MessageRecord(
+        msg_id=d["msg_id"],
+        role=d["role"],
+        text=d["text"],
+        ts_ms=d["ts_ms"],
+        is_summary=d.get("is_summary", False),
     )

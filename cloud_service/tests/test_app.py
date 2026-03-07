@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from halo.cognitive.compactor import MessageHistory
 from halo.contracts.commands import CommandEnvelope, DescribeScenePayload
 from halo.contracts.enums import CommandType
 from halo.contracts.serde import snapshot_to_dict
@@ -22,11 +23,6 @@ class _FakeSessionManager:
         self._agent = agent
         self._vlm_fn = vlm_fn
         self._sessions = {}
-        self._nonce = "test-nonce-abc123"
-
-    @property
-    def nonce(self):
-        return self._nonce
 
     @property
     def active_arm_ids(self):
@@ -35,6 +31,17 @@ class _FakeSessionManager:
     @property
     def vlm_fn(self):
         return self._vlm_fn
+
+    async def sync_session(self, arm_id, last_msg_id=None, msg_history=None, client_session_id=None):
+        from cloud_service.session_manager import SyncResult
+
+        session = MagicMock()
+        session.arm_id = arm_id
+        session.agent = self._agent
+        session.readiness = "ready"
+        session.cursor = -1
+        session.pending_handoff = None
+        return SyncResult(status="ok", session=session)
 
     async def get_or_create(self, arm_id, client_session_id=None):
         session = MagicMock()
@@ -47,12 +54,6 @@ class _FakeSessionManager:
 
     def get_session(self, arm_id):
         return None
-
-    async def warm_up_session(self, arm_id, state_dict, journal_dicts, client_session_id=None):
-        session = MagicMock()
-        session.readiness = "ready"
-        session.cursor = len(journal_dicts) - 1 if journal_dicts else -1
-        return session
 
     async def persist_session(self, arm_id):
         pass
@@ -69,8 +70,11 @@ def mock_agent():
     agent = MagicMock()
     agent.decide = AsyncMock(return_value=[])
     agent.last_reasoning = "test reasoning"
+    agent.last_compaction = None
+    agent.last_token_usage = {}
     agent.reset_loop_state = MagicMock()
     agent.inject_handoff_context = AsyncMock()
+    agent.msg_history = MessageHistory()
     return agent
 
 
@@ -109,7 +113,6 @@ def test_health(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ok"
-    assert data["nonce"] == "test-nonce-abc123"
     assert isinstance(data["sessions"], list)
 
 
@@ -121,6 +124,8 @@ def test_decide_empty_commands(client, mock_agent):
     data = resp.json()
     assert data["commands"] == []
     assert data["reasoning"] == "test reasoning"
+    assert data["status"] == "ok"
+    assert "msg_history" in data
 
 
 def test_decide_with_commands(client, mock_agent):
@@ -155,6 +160,69 @@ def test_decide_passes_epoch(client, mock_agent):
     assert kwargs["epoch"] == 42
 
 
+def test_decide_sends_last_msg_id(client, mock_agent):
+    """last_msg_id is passed through to sync_session."""
+    snap = idle_snapshot()
+    body = {"snapshot": snapshot_to_dict(snap), "last_msg_id": "abc123"}
+    resp = client.post("/decide", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ok"
+
+
+def test_decide_handoff_context_sets_pending_handoff(mock_agent, mock_vlm_fn):
+    """handoff_context in request body is set on session.pending_handoff."""
+    _captured_session = None
+
+    async def _capture_sync(*args, **kwargs):
+        nonlocal _captured_session
+        from cloud_service.session_manager import SyncResult
+
+        session = MagicMock()
+        session.arm_id = "arm0"
+        session.agent = mock_agent
+        session.readiness = "ready"
+        session.cursor = -1
+        session.pending_handoff = None
+        _captured_session = session
+        return SyncResult(status="ok", session=session)
+
+    session_mgr = _FakeSessionManager(mock_agent, mock_vlm_fn)
+    session_mgr.sync_session = _capture_sync
+
+    with (
+        patch("cloud_service.deps._session_mgr", session_mgr),
+        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+    ):
+        from cloud_service.app import app
+
+        c = TestClient(app)
+        snap = idle_snapshot()
+        handoff = "[Context handoff]\nOperator: pick the red cube"
+        body = {"snapshot": snapshot_to_dict(snap), "handoff_context": handoff}
+        resp = c.post("/decide", json=body)
+        assert resp.status_code == 200
+        # inject_handoff_context should have been called with the handoff text
+        mock_agent.inject_handoff_context.assert_awaited_once_with(handoff)
+
+
+def test_decide_returns_msg_history(client, mock_agent):
+    """Response always includes msg_history."""
+    # Add some records to the mock agent's history
+    mock_agent.msg_history.append("user", "pick the cube")
+    mock_agent.msg_history.append("model", "starting pick")
+
+    snap = idle_snapshot()
+    body = {"snapshot": snapshot_to_dict(snap)}
+    resp = client.post("/decide", json=body)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "msg_history" in data
+    assert len(data["msg_history"]) == 2
+    assert data["msg_history"][0]["role"] == "user"
+    assert data["msg_history"][1]["role"] == "model"
+
+
 def test_vlm_scene(client, mock_vlm_fn):
     # Create a minimal JPEG (1x1 pixel)
     import cv2
@@ -177,43 +245,6 @@ def test_vlm_scene(client, mock_vlm_fn):
     assert data["detections"][0]["handle"] == "red_cube_01"
 
 
-def test_warm_up(client):
-    body = {
-        "state": {
-            "ts_ms": 100,
-            "epoch": 1,
-            "cursor": 1,
-            "active_target_handle": "cube",
-            "held_object_handle": None,
-            "known_scene_handles": ["cube"],
-            "last_scene_description": "table",
-            "pending_operator_instruction": None,
-            "recent_decisions": [],
-            "last_snapshot_id": "snap-1",
-            "last_arm_id": "arm0",
-            "last_skill_phase": None,
-            "last_skill_name": None,
-            "last_outcome_state": None,
-        },
-        "journal": [
-            {
-                "cursor": 0,
-                "ts_ms": 10,
-                "epoch": 1,
-                "backend": "local",
-                "entry_type": "decision",
-                "summary": "d0",
-                "data": {},
-            },
-        ],
-    }
-    resp = client.post("/warm-up", json=body)
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["readiness"] == "ready"
-    assert "cursor" in data
-
-
 def test_state_endpoint_nonexistent(client):
     resp = client.get("/state/arm99")
     assert resp.status_code == 200
@@ -227,7 +258,10 @@ def test_auth_required():
     mock_agent = MagicMock()
     mock_agent.decide = AsyncMock(return_value=[])
     mock_agent.last_reasoning = ""
+    mock_agent.last_compaction = None
+    mock_agent.last_token_usage = {}
     mock_agent.reset_loop_state = MagicMock()
+    mock_agent.msg_history = MessageHistory()
 
     session_mgr = _FakeSessionManager(mock_agent, AsyncMock())
 
@@ -254,98 +288,32 @@ def test_auth_required():
         assert resp.status_code == 200
 
 
-def _make_test_session_mgr():
-    """Create a SessionManager with mocked PlannerAgent creation."""
-    from pathlib import Path
-    from unittest.mock import AsyncMock
+def test_decide_need_history_response(mock_agent, mock_vlm_fn):
+    """When sync returns need_history, /decide returns status=need_history."""
+    session_mgr = _FakeSessionManager(mock_agent, mock_vlm_fn)
 
-    from cloud_service.session_manager import SessionManager
+    # Override sync_session to return need_history
+    async def _need_history(*args, **kwargs):
+        from cloud_service.session_manager import SyncResult
 
-    mgr = SessionManager(
-        model_name="test",
-        prompts_dir=Path("/tmp"),
-        vlm_fn_factory=lambda: MagicMock(),
-    )
-    # Patch get_or_create to use mock agents instead of real PlannerAgent
-    _orig = mgr.get_or_create
+        return SyncResult(status="need_history")
 
-    async def _patched(arm_id, client_session_id=None):
-        from cloud_service.session_manager import ArmSession
+    session_mgr.sync_session = _need_history
 
-        if arm_id in mgr._sessions:
-            session = mgr._sessions[arm_id]
-            session.touch()
-            return session
-        agent = MagicMock()
-        agent.reset_loop_state = MagicMock()
-        agent.reset_session = AsyncMock()
-        session = ArmSession(arm_id=arm_id, agent=agent, client_session_id=client_session_id)
-        session.touch()
-        mgr._sessions[arm_id] = session
-        return session
+    with (
+        patch("cloud_service.deps._session_mgr", session_mgr),
+        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+    ):
+        from cloud_service.app import app
 
-    mgr.get_or_create = _patched
-    return mgr
-
-
-@pytest.mark.asyncio
-async def test_warm_up_routes_by_body_arm_id():
-    """SessionManager receives correct arm_id (not hardcoded arm0)."""
-    mgr = _make_test_session_mgr()
-    session = await mgr.warm_up_session("arm7", state_dict=None, journal_dicts=[])
-    assert session.arm_id == "arm7"
-    assert mgr.get_session("arm7") is not None
-    assert mgr.get_session("arm0") is None
-
-
-def test_warm_up_endpoint_reads_body_arm_id(client):
-    """/warm-up endpoint passes body arm_id to session manager (not hardcoded arm0)."""
-    # Patch the session manager's warm_up_session to capture the arm_id argument
-    from unittest.mock import patch as _patch
-
-    with _patch("cloud_service.deps._session_mgr") as patched_mgr:
-        from unittest.mock import AsyncMock
-
-        session_mock = MagicMock()
-        session_mock.readiness = "ready"
-        session_mock.cursor = -1
-        patched_mgr.warm_up_session = AsyncMock(return_value=session_mock)
-
-        body = {"arm_id": "arm5", "state": None, "journal": []}
-        resp = client.post("/warm-up", json=body)
+        c = TestClient(app, raise_server_exceptions=True)
+        snap = idle_snapshot()
+        body = {"snapshot": snapshot_to_dict(snap), "last_msg_id": "stale-id"}
+        resp = c.post("/decide", json=body)
         assert resp.status_code == 200
-        patched_mgr.warm_up_session.assert_called_once()
-        call_args = patched_mgr.warm_up_session.call_args
-        assert call_args[0][0] == "arm5" or call_args[1].get("arm_id") == "arm5"
-
-
-@pytest.mark.asyncio
-async def test_reset_clears_pending_handoff():
-    """After reset_session, pending_handoff is cleared so stale context doesn't leak."""
-    mgr = _make_test_session_mgr()
-    state_dict = {
-        "ts_ms": 100,
-        "epoch": 1,
-        "cursor": 0,
-        "active_target_handle": None,
-        "held_object_handle": None,
-        "known_scene_handles": [],
-        "last_scene_description": "table",
-        "pending_operator_instruction": None,
-        "recent_decisions": [],
-        "last_snapshot_id": "snap-1",
-        "last_arm_id": "arm0",
-        "last_skill_phase": None,
-        "last_skill_name": None,
-        "last_outcome_state": None,
-    }
-    session = await mgr.warm_up_session("arm0", state_dict=state_dict, journal_dicts=[])
-    assert session.pending_handoff is not None
-
-    # reset_session (used internally by get_or_create on session mismatch) should clear it
-    await mgr.reset_session("arm0")
-    session_after = mgr.get_session("arm0")
-    assert session_after.pending_handoff is None
+        data = resp.json()
+        assert data["status"] == "need_history"
+        assert data["commands"] == []
 
 
 def test_decide_restores_handoff_on_agent_failure(mock_agent, mock_vlm_fn):
@@ -353,25 +321,23 @@ def test_decide_restores_handoff_on_agent_failure(mock_agent, mock_vlm_fn):
     mock_agent.decide = AsyncMock(side_effect=RuntimeError("model unavailable"))
 
     session_mgr = _FakeSessionManager(mock_agent, mock_vlm_fn)
-    # Override get_or_create to return a session with pending_handoff
-    _orig = session_mgr.get_or_create
-
-    async def _with_handoff(arm_id, client_session_id=None):
-        session = await _orig(arm_id, client_session_id=client_session_id)
-        session.pending_handoff = "You are picking the red cube."
-        return session
-
-    session_mgr.get_or_create = _with_handoff
+    # Override sync_session to return a session with pending_handoff
     _last_session = None
-    _orig2 = session_mgr.get_or_create
 
-    async def _capture(arm_id, client_session_id=None):
+    async def _with_handoff(*args, **kwargs):
         nonlocal _last_session
-        session = await _orig2(arm_id, client_session_id=client_session_id)
-        _last_session = session
-        return session
+        from cloud_service.session_manager import SyncResult
 
-    session_mgr.get_or_create = _capture
+        session = MagicMock()
+        session.arm_id = "arm0"
+        session.agent = mock_agent
+        session.readiness = "ready"
+        session.cursor = -1
+        session.pending_handoff = "You are picking the red cube."
+        _last_session = session
+        return SyncResult(status="ok", session=session)
+
+    session_mgr.sync_session = _with_handoff
 
     with (
         patch("cloud_service.deps._session_mgr", session_mgr),

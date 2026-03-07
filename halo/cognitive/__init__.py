@@ -6,14 +6,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from halo.cognitive.backend import CognitiveBackend
-from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LocalConfig
+from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.cognitive.switchboard import Switchboard
 from halo.services.target_perception_service.vlm_parser import VlmScene
 
 if TYPE_CHECKING:
-    from halo.cognitive.context_store import CognitiveState, ContextEntry
     from halo.contracts.commands import CommandEnvelope
     from halo.contracts.snapshots import PlannerSnapshot
     from halo.runtime.event_bus import EventBus
@@ -55,21 +54,6 @@ class _UnavailableCloudBackend:
 
     def reset_loop_state(self) -> None:
         return None
-
-    async def warm_up(
-        self,
-        state: CognitiveState | None,
-        journal_entries: list[ContextEntry],
-    ) -> bool:
-        return False
-
-    @property
-    def readiness(self) -> str:
-        return BackendReadiness.COLD
-
-    @property
-    def caught_up_cursor(self) -> int:
-        return -1
 
 
 @dataclass
