@@ -172,10 +172,11 @@ _LEGEND = [
     ("T", "Focus the message input directly"),
     ("Enter", "Send message to planner"),
     ("Esc", "Clear input and return to monitoring mode"),
-    ("R", "Show full planner reasoning (Ctrl+Y to copy inside)"),
+    ("R", "Show full planner reasoning"),
     ("Y", "Yank — copy last reasoning to clipboard instantly"),
     ("F", "Toggle OpenCV camera feed viewer (live mode only)"),
-    ("A", "Emergency abort — always fires (even while typing)"),
+    ("Ctrl+A", "Emergency abort — blows the safety fuse"),
+    ("Ctrl+R", "Reset fuse — re-enable FSM / skill execution"),
     ("Ctrl+Q", "Quit"),
     ("?", "Show / hide this legend"),
 ]
@@ -758,7 +759,8 @@ class PanicPanel(Container):
     def compose(self) -> ComposeResult:
         with Horizontal(id="abort-row"):
             yield Button("ABORT NOW!", id="abort-btn")
-        yield Static("(Hold 'A' to stop immediately)", id="abort-hint")
+            yield Button("RESET", id="reset-btn", disabled=True)
+        yield Static("Ctrl+A abort  |  Ctrl+R reset", id="abort-hint")
 
 
 # ── Chrome ────────────────────────────────────────────────────────
@@ -786,7 +788,8 @@ class HintBar(Static):
             ("T", "type"),
             ("Enter", "send"),
             ("Esc", "cancel"),
-            ("A", "abort"),
+            ("Ctrl+A", "abort"),
+            ("Ctrl+R", "reset"),
             ("Ctrl+Q", "quit"),
         ):
             t.append("  ·  ", style="#3a4060")
@@ -828,7 +831,7 @@ class ReasoningScreen(ModalScreen):
     BINDINGS = [
         Binding("r", "close", show=False),
         Binding("escape", "close", show=False),
-        Binding("ctrl+y", "copy_all", "copy all", show=False),
+        Binding("y", "copy_all", "copy all", show=False),
     ]
 
     def __init__(self, reasoning: str, **kwargs) -> None:
@@ -853,7 +856,7 @@ class ReasoningScreen(ModalScreen):
                         yield Static(line or " ", classes="reasoning-line")
                 else:
                     yield Static("  (no reasoning captured yet)", classes="reasoning-line")
-            yield Static(" Ctrl+Y copy all  ·  R or Esc close", id="reasoning-close-hint")
+            yield Static(" Y copy all  ·  R or Esc close", id="reasoning-close-hint")
 
 
 # ── App ───────────────────────────────────────────────────────────
@@ -996,6 +999,37 @@ class HALOApp(App):
         text-style: bold reverse;
     }
 
+    #abort-btn:disabled {
+        background: #555555;
+        color: #999999;
+        text-style: bold;
+    }
+
+    #reset-btn {
+        width: 16;
+        height: 3;
+        margin: 0 0 0 2;
+        background: #1b5e20;
+        color: white;
+        text-style: bold;
+        border: none;
+    }
+
+    #reset-btn:hover {
+        background: #2e7d32;
+    }
+
+    #reset-btn:focus {
+        background: #2e7d32;
+        border: tall #69f0ae;
+        text-style: bold reverse;
+    }
+
+    #reset-btn:disabled {
+        background: #333333;
+        color: #666666;
+    }
+
     #abort-hint {
         content-align: center middle;
         color: #8a8a8a;
@@ -1060,7 +1094,8 @@ class HALOApp(App):
     """
 
     BINDINGS = [
-        Binding("a", "emergency_abort", "ABORT", priority=True, show=False),
+        Binding("ctrl+a", "emergency_abort", "ABORT", priority=True, show=False),
+        Binding("ctrl+r", "reset_fuse", "RESET", priority=True, show=False),
         Binding("t", "focus_input", "type", show=False),
         Binding("enter", "send_message", "send", show=False),
         Binding("escape", "cancel_input", "cancel", show=False),
@@ -1072,6 +1107,7 @@ class HALOApp(App):
     ]
 
     _abort_cooldown: float = 0.0  # monotonic time of last abort
+    _fuse_blown: bool = False  # safety fuse — blocks FSM/skill execution when True
     _last_reasoning: str = ""
     _event_queue: object | None = None  # asyncio.Queue[EventEnvelope] in live mode
 
@@ -1251,6 +1287,8 @@ class HALOApp(App):
         btn = event.button
         if btn.id == "abort-btn":
             self.action_emergency_abort()
+        elif btn.id == "reset-btn":
+            self.action_reset_fuse()
         elif "suggestion" in btn.classes and btn.name:
             inp = self.query_one("#planner-input", Input)
             inp.value = btn.name
@@ -1270,14 +1308,42 @@ class HALOApp(App):
         if now - self._abort_cooldown < 3.0:
             return
         self._abort_cooldown = now
+        self._fuse_blown = True
+        self._pending_commands.clear()  # drop any in-flight commands accepted before abort
+        self._update_fuse_display()
         self.notify(
-            "⚠ EMERGENCY STOP triggered!",
+            "FUSE BLOWN — all execution halted. Ctrl+R to reset.",
             severity="error",
             timeout=10,
             title="ABORT",
         )
         if self._runtime:
             self.run_worker(self._do_abort(), name="abort_worker")
+
+    def action_reset_fuse(self) -> None:
+        if not self._fuse_blown:
+            self.notify("Fuse is not blown", severity="warning", timeout=3)
+            return
+        self._fuse_blown = False
+        self._update_fuse_display()
+        self.notify("Fuse reset — execution re-enabled", severity="information", timeout=5)
+
+    def _update_fuse_display(self) -> None:
+        from textual.css.query import NoMatches
+
+        try:
+            abort_btn = self.query_one("#abort-btn", Button)
+            reset_btn = self.query_one("#reset-btn", Button)
+            if self._fuse_blown:
+                abort_btn.disabled = True
+                abort_btn.label = "FUSE BLOWN"
+                reset_btn.disabled = False
+            else:
+                abort_btn.disabled = False
+                abort_btn.label = "ABORT NOW!"
+                reset_btn.disabled = True
+        except NoMatches:
+            pass
 
     async def action_send_message(self) -> None:
         from datetime import datetime
@@ -1348,6 +1414,7 @@ class HALOApp(App):
             store=self._runtime.store,  # type: ignore[union-attr]
             arm_id=self._arm_id,
             video_source=self._video_source,
+            skill_runner_svc=self._skill_runner_svc,
         )
         if viewer.start():
             self._feed_viewer = viewer
@@ -1584,6 +1651,10 @@ class HALOApp(App):
             from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
 
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)  # type: ignore[union-attr]
+            # Inject fuse context so planner knows not to issue commands
+            if self._fuse_blown and msg is not None:
+                fuse_ctx = "[SAFETY FUSE BLOWN — all commands blocked. Operator must reset before any skill can run.]"
+                msg = fuse_ctx + "\n" + msg
             # Event wake signals (e.g. "[event: COMMAND_REJECTED]\nOperator task: ...")
             # are NOT operator commands — pass them as context only so they don't
             # reset loop detection.  Real operator messages never start with "[".
@@ -1620,13 +1691,22 @@ class HALOApp(App):
                 )
 
             # Update thinking widget
+            from halo.contracts.enums import CommandAckStatus
+
+            accepted = [(c, a) for c, a in acks if a.status == CommandAckStatus.ACCEPTED]
+            rejected = [(c, a) for c, a in acks if a.status != CommandAckStatus.ACCEPTED]
             result_text = Text()
             result_text.append(ts, style="grey62")
             result_text.append("  ")
-            if acks:
-                descs = ", ".join(_format_cmd(c) for c, _ in acks)
-                result_text.append(f"▶ Queued {len(acks)} command(s): {descs}", style="bright_green")
-            else:
+            if rejected:
+                descs = ", ".join(f"{_format_cmd(c)} [{a.reason or a.status.value}]" for c, a in rejected)
+                result_text.append(f"✗ Rejected {len(rejected)} command(s): {descs}", style="bold red")
+                if accepted:
+                    result_text.append(" | ", style="grey62")
+            if accepted:
+                descs = ", ".join(_format_cmd(c) for c, _ in accepted)
+                result_text.append(f"▶ Queued {len(accepted)} command(s): {descs}", style="bright_green")
+            elif not rejected:
                 snippet = (reasoning[:80] + "…") if len(reasoning) > 80 else reasoning
                 result_text.append("▶ No commands", style="grey62")
                 if snippet:
@@ -1659,6 +1739,14 @@ class HALOApp(App):
 
     async def _intercepted_submit(self, cmd) -> object:
         """Intercept submit_command to capture commands for routing to SkillRunner."""
+        from halo.contracts.enums import CommandType
+
+        if self._fuse_blown and cmd.type not in (CommandType.ABORT_SKILL, CommandType.DESCRIBE_SCENE):
+            from halo.contracts.commands import CommandAck
+            from halo.contracts.enums import CommandAckStatus
+
+            self.notify("FUSE BLOWN — command blocked. Ctrl+R to reset.", severity="error", timeout=5)
+            return CommandAck(command_id=cmd.command_id, status=CommandAckStatus.REJECTED, reason="fuse_blown")
         self._pending_commands[cmd.command_id] = cmd
         return await self._orig_submit(cmd)  # type: ignore[union-attr]
 
@@ -1692,6 +1780,8 @@ class HALOApp(App):
                     continue
 
                 if cmd.type == CommandType.START_SKILL:
+                    if self._fuse_blown:
+                        continue  # drop — fuse blown after command was accepted
                     payload = cmd.payload
                     assert isinstance(payload, StartSkillPayload)
                     await self._skill_runner_svc.start_skill(  # type: ignore[union-attr]
@@ -1889,6 +1979,10 @@ def _run_live(args: list[str]) -> None:
             loop = _asyncio.get_running_loop()
             return await loop.run_in_executor(None, sim_client.start_pick, target_body)
 
+        async def abort_pick_fn() -> dict:
+            loop = _asyncio.get_running_loop()
+            return await loop.run_in_executor(None, sim_client.abort_pick)
+
         def sim_phase_fn() -> tuple[int, bool]:
             return video_source.latest_phase_id, video_source.latest_done
 
@@ -1897,6 +1991,7 @@ def _run_live(args: list[str]) -> None:
             runtime=runtime,
             config=SkillRunnerConfig(),
             start_pick_fn=start_pick_fn,
+            abort_pick_fn=abort_pick_fn,
             sim_phase_fn=sim_phase_fn,
         )
 

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable
 import numpy as np
 
 from mujoco_sim.server.protocol import (
+    CMD_ABORT_PICK,
     CMD_CONFIGURE,
     CMD_GET_STATE,
     CMD_RESET,
@@ -20,6 +21,7 @@ from mujoco_sim.server.protocol import (
     CMD_SHUTDOWN,
     CMD_START_PICK,
     CMD_STEP,
+    RESP_ABORT_PICK_OK,
     RESP_ERROR,
     RESP_OK,
     RESP_RESET_OK,
@@ -95,6 +97,9 @@ def dispatch_command(
 
     if cmd == CMD_START_PICK:
         return _handle_start_pick(msg, env, server_state), False
+
+    if cmd == CMD_ABORT_PICK:
+        return _handle_abort_pick(server_state, env), False
 
     if cmd == CMD_CONFIGURE:
         return _handle_configure(msg), False
@@ -227,6 +232,25 @@ def _handle_start_pick(msg: dict, env: SO101Env, server_state: ServerState | Non
     server_state.error = None
 
     return {"type": RESP_START_PICK_OK, "target_body": target_body, "deferred": True}
+
+
+def _handle_abort_pick(server_state: ServerState | None, env: SO101Env) -> dict:
+    """Abort the active pick trajectory and hold current position."""
+    if server_state is None:
+        return {"type": RESP_ABORT_PICK_OK, "was_active": False}
+
+    was_active = server_state.trajectory is not None or server_state.pending_pick_target is not None
+    if was_active:
+        # Cancel deferred pick before it gets executed by the main loop
+        server_state.pending_pick_target = None
+        # Latch actual measured joint positions (not ctrl targets) so the arm freezes in place
+        server_state.hold_target = np.array(env.mujoco_data.qpos[:6], copy=True)
+        server_state.reset_trajectory()
+        logger.info("abort_pick: trajectory aborted, holding current position")
+    else:
+        logger.info("abort_pick: no active trajectory to abort")
+
+    return {"type": RESP_ABORT_PICK_OK, "was_active": was_active}
 
 
 def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
@@ -376,10 +400,7 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
     except Exception as exc:
         logger.exception("start_pick unexpected error")
         server_state.error = str(exc)
-        return {
-            "type": RESP_START_PICK_ERROR,
-            "message": str(exc),
-        }
+        server_state.done = True
 
 
 def _handle_configure(msg: dict) -> dict:

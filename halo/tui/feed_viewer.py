@@ -163,6 +163,8 @@ def _viewer_main(
     """
     import cv2  # noqa: F811 — fresh import in child process
 
+    from halo.tui.fsm_overlay import render_fsm_overlay
+
     try:
         cv2.namedWindow(_WINDOW_NAME, cv2.WINDOW_NORMAL)
     except cv2.error:
@@ -180,6 +182,7 @@ def _viewer_main(
 
     target: TargetInfo | None = None
     perception: PerceptionInfo | None = None
+    fsm_dict: dict | None = None
     frame: np.ndarray | None = None
     frame_delay_ms = max(1, int(1000 / _TARGET_FPS))
 
@@ -194,8 +197,13 @@ def _viewer_main(
                     msg = data_conn.recv()
                 except EOFError:
                     break
-                if isinstance(msg, tuple) and len(msg) == 3:
+                if isinstance(msg, tuple) and len(msg) == 4:
+                    new_frame, target, perception, fsm_dict = msg
+                    if new_frame is not None:
+                        frame = new_frame
+                elif isinstance(msg, tuple) and len(msg) == 3:
                     frame, target, perception = msg
+                    fsm_dict = None
                 elif isinstance(msg, tuple) and len(msg) == 2:
                     target, perception = msg
 
@@ -214,6 +222,12 @@ def _viewer_main(
 
             display = frame.copy()
             _draw_annotations(display, target, perception)
+
+            # Render FSM overlay below the camera frame
+            fw = display.shape[1]
+            fsm_canvas = render_fsm_overlay(fsm_dict, fw)
+            display = np.vstack([display, fsm_canvas])
+
             cv2.imshow(_WINDOW_NAME, display)
 
             key = cv2.waitKey(frame_delay_ms) & 0xFF
@@ -246,6 +260,10 @@ class FeedViewer:
     video_source : VideoSource | None
         Shared video source.  When provided, frames are sent through the
         pipe and the subprocess does not open its own ``VideoCapture``.
+    skill_runner_svc : object | None
+        SkillRunnerService instance.  When provided, the pusher thread
+        calls ``get_view_model()`` each frame and the subprocess renders
+        the FSM graph below the camera feed.
     """
 
     def __init__(
@@ -254,11 +272,18 @@ class FeedViewer:
         arm_id: str = "arm0",
         video_path: str | Path = _DEFAULT_VIDEO,
         video_source: object | None = None,
+        skill_runner_svc: object | None = None,
     ) -> None:
         self._store = store
         self._arm_id = arm_id
         self._video_path = Path(video_path)
         self._video_source = video_source
+        self._skill_runner_svc = skill_runner_svc
+        self._prev_skill_run_id: str | None = None
+        self._prev_skill_dict: dict | None = None  # last 3 transitions of previous skill
+        self._last_skill_dict: dict | None = None  # latest serialized dict (for snapshotting on change)
+        self._cached_vm_key: tuple | None = None  # (run_id, current_node, outcome, n_transitions)
+        self._cached_vm_dict: dict | None = None  # cached serialized output
         self._process: mp.Process | None = None
         self._data_conn: multiprocessing.connection.Connection | None = None
         self._stop_conn: multiprocessing.connection.Connection | None = None
@@ -332,6 +357,77 @@ class FeedViewer:
     def is_running(self) -> bool:
         return self._process is not None and self._process.is_alive()
 
+    def _serialize_view_model(self) -> dict | None:
+        """Call get_view_model() on the skill runner and convert to a plain dict.
+
+        When the active skill changes, the outgoing skill's last 3
+        transitions are stored in ``_prev_skill_dict`` and sent alongside
+        the new skill so the subprocess can render a small recap.
+        """
+        if self._skill_runner_svc is None:
+            return None
+        try:
+            vm = self._skill_runner_svc.get_view_model()  # type: ignore[union-attr]
+        except Exception:
+            return None
+        if vm is None:
+            # Invalidate cache — runner went idle
+            self._cached_vm_key = None
+            self._cached_vm_dict = None
+            # Runner is idle — freeze last skill as prev if we haven't already
+            if self._last_skill_dict is not None and self._prev_skill_run_id is not None:
+                prev = dict(self._last_skill_dict)
+                prev.pop("prev_skill", None)
+                self._prev_skill_dict = prev
+                self._last_skill_dict = None
+                self._prev_skill_run_id = None
+            # Return None (idle placeholder) but attach prev recap if available
+            if self._prev_skill_dict is not None:
+                return {"prev_skill": self._prev_skill_dict}
+            return None
+
+        run_id = vm.skill_run_id
+
+        # Fast path: return cached dict if FSM state hasn't changed
+        vm_key = (run_id, vm.current_node, vm.outcome, len(vm.transition_history))
+        if vm_key == self._cached_vm_key and self._cached_vm_dict is not None:
+            return self._cached_vm_dict
+
+        current = {
+            "skill_name": vm.skill_name,
+            "variant": vm.variant,
+            "target_handle": vm.target_handle,
+            "current_node": vm.current_node,
+            "outcome": vm.outcome,
+            "failure_code": vm.failure_code,
+            "nodes": [
+                {"name": n.name, "phase_id": n.phase_id, "status": n.status, "elapsed_ms": n.elapsed_ms}
+                for n in vm.nodes
+            ],
+            "edges": [{"source": e.source, "target": e.target, "label": e.label} for e in vm.edges],
+            "transition_history": [
+                {"from_node": t.from_node, "to_node": t.to_node, "trigger": t.trigger} for t in vm.transition_history
+            ],
+        }
+
+        # Track skill transitions: when run_id changes, freeze prev with full history
+        if self._prev_skill_run_id is not None and run_id != self._prev_skill_run_id:
+            if self._last_skill_dict is not None:
+                prev = dict(self._last_skill_dict)
+                prev.pop("prev_skill", None)  # strip nested chain
+                self._prev_skill_dict = prev
+
+        self._prev_skill_run_id = run_id
+        self._last_skill_dict = current
+
+        # Attach previous skill summary so subprocess can show it
+        if self._prev_skill_dict is not None:
+            current["prev_skill"] = self._prev_skill_dict
+
+        self._cached_vm_key = vm_key
+        self._cached_vm_dict = current
+        return current
+
     def _push_state(self) -> None:
         """Periodically send the latest state (and frame) to the child process."""
         while not self._pusher_stop.is_set():
@@ -340,16 +436,17 @@ class FeedViewer:
 
             target: TargetInfo | None = self._store._target.get(self._arm_id)  # type: ignore[union-attr]
             perception: PerceptionInfo | None = self._store._perception.get(self._arm_id)  # type: ignore[union-attr]
+            fsm_dict = self._serialize_view_model()
 
             if self._data_conn is not None:
                 try:
                     if self._video_source is not None:
                         frame = self._video_source.latest_frame  # type: ignore[union-attr]
                         if frame is not None:
-                            self._data_conn.send((frame, target, perception))
+                            self._data_conn.send((frame, target, perception, fsm_dict))
                         # Skip send if no frame yet (source still starting)
                     else:
-                        self._data_conn.send((target, perception))
+                        self._data_conn.send((None, target, perception, fsm_dict))
                 except (BrokenPipeError, OSError):
                     break
 

@@ -24,6 +24,7 @@ CMD_GET_STATE = "get_state"
 CMD_SET_STATE = "set_state"
 CMD_TEACHER_STEP = "teacher_step"  # deprecated — kept for protocol compat
 CMD_START_PICK = "start_pick"
+CMD_ABORT_PICK = "abort_pick"
 CMD_CONFIGURE = "configure"
 CMD_SET_HINT = "set_hint"
 CMD_SHUTDOWN = "shutdown"
@@ -35,6 +36,7 @@ RESP_STATE = "state"
 RESP_TEACHER_STEP_OK = "teacher_step_ok"  # deprecated
 RESP_START_PICK_OK = "start_pick_ok"
 RESP_START_PICK_ERROR = "start_pick_error"
+RESP_ABORT_PICK_OK = "abort_pick_ok"
 RESP_OK = "ok"
 RESP_ERROR = "error"
 

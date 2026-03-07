@@ -218,6 +218,19 @@ class SimClient:
 
         return self._send_command({"type": CMD_START_PICK, "target_body": target_body})
 
+    def abort_pick(self) -> dict:
+        """Abort the active pick trajectory on the sim server.
+
+        The arm freezes at its current position. Safe to call when no
+        trajectory is active (returns ``was_active=False``).
+
+        Returns:
+            Dict with keys: type ("abort_pick_ok"), was_active (bool).
+        """
+        from mujoco_sim.server.protocol import CMD_ABORT_PICK
+
+        return self._send_command({"type": CMD_ABORT_PICK})
+
     def configure(self, **kwargs: Any) -> dict:
         """Send runtime configuration changes."""
         from mujoco_sim.server.protocol import CMD_CONFIGURE

@@ -38,3 +38,6 @@ class SkillRunnerConfig:
     chunk_horizon_steps: int = 10  # v0: 10 steps @ 10 Hz = 1 s horizon
 
     skip_verify_grasp: bool = False
+
+    # Skill queue
+    max_queue_size: int = 16

@@ -51,13 +51,14 @@ class LiveSessionState:
 
 
 def _load_prompts(prompts_dir: Path) -> str:
-    """Load system_prompt.md + all skills/*.md and return combined string."""
+    """Load system_prompt.md + skill prompts from configs/skills/*/system_prompt.md."""
     system_prompt_path = prompts_dir / "system_prompt.md"
     parts = [system_prompt_path.read_text(encoding="utf-8")]
 
-    skills_dir = prompts_dir / "skills"
+    # Skill prompts live under configs/skills/<skill_name>/system_prompt.md
+    skills_dir = prompts_dir.parent / "skills"
     if skills_dir.is_dir():
-        skill_files = sorted(skills_dir.glob("*.md"))
+        skill_files = sorted(skills_dir.glob("*/system_prompt.md"))
         if skill_files:
             parts.append("\n\n# Skill Reference\n")
             for sf in skill_files:

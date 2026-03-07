@@ -52,7 +52,7 @@ class PhaseId(IntEnum):
 
 
 # Phases where the wrist camera provides real frames (vs. black/masked).
-# Shared contract consumed by PickFSM, ControlService, and sim constants.
+# Shared contract consumed by FsmEngine handlers, ControlService, and sim constants.
 WRIST_ACTIVE_PHASES: frozenset[PhaseId] = frozenset(
     {
         PhaseId.VISUAL_ALIGN,
@@ -111,6 +111,7 @@ class CommandType(StrEnum):
 
 class CommandAckStatus(StrEnum):
     ACCEPTED = "ACCEPTED"
+    REJECTED = "REJECTED"
     REJECTED_STALE = "REJECTED_STALE"
     REJECTED_WRONG_SKILL_RUN = "REJECTED_WRONG_SKILL_RUN"
     REJECTED_WRONG_EPOCH = "REJECTED_WRONG_EPOCH"

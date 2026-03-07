@@ -1,0 +1,21 @@
+stateDiagram-v2
+    [*] --> SELECT_GRASP
+    SELECT_GRASP --> PLAN_APPROACH : tracking_ok
+    SELECT_GRASP --> DONE : timeout
+    PLAN_APPROACH --> MOVE_PREGRASP : pass_through
+    MOVE_PREGRASP --> VISUAL_ALIGN : close_enough
+    MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : target_lost
+    MOVE_PREGRASP --> EXECUTE_APPROACH : skip_visual_align
+    MOVE_PREGRASP --> DONE : timeout
+    VISUAL_ALIGN --> EXECUTE_APPROACH : close_enough
+    VISUAL_ALIGN --> RECOVER_RETRY_APPROACH : target_lost
+    VISUAL_ALIGN --> DONE : timeout
+    EXECUTE_APPROACH --> CLOSE_GRIPPER : grasp_qualified
+    EXECUTE_APPROACH --> RECOVER_RETRY_APPROACH : target_lost
+    EXECUTE_APPROACH --> DONE : timeout
+    CLOSE_GRIPPER --> VERIFY_GRASP : timer_elapsed
+    CLOSE_GRIPPER --> LIFT : skip_verify
+    VERIFY_GRASP --> LIFT : timer_elapsed
+    LIFT --> DONE : success
+    RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry
+    RECOVER_RETRY_APPROACH --> DONE : max_retries
