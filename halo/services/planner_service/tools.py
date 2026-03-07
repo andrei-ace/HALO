@@ -18,22 +18,31 @@ class AgentContext:
     arm_id: str
     snapshot_id: str | None
     commands: list[CommandEnvelope] = field(default_factory=list)
-    used_tools: set[str] = field(default_factory=set)
+    used_tools: set[tuple] = field(default_factory=set)
     epoch: int | None = None
     call_counts: dict[str, int] = field(default_factory=dict)
     loop_detected: bool = False
+    total_calls: int = 0
 
 
 def build_tools(ctx: AgentContext) -> list:
     """Build tool list that close over ctx. ADK introspects name/signature/docstring."""
 
-    def _once(name: str) -> str | None:
-        """Return an error string if tool was already called this tick, else mark it used.
+    def _once(name: str, *args: str) -> str | None:
+        """Return an error string if this exact (name, args) was already called, else mark used.
 
-        Also tracks per-tool call counts within a tick. If any tool is called
-        5+ times (including rejected attempts), sets loop_detected=True and
-        returns a hard stop message.
+        Deduplicates on the full (name, *args) tuple so the same tool with
+        different arguments is allowed (e.g. start_skill(TRACK, X) then
+        start_skill(PICK, X)).  Loop detection (call_counts) stays keyed on
+        name only — catches any tool being hammered regardless of args.
+
+        A global cap of 8 total tool calls per tick prevents the agent from
+        burning through the LLM call budget even with varied args.
         """
+        ctx.total_calls += 1
+        if ctx.total_calls > 8:
+            ctx.loop_detected = True
+            return "HARD STOP: 8 tool calls reached this tick. Stop calling tools and respond with your reasoning."
         ctx.call_counts[name] = ctx.call_counts.get(name, 0) + 1
         if ctx.call_counts[name] >= 5:
             ctx.loop_detected = True
@@ -41,9 +50,10 @@ def build_tools(ctx: AgentContext) -> list:
                 f"LOOP DETECTED: {name} called {ctx.call_counts[name]} times. "
                 "Stop calling tools and respond with your reasoning."
             )
-        if name in ctx.used_tools:
-            return f"REJECTED: {name} already called this tick. Wait for the next tick."
-        ctx.used_tools.add(name)
+        key = (name, *args)
+        if key in ctx.used_tools:
+            return f"REJECTED: {name} already called with these arguments this tick. Wait for the next tick."
+        ctx.used_tools.add(key)
         return None
 
     def start_skill(skill_name: str, target_handle: str, options: str = "") -> str:
@@ -61,7 +71,7 @@ def build_tools(ctx: AgentContext) -> list:
                 For PLACE: '{"modifier": "PLACE_FLOOR"}', '{"modifier": "PLACE_NEXT_TO"}',
                 or '{"modifier": "PLACE_IN_TRAY"}'.
         """
-        if err := _once("start_skill"):
+        if err := _once("start_skill", skill_name, target_handle):
             return err
         try:
             skill = SkillName(skill_name)
@@ -99,7 +109,7 @@ def build_tools(ctx: AgentContext) -> list:
             skill_run_id: ID of the skill run to abort (from snapshot.skill.skill_run_id).
             reason: Human-readable reason for aborting.
         """
-        if err := _once("abort_skill"):
+        if err := _once("abort_skill", skill_run_id):
             return err
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),

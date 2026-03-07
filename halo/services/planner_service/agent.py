@@ -388,6 +388,7 @@ class PlannerAgent:
         self._ctx.used_tools.clear()
         self._ctx.call_counts.clear()
         self._ctx.loop_detected = False
+        self._ctx.total_calls = 0
 
         # New operator instruction always resets loop detection so the
         # agent gets a clean slate to act on the command.

@@ -96,14 +96,38 @@ def test_tool_commands_have_correct_arm_id() -> None:
 
 
 def test_duplicate_tool_call_rejected() -> None:
-    """Calling the same tool twice in one tick is rejected (once-per-tick guard)."""
+    """Calling the same tool with the same args twice is rejected."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
     tools["start_skill"](skill_name="PICK", target_handle="cube-1")
-    result2 = tools["start_skill"](skill_name="PICK", target_handle="cube-2")
+    result2 = tools["start_skill"](skill_name="PICK", target_handle="cube-1")
 
     assert len(ctx.commands) == 1, "Only the first call should produce a command"
     assert "REJECTED" in result2
+
+
+def test_start_skill_different_args_allowed() -> None:
+    """start_skill(TRACK, X) then start_skill(PICK, X) both succeed — different args."""
+    ctx = _make_ctx()
+    tools = _tools_by_name(ctx)
+    r1 = tools["start_skill"](skill_name="TRACK", target_handle="cube-1")
+    r2 = tools["start_skill"](skill_name="PICK", target_handle="cube-1")
+
+    assert "REJECTED" not in r1
+    assert "REJECTED" not in r2
+    assert len(ctx.commands) == 2
+
+
+def test_start_skill_same_args_rejected() -> None:
+    """start_skill(TRACK, X) then start_skill(TRACK, X) again — second rejected."""
+    ctx = _make_ctx()
+    tools = _tools_by_name(ctx)
+    r1 = tools["start_skill"](skill_name="TRACK", target_handle="cube-1")
+    r2 = tools["start_skill"](skill_name="TRACK", target_handle="cube-1")
+
+    assert "REJECTED" not in r1
+    assert "REJECTED" in r2
+    assert len(ctx.commands) == 1
 
 
 def test_different_tools_allowed_same_tick() -> None:
@@ -114,6 +138,25 @@ def test_different_tools_allowed_same_tick() -> None:
     tools["start_skill"](skill_name="PICK", target_handle="cube-1")
 
     assert len(ctx.commands) == 2
+
+
+def test_global_call_cap() -> None:
+    """After 8 tool calls, further calls are rejected with a hard-stop message."""
+    ctx = _make_ctx()
+    tools = _tools_by_name(ctx)
+    # Spread across tool names to stay under per-tool loop limit (5)
+    for i in range(4):
+        tools["start_skill"](skill_name="PICK", target_handle=f"obj-{i}")
+    for i in range(3):
+        tools["abort_skill"](skill_run_id=f"run-{i}", reason="test")
+    tools["describe_scene"](reason="check")
+    assert len(ctx.commands) == 8
+    assert ctx.total_calls == 8
+    # 9th call should be hard-stopped
+    result = tools["start_skill"](skill_name="TRACK", target_handle="obj-99")
+    assert "HARD STOP" in result
+    assert len(ctx.commands) == 8
+    assert ctx.loop_detected is True
 
 
 def test_start_skill_track_appends_command() -> None:
