@@ -1,6 +1,6 @@
 # HALO Cloud Cognitive Service
 
-FastAPI service that runs the HALO planner (ADK ReAct agent) and VLM (Gemini) on GCP Cloud Run. The robot host connects as a thin HTTP client via `CloudCognitiveBackend`.
+FastAPI service that runs the HALO planner (ADK ReAct agent) and VLM (Gemini) on GCP Cloud Run. The robot host connects as a thin HTTP client via `RemoteCognitiveBackend`.
 
 ## Endpoints
 

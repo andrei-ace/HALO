@@ -15,6 +15,7 @@ dependencies = [
     "pyzmq>=25",
     "msgpack>=1.0",
     "httpx>=0.28",
+    "google-cloud-firestore>=2.16",
 ]
 
 [project.optional-dependencies]

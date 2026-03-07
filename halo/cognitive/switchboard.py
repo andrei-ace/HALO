@@ -364,9 +364,11 @@ class Switchboard:
         self._lease_mgr.grant(target)
         self._consecutive_failures = 0
 
-        # 5. Reset loop state on both backends (old: drain stale commands; new: fresh start)
+        # 5. Reset loop state on old backend only (drain stale commands / mark
+        #    COLD for future failback).  The new backend was just warmed up in
+        #    step 2 — resetting it would undo that warm-up and force a redundant
+        #    re-warm on the next health tick.
         self._backends[old_type].reset_loop_state()
-        new_backend.reset_loop_state()
 
         # 6. Publish event + log to run logger
         switch_data = {

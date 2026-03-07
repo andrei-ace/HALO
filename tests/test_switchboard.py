@@ -120,7 +120,9 @@ async def test_switch_to():
     await sb.switch_to(BackendType.CLOUD, reason="manual switch")
     assert sb.active_type == BackendType.CLOUD
     assert sb.active_backend is cloud
-    cloud.reset_loop_state.assert_called_once()
+    # Only the OLD backend gets reset_loop_state (drain stale state / mark COLD)
+    local.reset_loop_state.assert_called_once()
+    cloud.reset_loop_state.assert_not_called()
 
 
 @pytest.mark.asyncio

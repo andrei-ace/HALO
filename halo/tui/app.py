@@ -1854,7 +1854,6 @@ def _run_live(args: list[str]) -> None:
     vlm_model: str | None = None
     base_url = "http://localhost:11434"
     source_type = "videoloop"
-    backend = "local"
     cloud_url = ""
 
     for i, arg in enumerate(args):
@@ -1869,7 +1868,9 @@ def _run_live(args: list[str]) -> None:
         elif arg == "--source" and i + 1 < len(args):
             source_type = args[i + 1]
         elif arg == "--backend" and i + 1 < len(args):
-            backend = args[i + 1]
+            if args[i + 1] != "local":
+                msg = "--backend is deprecated; use --cloud-url to connect to the cloud service"
+                raise SystemExit(msg)
         elif arg == "--cloud-url" and i + 1 < len(args):
             cloud_url = args[i + 1]
 
@@ -1880,7 +1881,7 @@ def _run_live(args: list[str]) -> None:
 
     # Build cognitive stack — all paths go through Switchboard
     from halo.cognitive import make_cognitive_stack
-    from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
+    from halo.cognitive.config import BackendType, CognitiveConfig, LocalConfig
     from halo.cognitive.lease import LeaseManager
 
     # Build local config with CLI overrides (or defaults from LocalConfig)
@@ -1902,29 +1903,6 @@ def _run_live(args: list[str]) -> None:
         stack = make_cognitive_stack(
             config=CognitiveConfig(active=BackendType.CLOUD, local=local_cfg, enable_failover=True),
             cloud_backend=remote,
-            lease_mgr=lease_mgr,
-            bus=runtime.bus,
-            snapshot_fn=runtime.get_latest_runtime_snapshot,
-            run_logger=run_logger,
-            arm_id=arm_id,
-        )
-    elif backend == "cloud":
-        cloud_kwargs: dict = {}
-        if model:
-            cloud_kwargs["planner_model"] = model
-        if vlm_model:
-            cloud_kwargs["vlm_model"] = vlm_model
-        cloud_cfg = CloudConfig(**cloud_kwargs)
-
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
-
-        cloud_be = CloudCognitiveBackend(config=cloud_cfg, run_logger=run_logger)
-        lease_mgr = LeaseManager()
-        runtime = HALORuntime(lease_manager=lease_mgr)
-        runtime.register_arm(arm_id)
-        stack = make_cognitive_stack(
-            config=CognitiveConfig(active=BackendType.CLOUD, local=local_cfg, cloud=cloud_cfg, enable_failover=True),
-            cloud_backend=cloud_be,
             lease_mgr=lease_mgr,
             bus=runtime.bus,
             snapshot_fn=runtime.get_latest_runtime_snapshot,

@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-local-service run-cloud-service sim-server ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-cloud-service sim-server ruff help
 
 install:
 	uv sync --extra dev --extra sim
@@ -79,13 +79,6 @@ run-headless-live:
 		--vlm-model $(VLM_MODEL) \
 		--base-url $(OLLAMA_URL) \
 		--arm $(ARM_ID)
-
-run-local-service:
-	HALO_SERVICE_BACKEND=local \
-	HALO_PLANNER_MODEL=$(PLANNER_MODEL) \
-	HALO_VLM_MODEL=$(VLM_MODEL) \
-	HALO_OLLAMA_URL=$(OLLAMA_URL) \
-	uv run --project cloud_service uvicorn cloud_service.app:app --host 0.0.0.0 --port 8080 --reload
 
 run-cloud-service:
 	HALO_COMPACTION_INTERVAL=$(COMPACTION_INTERVAL) \
@@ -168,8 +161,7 @@ help:
 	@echo "visualize-ik       render IK-solved poses as PNGs (IK_SEED=7 IK_OUT_DIR=data/ik_poses)"
 	@echo "tui-live           launch TUI with local Ollama + MuJoCo sim"
 	@echo "tui-live-cloud     launch TUI via cloud service HTTP (set HALO_CLOUD_URL for remote)"
-	@echo "tui-live-cloud-local  launch TUI with direct Gemini API (requires GOOGLE_API_KEY)"
-	@echo "run-local-service  run cloud_service backed by Ollama (localhost:8080)"
+	@echo "tui-live-cloud-local  launch TUI against a locally running cloud service"
 	@echo "run-cloud-service  run cloud_service backed by Gemini (requires GOOGLE_API_KEY)"
 	@echo "test-cloud-service         run cloud_service unit tests (no API key needed)"
 	@echo "smoke-cloud-service        one-command smoke test against Gemini (requires GOOGLE_API_KEY)"

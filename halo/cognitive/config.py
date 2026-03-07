@@ -28,7 +28,7 @@ class LocalConfig:
 
 @dataclass(frozen=True)
 class CloudConfig:
-    """Config for direct Gemini Live API backend (planner + VLM)."""
+    """Config for Gemini live-session features and cloud model defaults."""
 
     planner_model: str = "gemini-3.1-flash-lite-preview"
     vlm_model: str = "gemini-3.1-flash-lite-preview"

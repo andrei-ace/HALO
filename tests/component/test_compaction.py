@@ -86,6 +86,47 @@ def _mock_agent(backend="cloud", compaction_config=None):
     return mock
 
 
+class _FakeCloudBackend:
+    def __init__(self, agent: MagicMock, vlm: AsyncMock | None = None) -> None:
+        self._agent = agent
+        self._vlm = vlm or AsyncMock(return_value=VlmScene(scene="", detections=[]))
+        self._on_compaction = None
+
+    @property
+    def backend_type(self) -> str:
+        return BackendType.CLOUD
+
+    @property
+    def agent(self) -> MagicMock:
+        return self._agent
+
+    @property
+    def last_reasoning(self) -> str:
+        return self._agent.last_reasoning
+
+    async def decide(self, snap, operator_cmd=None, epoch=None):
+        commands = await self._agent.decide(snap, operator_cmd=operator_cmd, epoch=epoch)
+        compaction = self._agent.last_compaction
+        if compaction is not None and self._on_compaction is not None:
+            try:
+                await self._on_compaction(compaction)
+            except Exception:
+                pass
+        return commands
+
+    async def vlm_scene(self, arm_id, image, known_handles=None, target_handle=None):
+        return await self._vlm(arm_id, image, known_handles, target_handle=target_handle)
+
+    async def health_check(self) -> bool:
+        return True
+
+    def reset_loop_state(self) -> None:
+        self._agent.reset_loop_state()
+
+    def set_on_compaction(self, callback) -> None:
+        self._on_compaction = callback
+
+
 # ---------------------------------------------------------------------------
 # Cloud agent uses CompactionPlugin
 # ---------------------------------------------------------------------------
@@ -171,9 +212,8 @@ def test_cloud_agent_no_compaction_config():
 
 @pytest.mark.asyncio
 async def test_compaction_detection_after_decide():
-    """CloudCognitiveBackend detects compaction and calls callback."""
+    """Cloud backend callback fires when the planner reports compaction."""
     mock_agent = _mock_agent()
-    mock_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     compaction_result = CompactionResult(
         summary="Test summary",
@@ -185,15 +225,8 @@ async def test_compaction_detection_after_decide():
     mock_agent.last_compaction = compaction_result
 
     callback = AsyncMock()
-
-    with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_vlm),
-    ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
-
-        backend = CloudCognitiveBackend()
-        backend.set_on_compaction(callback)
+    backend = _FakeCloudBackend(mock_agent)
+    backend.set_on_compaction(callback)
 
     snap = _idle_snap()
     await backend.decide(snap)
@@ -206,18 +239,10 @@ async def test_no_compaction_no_callback():
     """No callback fired when no compaction occurred."""
     mock_agent = _mock_agent()
     mock_agent.last_compaction = None
-    mock_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     callback = AsyncMock()
-
-    with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_vlm),
-    ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
-
-        backend = CloudCognitiveBackend()
-        backend.set_on_compaction(callback)
+    backend = _FakeCloudBackend(mock_agent)
+    backend.set_on_compaction(callback)
 
     snap = _idle_snap()
     await backend.decide(snap)
@@ -246,24 +271,19 @@ async def test_switchboard_sync_compaction():
     cloud_mh.append("model", "m2")
     mock_cloud_agent.msg_history = cloud_mh
 
-    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
-
     mock_local_agent = _mock_agent(backend="local")
     mock_local_agent.inject_compaction_state = AsyncMock()
 
     with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
         patch(
             "halo.cognitive.local_backend.PlannerAgent",
             return_value=mock_local_agent,
         ),
         patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
     ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
         from halo.cognitive.local_backend import LocalCognitiveBackend
 
-        cloud = CloudCognitiveBackend()
+        cloud = _FakeCloudBackend(mock_cloud_agent)
         local = LocalCognitiveBackend()
 
         cfg = CognitiveConfig(active=BackendType.CLOUD)
@@ -306,23 +326,19 @@ async def test_switchboard_sync_compaction():
 
 @pytest.mark.asyncio
 async def test_switchboard_wires_compaction_callback():
-    """Switchboard wires set_on_compaction on CloudCognitiveBackend during __init__."""
+    """Switchboard wires set_on_compaction on the configured cloud backend."""
     mock_cloud_agent = _mock_agent()
-    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
         patch(
             "halo.cognitive.local_backend.PlannerAgent",
             return_value=_mock_agent(backend="local"),
         ),
         patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
     ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
         from halo.cognitive.local_backend import LocalCognitiveBackend
 
-        cloud = CloudCognitiveBackend()
+        cloud = _FakeCloudBackend(mock_cloud_agent)
         local = LocalCognitiveBackend()
 
         cfg = CognitiveConfig(active=BackendType.CLOUD)
@@ -342,21 +358,17 @@ def _make_switchboard(*, active=BackendType.CLOUD, enable_failover=False):
     mock_cloud_agent = _mock_agent()
     mock_cloud_agent.last_compaction = None
     mock_cloud_agent.last_reasoning = "cloud reasoning"
-    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     mock_local_agent = _mock_agent(backend="local")
     mock_local_agent.last_reasoning = "local reasoning"
 
     with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
         patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_local_agent),
         patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
     ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
         from halo.cognitive.local_backend import LocalCognitiveBackend
 
-        cloud = CloudCognitiveBackend()
+        cloud = _FakeCloudBackend(mock_cloud_agent)
         local = LocalCognitiveBackend()
         ctx_store = ContextStore()
         lease_mgr = LeaseManager()
@@ -408,7 +420,6 @@ async def test_compaction_entry_included_in_failover_warmup():
 async def test_compaction_callback_error_does_not_block_decide():
     """If compaction callback raises, decide() still returns commands."""
     mock_agent = _mock_agent()
-    mock_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     compaction_result = CompactionResult(
         summary="Summary",
@@ -421,15 +432,8 @@ async def test_compaction_callback_error_does_not_block_decide():
     mock_agent.last_reasoning = "do something"
 
     callback = AsyncMock(side_effect=RuntimeError("callback exploded"))
-
-    with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_vlm),
-    ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
-
-        backend = CloudCognitiveBackend()
-        backend.set_on_compaction(callback)
+    backend = _FakeCloudBackend(mock_agent)
+    backend.set_on_compaction(callback)
 
     snap = _idle_snap()
     # Should not raise despite callback error
