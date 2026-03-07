@@ -24,6 +24,7 @@ from mujoco_sim.constants import (
     PHASE_IDLE,
     PHASE_LIFT,
     PHASE_MOVE_PREGRASP,
+    PHASE_VERIFY_GRASP,
 )
 from mujoco_sim.scene_info import TCP_PINCH_OFFSET_LOCAL
 from mujoco_sim.teacher.grasp_planner import GraspPose
@@ -63,7 +64,7 @@ def plan_pick_keyframes(
         z_lift: Vertical lift height above grasp contact point.
 
     Returns:
-        List of 5 Keyframe instances: home, pregrasp, grasp, grasp_closed, lift.
+        List of 6 Keyframe instances: home, pregrasp, grasp, grasp_closed, verify_grasp, lift.
     """
     # Compute home EE position via FK
     d = mujoco.MjData(model)
@@ -114,6 +115,13 @@ def plan_pick_keyframes(
             gripper=GRIPPER_CLOSE,
             phase_id=PHASE_CLOSE_GRIPPER,
             label="grasp_closed",
+        ),
+        Keyframe(
+            position=grasp_pos,
+            orientation=grasp_rot,
+            gripper=GRIPPER_CLOSE,
+            phase_id=PHASE_VERIFY_GRASP,
+            label="verify_grasp",
         ),
         Keyframe(
             position=lift_pos,

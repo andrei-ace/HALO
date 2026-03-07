@@ -40,7 +40,7 @@ TCP_PINCH_OFFSET_LOCAL = np.array([0.0, 0.0, 0.0])
 # ---------------------------------------------------------------------------
 
 # Number of random grasp candidates to sample (split evenly across 4 side faces).
-DEFAULT_GRASP_N_CANDIDATES = 64
+DEFAULT_GRASP_N_CANDIDATES = 16
 
 # Maximum angular deviation from face normal for approach direction (degrees).
 DEFAULT_GRASP_MAX_CONE_DEG = 5.0
@@ -71,6 +71,9 @@ DEFAULT_LIFT_HEIGHT = 0.08
 
 # Maximum IK orientation error allowed (degrees). 5-DOF arm has ~17-34° typical.
 DEFAULT_ORI_TOL_DEG = 55.0
+
+# Trajectory validation: minimum EE clearance above table (metres)
+DEFAULT_CLEARANCE_MARGIN = 0.01  # 1 cm
 
 # IK solver parameters
 DEFAULT_IK_POS_WEIGHT = 1.0

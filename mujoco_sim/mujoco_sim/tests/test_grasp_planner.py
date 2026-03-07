@@ -76,7 +76,7 @@ class TestEnumerateFaceGrasps:
         candidates = enumerate_face_grasps(
             scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
         )
-        assert len(candidates) == 64  # 4 faces × 16 per face
+        assert len(candidates) == 16  # 4 faces × 4 per face
 
     def test_enumerate_custom_count(self, scene_info):
         candidates = enumerate_face_grasps(
@@ -90,7 +90,7 @@ class TestEnumerateFaceGrasps:
         )
         labels = [c.face_label for c in candidates]
         for face in ["+X", "-X", "+Y", "-Y"]:
-            assert labels.count(face) == 16  # 64 / 4
+            assert labels.count(face) == 4  # 16 / 4
 
     def test_enumerate_rotated_cube(self, scene_info):
         """Non-identity quaternion should shift face normals."""
@@ -105,7 +105,7 @@ class TestEnumerateFaceGrasps:
             scene_info.green_cube_default_pos, rotated_quat, scene_info.green_cube_half_sizes, seed=0
         )
 
-        assert len(rotated_candidates) == 64
+        assert len(rotated_candidates) == 16
         # Contact points should differ between identity and rotated
         id_contacts = np.array([c.contact_point for c in identity_candidates])
         rot_contacts = np.array([c.contact_point for c in rotated_candidates])

@@ -25,6 +25,7 @@ from mujoco_sim.constants import (
     PHASE_IDLE,
 )
 from mujoco_sim.scene_info import (
+    DEFAULT_CLEARANCE_MARGIN,
     DEFAULT_CUBE_FACE_CONTACT_SPAN,
     DEFAULT_FACE_STANDOFF,
     DEFAULT_GRASP_MAX_CONE_DEG,
@@ -40,10 +41,11 @@ from mujoco_sim.scene_info import (
     EE_SITE_NAME,
     SceneInfo,
 )
-from mujoco_sim.teacher.grasp_planner import evaluate_grasps
+from mujoco_sim.teacher.grasp_planner import evaluate_all_grasps
 from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, TrajectoryPlan, plan_trajectory
-from mujoco_sim.teacher.waypoint_generator import generate_joint_waypoints
+from mujoco_sim.teacher.trajectory_validator import validate_trajectory_clearance
+from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
 
 logger = logging.getLogger(__name__)
 
@@ -185,14 +187,18 @@ class PickTeacher:
         model: mujoco.MjModel,
         data: mujoco.MjData,
     ) -> TrajectoryPlan:
-        """Build the full trajectory plan from current state."""
+        """Build the full trajectory plan from current state.
+
+        Iterates scored grasp candidates (best first) and validates each
+        trajectory for table clearance. Returns the first safe trajectory.
+        """
         cfg = self._config
         cube_pos = obs["object_pose"][:3]
         cube_quat = obs["object_pose"][3:]
         home_joints = obs["joint_pos"][:6].copy()
 
-        # Step 1: Evaluate grasp candidates (enumerate → filter → score → best)
-        best = evaluate_grasps(
+        # Step 1: Get all scored grasp candidates (sorted best-first)
+        all_scored = evaluate_all_grasps(
             cube_pos=cube_pos,
             cube_quat=cube_quat,
             cube_half_sizes=self._scene_info.green_cube_half_sizes,
@@ -212,16 +218,82 @@ class PickTeacher:
             ori_tol_deg=cfg.ori_tol_deg,
         )
 
-        logger.info(
-            "Selected grasp: face=%s yaw=%d score=%.3f (pos_err=%.4f m, ori_err=%.1f°)",
-            best.grasp.face_label,
-            best.grasp.yaw_variant,
-            best.score,
-            best.ik_pos_err,
-            best.ori_err_deg,
+        limits = JointLimits(
+            max_velocity=cfg.max_velocity or JointLimits().max_velocity,
+            max_acceleration=cfg.max_acceleration or JointLimits().max_acceleration,
+            max_jerk=cfg.max_jerk or JointLimits().max_jerk,
         )
 
-        # Step 2: Cartesian keyframes from grasp pose
+        # Step 2: Iterate candidates, plan + validate each
+        for rank, candidate in enumerate(all_scored):
+            logger.info(
+                "Trying grasp candidate %d/%d: face=%s yaw=%d score=%.3f (pos_err=%.4f m, ori_err=%.1f°)",
+                rank + 1,
+                len(all_scored),
+                candidate.grasp.face_label,
+                candidate.grasp.yaw_variant,
+                candidate.score,
+                candidate.ik_pos_err,
+                candidate.ori_err_deg,
+            )
+
+            keyframes = plan_pick_keyframes(
+                home_joints=home_joints,
+                grasp_pose=candidate.grasp,
+                ee_site_id=self._ee_site_id,
+                model=model,
+                data=data,
+                standoff=cfg.pregrasp_height_offset,
+                z_lift=cfg.lift_height,
+            )
+
+            try:
+                waypoints = generate_joint_waypoints(
+                    keyframes=keyframes,
+                    model=model,
+                    data=data,
+                    ee_site_id=self._ee_site_id,
+                    arm_joint_ids=self._arm_joint_ids,
+                    seed_joints=home_joints[:5],
+                    pos_weight=cfg.ik_pos_weight,
+                    ori_weight=cfg.ik_ori_weight,
+                    max_iters=cfg.ik_max_iters,
+                    tol=cfg.ik_tol,
+                    pos_tol=cfg.ik_pos_tol,
+                )
+            except IKFailure as exc:
+                logger.info("Candidate %d IK failed: %s", rank + 1, exc)
+                continue
+
+            plan = plan_trajectory(waypoints, limits)
+
+            if not validate_trajectory_clearance(
+                plan,
+                model,
+                data,
+                self._ee_site_id,
+                self._arm_joint_ids,
+                self._scene_info.table_z,
+                margin=DEFAULT_CLEARANCE_MARGIN,
+            ):
+                logger.info("Candidate %d failed clearance validation", rank + 1)
+                continue
+
+            logger.info(
+                "Trajectory planned (candidate %d): %d segments, %.2f s total — %s",
+                rank + 1,
+                len(plan.segments),
+                plan.total_duration,
+                [(s.label, f"{s.duration:.2f}s") for s in plan.segments],
+            )
+            return plan
+
+        # Fallback: use best candidate without clearance check
+        best = all_scored[0]
+        logger.warning(
+            "No candidate passed clearance — using best grasp (score=%.3f) without validation",
+            best.score,
+        )
         keyframes = plan_pick_keyframes(
             home_joints=home_joints,
             grasp_pose=best.grasp,
@@ -231,14 +303,6 @@ class PickTeacher:
             standoff=cfg.pregrasp_height_offset,
             z_lift=cfg.lift_height,
         )
-
-        logger.info(
-            "Planned %d keyframes: %s",
-            len(keyframes),
-            [kf.label for kf in keyframes],
-        )
-
-        # Step 3: IK → joint waypoints
         waypoints = generate_joint_waypoints(
             keyframes=keyframes,
             model=model,
@@ -252,26 +316,10 @@ class PickTeacher:
             tol=cfg.ik_tol,
             pos_tol=cfg.ik_pos_tol,
         )
-
-        logger.info(
-            "Solved IK for %d waypoints: %s",
-            len(waypoints),
-            [(wp.label, wp.arm_joints.round(3).tolist()) for wp in waypoints],
-        )
-
-        # Step 4: Jerk-limited trajectory
-        limits = JointLimits(
-            max_velocity=cfg.max_velocity or JointLimits().max_velocity,
-            max_acceleration=cfg.max_acceleration or JointLimits().max_acceleration,
-            max_jerk=cfg.max_jerk or JointLimits().max_jerk,
-        )
         plan = plan_trajectory(waypoints, limits)
-
         logger.info(
-            "Trajectory planned: %d segments, %.2f s total — %s",
+            "Fallback trajectory: %d segments, %.2f s total",
             len(plan.segments),
             plan.total_duration,
-            [(s.label, f"{s.duration:.2f}s") for s in plan.segments],
         )
-
         return plan

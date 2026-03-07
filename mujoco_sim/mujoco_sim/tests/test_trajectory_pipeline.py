@@ -19,6 +19,7 @@ from mujoco_sim.constants import (
     PHASE_IDLE,
     PHASE_LIFT,
     PHASE_MOVE_PREGRASP,
+    PHASE_VERIFY_GRASP,
 )
 from mujoco_sim.scene_info import TCP_PINCH_OFFSET_LOCAL, SceneInfo
 from mujoco_sim.teacher.grasp_planner import GraspPose, evaluate_grasps
@@ -112,7 +113,7 @@ class TestKeyframePlanner:
         grasp_pose = _make_side_grasp_pose(scene_info.green_cube_default_pos, scene_info.green_cube_half_sizes)
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
-        assert len(keyframes) == 5
+        assert len(keyframes) == 6
 
     def test_keyframe_labels(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
@@ -120,7 +121,7 @@ class TestKeyframePlanner:
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         labels = [kf.label for kf in keyframes]
-        assert labels == ["home", "pregrasp", "grasp", "grasp_closed", "lift"]
+        assert labels == ["home", "pregrasp", "grasp", "grasp_closed", "verify_grasp", "lift"]
 
     def test_keyframe_phases(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
@@ -128,7 +129,14 @@ class TestKeyframePlanner:
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         phases = [kf.phase_id for kf in keyframes]
-        assert phases == [PHASE_IDLE, PHASE_MOVE_PREGRASP, PHASE_EXECUTE_APPROACH, PHASE_CLOSE_GRIPPER, PHASE_LIFT]
+        assert phases == [
+            PHASE_IDLE,
+            PHASE_MOVE_PREGRASP,
+            PHASE_EXECUTE_APPROACH,
+            PHASE_CLOSE_GRIPPER,
+            PHASE_VERIFY_GRASP,
+            PHASE_LIFT,
+        ]
 
     def test_pregrasp_along_approach(self, scene_info, mj_model, mj_data, ee_site_id):
         """Pregrasp should be offset along approach direction from contact."""
@@ -164,7 +172,7 @@ class TestKeyframePlanner:
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
 
-        expected_grippers = [GRIPPER_OPEN, GRIPPER_OPEN, GRIPPER_OPEN, GRIPPER_CLOSE, GRIPPER_CLOSE]
+        expected_grippers = [GRIPPER_OPEN, GRIPPER_OPEN, GRIPPER_OPEN, GRIPPER_CLOSE, GRIPPER_CLOSE, GRIPPER_CLOSE]
         actual = [kf.gripper for kf in keyframes]
         assert actual == expected_grippers
 
@@ -199,7 +207,7 @@ class TestKeyframePlanner:
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data, z_lift=z_lift)
 
         grasp_kf = keyframes[2]
-        lift_kf = keyframes[4]
+        lift_kf = keyframes[5]
         # XY should be the same (same TCP offset, same orientation)
         np.testing.assert_allclose(lift_kf.position[:2], grasp_kf.position[:2], atol=1e-10)
         # Z should differ by z_lift
@@ -350,9 +358,9 @@ class TestTrajectoryPlanner:
     def test_custom_limits(self):
         waypoints = self._make_waypoints()
         limits = JointLimits(
-            max_velocity=[0.5, 0.5, 0.5, 0.5, 0.75],
-            max_acceleration=[1.5, 1.5, 1.5, 1.5, 2.0],
-            max_jerk=[5.0, 5.0, 5.0, 5.0, 7.5],
+            max_velocity=[0.2, 0.2, 0.2, 0.2, 0.3],
+            max_acceleration=[0.5, 0.5, 0.5, 0.5, 0.7],
+            max_jerk=[1.0, 1.0, 1.0, 1.0, 1.5],
         )
         plan = plan_trajectory(waypoints, limits)
         # Slower limits → longer duration
@@ -399,7 +407,7 @@ class TestIntegratedPipeline:
         plan = plan_trajectory(waypoints)
 
         assert plan.total_duration > 0
-        assert len(plan.segments) == 4  # 5 waypoints → 4 segments
+        assert len(plan.segments) == 5  # 6 waypoints → 5 segments
 
         # Sample throughout and verify continuity
         dt = 0.01

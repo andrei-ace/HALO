@@ -21,9 +21,9 @@ from mujoco_sim.teacher.waypoint_generator import JointWaypoint
 class JointLimits:
     """Per-joint kinematic limits for trajectory generation."""
 
-    max_velocity: list[float] = field(default_factory=lambda: [1.0, 1.0, 1.0, 1.0, 1.5])
-    max_acceleration: list[float] = field(default_factory=lambda: [3.0, 3.0, 3.0, 3.0, 4.0])
-    max_jerk: list[float] = field(default_factory=lambda: [10.0, 10.0, 10.0, 10.0, 15.0])
+    max_velocity: list[float] = field(default_factory=lambda: [0.5, 0.5, 0.5, 0.5, 0.8])
+    max_acceleration: list[float] = field(default_factory=lambda: [1.2, 1.2, 1.2, 1.2, 1.6])
+    max_jerk: list[float] = field(default_factory=lambda: [3.0, 3.0, 3.0, 3.0, 5.0])
 
 
 @dataclass

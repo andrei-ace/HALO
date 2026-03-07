@@ -280,15 +280,17 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
         import mujoco as mj
 
         from mujoco_sim.scene_info import (
+            DEFAULT_CLEARANCE_MARGIN,
             EE_SITE_NAME,
             GREEN_CUBE_BODY_NAME,
             RED_CUBE_BODY_NAME,
             SceneInfo,
         )
-        from mujoco_sim.teacher.grasp_planner import GraspPlanningFailure, evaluate_grasps
+        from mujoco_sim.teacher.grasp_planner import GraspPlanningFailure, evaluate_all_grasps
         from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
         from mujoco_sim.teacher.pick_teacher import TeacherConfig
         from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
+        from mujoco_sim.teacher.trajectory_validator import validate_trajectory_clearance
         from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
 
         model = env.mujoco_model
@@ -335,8 +337,8 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
         cube_pos = data.xpos[target_body_id].copy()
         cube_quat = data.xquat[target_body_id].copy()
 
-        # 1. Evaluate grasp candidates
-        best = evaluate_grasps(
+        # 1. Get all scored grasp candidates (sorted best-first)
+        all_scored = evaluate_all_grasps(
             cube_pos=cube_pos,
             cube_quat=cube_quat,
             cube_half_sizes=target_half_sizes,
@@ -356,39 +358,92 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
             ori_tol_deg=config.ori_tol_deg,
         )
 
-        # 2. Cartesian keyframes from grasp pose
-        keyframes = plan_pick_keyframes(
-            home_joints=current_joints,
-            grasp_pose=best.grasp,
-            ee_site_id=server_state._ee_site_id,
-            model=model,
-            data=data,
-            standoff=config.pregrasp_height_offset,
-            z_lift=config.lift_height,
-        )
-
-        # 3. IK → joint waypoints
-        waypoints = generate_joint_waypoints(
-            keyframes=keyframes,
-            model=model,
-            data=data,
-            ee_site_id=server_state._ee_site_id,
-            arm_joint_ids=server_state._arm_joint_ids,
-            seed_joints=current_joints[:5],
-            pos_weight=config.ik_pos_weight,
-            ori_weight=config.ik_ori_weight,
-            max_iters=config.ik_max_iters,
-            tol=config.ik_tol,
-            pos_tol=config.ik_pos_tol,
-        )
-
-        # 4. Jerk-limited trajectory
         limits = JointLimits(
             max_velocity=config.max_velocity or JointLimits().max_velocity,
             max_acceleration=config.max_acceleration or JointLimits().max_acceleration,
             max_jerk=config.max_jerk or JointLimits().max_jerk,
         )
-        trajectory = plan_trajectory(waypoints, limits)
+
+        # 2. Iterate candidates, plan + validate each
+        trajectory = None
+        for rank, candidate in enumerate(all_scored):
+            keyframes = plan_pick_keyframes(
+                home_joints=current_joints,
+                grasp_pose=candidate.grasp,
+                ee_site_id=server_state._ee_site_id,
+                model=model,
+                data=data,
+                standoff=config.pregrasp_height_offset,
+                z_lift=config.lift_height,
+            )
+
+            try:
+                waypoints = generate_joint_waypoints(
+                    keyframes=keyframes,
+                    model=model,
+                    data=data,
+                    ee_site_id=server_state._ee_site_id,
+                    arm_joint_ids=server_state._arm_joint_ids,
+                    seed_joints=current_joints[:5],
+                    pos_weight=config.ik_pos_weight,
+                    ori_weight=config.ik_ori_weight,
+                    max_iters=config.ik_max_iters,
+                    tol=config.ik_tol,
+                    pos_tol=config.ik_pos_tol,
+                )
+            except IKFailure as exc:
+                logger.info("start_pick: candidate %d IK failed: %s", rank + 1, exc)
+                continue
+
+            candidate_traj = plan_trajectory(waypoints, limits)
+
+            if validate_trajectory_clearance(
+                candidate_traj,
+                model,
+                data,
+                server_state._ee_site_id,
+                server_state._arm_joint_ids,
+                scene_info.table_z,
+                margin=DEFAULT_CLEARANCE_MARGIN,
+            ):
+                trajectory = candidate_traj
+                logger.info(
+                    "start_pick: candidate %d passed — %d segments, %.2f s total",
+                    rank + 1,
+                    len(trajectory.segments),
+                    trajectory.total_duration,
+                )
+                break
+            else:
+                logger.info("start_pick: candidate %d failed clearance", rank + 1)
+
+        # Fallback: use best candidate without clearance check
+        if trajectory is None:
+            best = all_scored[0]
+            logger.warning("start_pick: no candidate passed clearance — using best (score=%.3f)", best.score)
+            keyframes = plan_pick_keyframes(
+                home_joints=current_joints,
+                grasp_pose=best.grasp,
+                ee_site_id=server_state._ee_site_id,
+                model=model,
+                data=data,
+                standoff=config.pregrasp_height_offset,
+                z_lift=config.lift_height,
+            )
+            waypoints = generate_joint_waypoints(
+                keyframes=keyframes,
+                model=model,
+                data=data,
+                ee_site_id=server_state._ee_site_id,
+                arm_joint_ids=server_state._arm_joint_ids,
+                seed_joints=current_joints[:5],
+                pos_weight=config.ik_pos_weight,
+                ori_weight=config.ik_ori_weight,
+                max_iters=config.ik_max_iters,
+                tol=config.ik_tol,
+                pos_tol=config.ik_pos_tol,
+            )
+            trajectory = plan_trajectory(waypoints, limits)
 
         logger.info(
             "start_pick: planned %d segments, %.2f s total",
@@ -467,13 +522,15 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
         import mujoco as mj
 
         from mujoco_sim.scene_info import (
+            DEFAULT_CLEARANCE_MARGIN,
             EE_SITE_NAME,
             GREEN_CUBE_BODY_NAME,
             RED_CUBE_BODY_NAME,
             SceneInfo,
         )
-        from mujoco_sim.teacher.place_keyframe_planner import PlaceConfig, plan_place_keyframes
+        from mujoco_sim.teacher.place_keyframe_planner import PlaceConfig, plan_place_candidates, plan_place_keyframes
         from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
+        from mujoco_sim.teacher.trajectory_validator import validate_trajectory_clearance
         from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
 
         model = env.mujoco_model
@@ -513,8 +570,17 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
         current_joints = np.array(data.qpos[:6], copy=True)
         reference_pos = data.xpos[target_body_id].copy()
 
-        # Plan place keyframes
-        keyframes = plan_place_keyframes(
+        from mujoco_sim.teacher.pick_teacher import TeacherConfig
+
+        config = TeacherConfig()
+        limits = JointLimits(
+            max_velocity=config.max_velocity or JointLimits().max_velocity,
+            max_acceleration=config.max_acceleration or JointLimits().max_acceleration,
+            max_jerk=config.max_jerk or JointLimits().max_jerk,
+        )
+
+        # Generate 16 candidate place positions and validate each
+        all_candidates = plan_place_candidates(
             current_joints=current_joints,
             reference_pos=reference_pos,
             ee_site_id=server_state._ee_site_id,
@@ -523,44 +589,87 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
             table_z=scene_info.table_z,
             held_half_sizes=held_half_sizes,
             ref_half_sizes=ref_half_sizes,
+            target_body=resolved_target,
             config=PlaceConfig(),
         )
 
         logger.info(
-            "start_place: target=%s held=%s planned %d keyframes: %s",
+            "start_place: target=%s held=%s evaluating %d candidate positions",
             resolved_target,
             resolved_held,
-            len(keyframes),
-            [kf.label for kf in keyframes],
-        )
-        for kf in keyframes:
-            logger.info("  keyframe '%s': pos=%s phase_id=%d", kf.label, kf.position, kf.phase_id)
-
-        # IK → joint waypoints
-        from mujoco_sim.teacher.pick_teacher import TeacherConfig
-
-        config = TeacherConfig()
-        waypoints = generate_joint_waypoints(
-            keyframes=keyframes,
-            model=model,
-            data=data,
-            ee_site_id=server_state._ee_site_id,
-            arm_joint_ids=server_state._arm_joint_ids,
-            seed_joints=current_joints[:5],
-            pos_weight=config.ik_pos_weight,
-            ori_weight=config.ik_ori_weight,
-            max_iters=config.ik_max_iters,
-            tol=config.ik_tol,
-            pos_tol=config.ik_pos_tol,
+            len(all_candidates),
         )
 
-        # Jerk-limited trajectory
-        limits = JointLimits(
-            max_velocity=config.max_velocity or JointLimits().max_velocity,
-            max_acceleration=config.max_acceleration or JointLimits().max_acceleration,
-            max_jerk=config.max_jerk or JointLimits().max_jerk,
-        )
-        trajectory = plan_trajectory(waypoints, limits)
+        trajectory = None
+        for i, keyframes in enumerate(all_candidates):
+            try:
+                waypoints = generate_joint_waypoints(
+                    keyframes=keyframes,
+                    model=model,
+                    data=data,
+                    ee_site_id=server_state._ee_site_id,
+                    arm_joint_ids=server_state._arm_joint_ids,
+                    seed_joints=current_joints[:5],
+                    pos_weight=config.ik_pos_weight,
+                    ori_weight=config.ik_ori_weight,
+                    max_iters=config.ik_max_iters,
+                    tol=config.ik_tol,
+                    pos_tol=config.ik_pos_tol,
+                )
+            except IKFailure as exc:
+                logger.info("Place candidate %d IK failed: %s", i + 1, exc)
+                continue
+
+            candidate_traj = plan_trajectory(waypoints, limits)
+
+            if validate_trajectory_clearance(
+                candidate_traj,
+                model,
+                data,
+                server_state._ee_site_id,
+                server_state._arm_joint_ids,
+                scene_info.table_z,
+                margin=DEFAULT_CLEARANCE_MARGIN,
+            ):
+                trajectory = candidate_traj
+                logger.info(
+                    "start_place: candidate %d passed clearance — %d segments, %.2f s total",
+                    i + 1,
+                    len(trajectory.segments),
+                    trajectory.total_duration,
+                )
+                break
+            else:
+                logger.info("Place candidate %d failed clearance validation", i + 1)
+
+        # Fallback: use the original single-position planner
+        if trajectory is None:
+            logger.warning("No place candidate passed clearance — using default position")
+            keyframes = plan_place_keyframes(
+                current_joints=current_joints,
+                reference_pos=reference_pos,
+                ee_site_id=server_state._ee_site_id,
+                model=model,
+                data=data,
+                table_z=scene_info.table_z,
+                held_half_sizes=held_half_sizes,
+                ref_half_sizes=ref_half_sizes,
+                config=PlaceConfig(),
+            )
+            waypoints = generate_joint_waypoints(
+                keyframes=keyframes,
+                model=model,
+                data=data,
+                ee_site_id=server_state._ee_site_id,
+                arm_joint_ids=server_state._arm_joint_ids,
+                seed_joints=current_joints[:5],
+                pos_weight=config.ik_pos_weight,
+                ori_weight=config.ik_ori_weight,
+                max_iters=config.ik_max_iters,
+                tol=config.ik_tol,
+                pos_tol=config.ik_pos_tol,
+            )
+            trajectory = plan_trajectory(waypoints, limits)
 
         logger.info(
             "start_place: planned %d segments, %.2f s total",

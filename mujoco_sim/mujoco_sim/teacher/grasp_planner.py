@@ -589,7 +589,7 @@ def score_grasp(
     )
 
 
-def evaluate_grasps(
+def evaluate_all_grasps(
     cube_pos: np.ndarray,
     cube_quat: np.ndarray,
     cube_half_sizes: np.ndarray,
@@ -610,34 +610,11 @@ def evaluate_grasps(
     pos_tol: float = DEFAULT_IK_POS_TOL,
     ori_tol_deg: float = DEFAULT_ORI_TOL_DEG,
     best_effort: bool = False,
-) -> ScoredGrasp:
-    """Enumerate, filter, score, and select the best grasp candidate.
+) -> list[ScoredGrasp]:
+    """Enumerate, filter, score, and return all feasible grasp candidates sorted by score.
 
-    Args:
-        cube_pos: (3,) cube center in world frame.
-        cube_quat: (4,) cube quaternion [w, x, y, z].
-        cube_half_sizes: (3,) half-extents [hx, hy, hz].
-        model: MuJoCo model.
-        data: MuJoCo data (not mutated).
-        ee_site_id: MuJoCo site id for gripperframe.
-        arm_joint_ids: List of 5 arm joint IDs.
-        seed_joints: (5,) seed joint configuration for IK.
-        standoff: Pregrasp standoff distance along approach direction.
-        z_lift: Vertical lift height for lift-reachability check.
-        table_z: Table surface height.
-        n_candidates: Number of sampled grasp orientations before scoring.
-        max_cone_deg: Max approach tilt away from the face normal.
-        face_contact_span: Fraction of tangential face half-extent used to
-            sample contact points (0=center only, 1=full face).
-        face_standoff: Distance to offset contact point outward along face
-            normal (metres). Compensates for jaw midpoint overshoot.
-        tcp_offset: (3,) local-frame TCP offset.
-        pos_tol: IK position tolerance (metres).
-        ori_tol_deg: Orientation tolerance (degrees).
-        best_effort: If True, retry with very relaxed tolerances instead of raising.
-
-    Returns:
-        Best ScoredGrasp.
+    Same arguments as ``evaluate_grasps``. Returns a sorted list (best first)
+    instead of just the single best candidate.
 
     Raises:
         GraspPlanningFailure: If no candidate passes all checks (and best_effort is False).
@@ -673,7 +650,6 @@ def evaluate_grasps(
         ori_tol_deg=ori_tol_deg,
     )
 
-    # Strict retry with broader sampling before giving up.
     if not scored:
         expanded_n = max(128, n_candidates * 2)
         expanded_cone = max(max_cone_deg, min(20.0, max_cone_deg * 2.0))
@@ -727,13 +703,69 @@ def evaluate_grasps(
         raise GraspPlanningFailure(f"No candidates passed IK scoring ({len(feasible)} tried)")
 
     scored.sort(key=lambda s: s.score, reverse=True)
-    best = scored[0]
     logger.info(
-        "Best grasp: %s yaw=%d tilt=%.0f° score=%.3f",
-        best.grasp.face_label,
-        best.grasp.yaw_variant,
-        best.grasp.tilt_deg,
-        best.score,
+        "Best grasp: %s yaw=%d tilt=%.0f° score=%.3f (%d total candidates)",
+        scored[0].grasp.face_label,
+        scored[0].grasp.yaw_variant,
+        scored[0].grasp.tilt_deg,
+        scored[0].score,
+        len(scored),
     )
 
-    return best
+    return scored
+
+
+def evaluate_grasps(
+    cube_pos: np.ndarray,
+    cube_quat: np.ndarray,
+    cube_half_sizes: np.ndarray,
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    ee_site_id: int,
+    arm_joint_ids: list[int],
+    seed_joints: np.ndarray,
+    *,
+    standoff: float = DEFAULT_PREGRASP_STANDOFF,
+    z_lift: float = DEFAULT_LIFT_HEIGHT,
+    table_z: float,
+    n_candidates: int = DEFAULT_GRASP_N_CANDIDATES,
+    max_cone_deg: float = DEFAULT_GRASP_MAX_CONE_DEG,
+    face_contact_span: float = DEFAULT_CUBE_FACE_CONTACT_SPAN,
+    face_standoff: float = DEFAULT_FACE_STANDOFF,
+    tcp_offset: np.ndarray | None = None,
+    pos_tol: float = DEFAULT_IK_POS_TOL,
+    ori_tol_deg: float = DEFAULT_ORI_TOL_DEG,
+    best_effort: bool = False,
+) -> ScoredGrasp:
+    """Enumerate, filter, score, and select the best grasp candidate.
+
+    Delegates to ``evaluate_all_grasps`` and returns the top-ranked result.
+
+    Returns:
+        Best ScoredGrasp.
+
+    Raises:
+        GraspPlanningFailure: If no candidate passes all checks (and best_effort is False).
+    """
+    all_scored = evaluate_all_grasps(
+        cube_pos,
+        cube_quat,
+        cube_half_sizes,
+        model=model,
+        data=data,
+        ee_site_id=ee_site_id,
+        arm_joint_ids=arm_joint_ids,
+        seed_joints=seed_joints,
+        standoff=standoff,
+        z_lift=z_lift,
+        table_z=table_z,
+        n_candidates=n_candidates,
+        max_cone_deg=max_cone_deg,
+        face_contact_span=face_contact_span,
+        face_standoff=face_standoff,
+        tcp_offset=tcp_offset,
+        pos_tol=pos_tol,
+        ori_tol_deg=ori_tol_deg,
+        best_effort=best_effort,
+    )
+    return all_scored[0]
