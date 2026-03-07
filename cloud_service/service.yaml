@@ -24,12 +24,12 @@ spec:
               memory: 2Gi
               cpu: "2"
           env:
-            - name: HALO_SERVICE_BACKEND
-              value: cloud
             - name: HALO_PLANNER_MODEL
               value: gemini-3.1-flash-lite-preview
             - name: HALO_VLM_MODEL
               value: gemini-3.1-flash-lite-preview
+            - name: HALO_FIRESTORE_ENABLED
+              value: "true"
             - name: GOOGLE_API_KEY
               valueFrom:
                 secretKeyRef:

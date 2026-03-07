@@ -21,7 +21,7 @@ make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)
 make tui-live              # launch TUI with local Ollama + MuJoCo sim
 make tui-live-cloud        # launch TUI via cloud service HTTP (set HALO_CLOUD_URL)
-make tui-live-cloud-local  # launch TUI with direct Gemini API (requires GOOGLE_API_KEY)
+make tui-live-cloud-local  # launch TUI against a locally running cloud service
 make run-cloud-service     # run cloud_service (requires GOOGLE_API_KEY)
 make test-cloud-service    # run cloud_service unit tests
 make smoke-cloud-service   # smoke test against Gemini (requires GOOGLE_API_KEY)
@@ -58,7 +58,7 @@ The TUI supports multiple modes:
 - **Mock mode** (`make tui-mock`): static fixture data, no services needed.
 - **Live local** (`make tui-live`): Ollama planner + VLM + MuJoCo sim.
 - **Live cloud** (`make tui-live-cloud`): HTTP client to cloud service via Switchboard. Set `HALO_CLOUD_URL` for remote.
-- **Live cloud local** (`make tui-live-cloud-local`): Direct Gemini API via Switchboard. Requires `GOOGLE_API_KEY`.
+- **Live cloud local** (`make tui-live-cloud-local`): Connect to a cloud service running on localhost.
 
 All cloud modes use the Switchboard with LeaseManager for split-brain prevention, automatic failover (3 consecutive failures → switch), and warm-up handoff on failback. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
 
@@ -76,7 +76,7 @@ halo/
                     # + JSON schemas: enums.json, commands.json, events.json, snapshot.json
   runtime/          # state_store.py, event_bus.py, command_router.py, runtime.py
   cognitive/        # backend switching: config.py, backend.py, switchboard.py, lease.py,
-                    # context_store.py, local_backend.py, cloud_backend.py, remote_backend.py,
+                    # context_store.py, local_backend.py, remote_backend.py,
                     # live_session.py, audio_io.py
   bridge/            # ZMQ 2-channel bridge to MuJoCo sim server
                       # __init__.py (BridgeTransportError), config.py (SimBridgeConfig),

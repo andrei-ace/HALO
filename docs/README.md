@@ -325,7 +325,7 @@ Transparent proxy layer that routes planner and VLM calls through a **Switchboar
 - **LeaseManager**: epoch-monotonic grants with UUID token + TTL; `CommandRouter` rejects stale epoch/token — prevents split-brain
 - **ContextStore**: append-only journal (bounded to 200 entries) with cursor-based sync for incremental warm-up during failback
 - **CompactionPlugin**: ADK-native event compaction callback; propagates summaries to inactive backend for concise failback context
-- **Backends**: `LocalCognitiveBackend` (ADK + LiteLLM/Ollama), `CloudCognitiveBackend` (Gemini Live API), `RemoteCognitiveBackend` (HTTP client to Cloud Run)
+- **Backends**: `LocalCognitiveBackend` (ADK + LiteLLM/Ollama), `RemoteCognitiveBackend` (HTTP client to Cloud Run)
 
 See `docs/halo_architecture.md` §17 for detailed failover/failback/compaction sequence diagrams.
 

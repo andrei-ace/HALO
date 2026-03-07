@@ -6,14 +6,70 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from halo.cognitive.backend import CognitiveBackend
-from halo.cognitive.config import BackendType, CloudConfig, CognitiveConfig, LocalConfig
+from halo.cognitive.config import BackendReadiness, BackendType, CloudConfig, CognitiveConfig, LocalConfig
 from halo.cognitive.context_store import ContextStore
 from halo.cognitive.lease import LeaseManager
 from halo.cognitive.switchboard import Switchboard
+from halo.services.target_perception_service.vlm_parser import VlmScene
 
 if TYPE_CHECKING:
+    from halo.cognitive.context_store import CognitiveState, ContextEntry
+    from halo.contracts.commands import CommandEnvelope
     from halo.contracts.snapshots import PlannerSnapshot
     from halo.runtime.event_bus import EventBus
+
+
+class _UnavailableCloudBackend:
+    """Placeholder cloud backend that keeps LOCAL as the safe default."""
+
+    def __init__(self, reason: str = "Cloud backend unavailable") -> None:
+        self._reason = reason
+
+    @property
+    def backend_type(self) -> str:
+        return BackendType.CLOUD
+
+    async def decide(
+        self,
+        snap: PlannerSnapshot,
+        operator_cmd: str | None = None,
+        epoch: int | None = None,
+    ) -> list[CommandEnvelope]:
+        raise RuntimeError(self._reason)
+
+    async def vlm_scene(
+        self,
+        arm_id: str,
+        image: object,
+        known_handles: list[str] | None = None,
+        target_handle: str | None = None,
+    ) -> VlmScene:
+        raise RuntimeError(self._reason)
+
+    async def health_check(self) -> bool:
+        return False
+
+    @property
+    def last_reasoning(self) -> str:
+        return ""
+
+    def reset_loop_state(self) -> None:
+        return None
+
+    async def warm_up(
+        self,
+        state: CognitiveState | None,
+        journal_entries: list[ContextEntry],
+    ) -> bool:
+        return False
+
+    @property
+    def readiness(self) -> str:
+        return BackendReadiness.COLD
+
+    @property
+    def caught_up_cursor(self) -> int:
+        return -1
 
 
 @dataclass
@@ -46,13 +102,10 @@ def make_cognitive_stack(
         bus: Optional EventBus for BACKEND_SWITCHED events.
         snapshot_fn: Optional async callable to get latest PlannerSnapshot for warm-up.
         run_logger: Optional RunLogger for backend VLM logging.
-        audio_capture: Optional AudioCapture for cloud backend voice input.
-        audio_playback: Optional AudioPlayback for cloud backend voice output.
         lease_mgr: Optional LeaseManager — when provided, shared with HALORuntime.
         cloud_backend: Optional pre-built cloud backend (e.g. RemoteCognitiveBackend).
         arm_id: Arm ID for Switchboard event subscriptions. Defaults to "arm0".
     """
-    from halo.cognitive.cloud_backend import CloudCognitiveBackend
     from halo.cognitive.local_backend import LocalCognitiveBackend
 
     cfg = config or CognitiveConfig()
@@ -63,12 +116,11 @@ def make_cognitive_stack(
 
     if cloud_backend is not None:
         cloud = cloud_backend
+    elif cfg.active == BackendType.CLOUD:
+        msg = "CognitiveConfig(active=CLOUD) requires cloud_backend to be provided"
+        raise ValueError(msg)
     else:
-        cloud = CloudCognitiveBackend(
-            config=cfg.cloud,
-            run_logger=run_logger,
-            compaction_config=cfg.compaction,
-        )
+        cloud = _UnavailableCloudBackend()
 
     switchboard = Switchboard(
         config=cfg,

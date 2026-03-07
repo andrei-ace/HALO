@@ -54,6 +54,12 @@ class _FakeSessionManager:
         session.cursor = len(journal_dicts) - 1 if journal_dicts else -1
         return session
 
+    async def persist_session(self, arm_id):
+        pass
+
+    def evict_session(self, arm_id):
+        self._sessions.pop(arm_id, None)
+
     async def reset_session(self, arm_id):
         self._agent.reset_loop_state()
 
@@ -340,3 +346,42 @@ async def test_reset_clears_pending_handoff():
     await mgr.reset_session("arm0")
     session_after = mgr.get_session("arm0")
     assert session_after.pending_handoff is None
+
+
+def test_decide_restores_handoff_on_agent_failure(mock_agent, mock_vlm_fn):
+    """If agent.decide() raises, pending_handoff is restored for retries."""
+    mock_agent.decide = AsyncMock(side_effect=RuntimeError("model unavailable"))
+
+    session_mgr = _FakeSessionManager(mock_agent, mock_vlm_fn)
+    # Override get_or_create to return a session with pending_handoff
+    _orig = session_mgr.get_or_create
+
+    async def _with_handoff(arm_id, client_session_id=None):
+        session = await _orig(arm_id, client_session_id=client_session_id)
+        session.pending_handoff = "You are picking the red cube."
+        return session
+
+    session_mgr.get_or_create = _with_handoff
+    _last_session = None
+    _orig2 = session_mgr.get_or_create
+
+    async def _capture(arm_id, client_session_id=None):
+        nonlocal _last_session
+        session = await _orig2(arm_id, client_session_id=client_session_id)
+        _last_session = session
+        return session
+
+    session_mgr.get_or_create = _capture
+
+    with (
+        patch("cloud_service.deps._session_mgr", session_mgr),
+        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+    ):
+        from cloud_service.app import app
+
+        c = TestClient(app, raise_server_exceptions=False)
+        snap = idle_snapshot()
+        resp = c.post("/decide", json={"snapshot": snapshot_to_dict(snap)})
+        assert resp.status_code == 500
+        # Handoff must be restored on the in-memory session
+        assert _last_session.pending_handoff == "You are picking the red cube."

@@ -375,21 +375,58 @@ def _mock_agent(backend="cloud"):
     return mock
 
 
+class _FakeCloudBackend:
+    def __init__(self, agent: MagicMock, vlm: AsyncMock | None = None) -> None:
+        self._agent = agent
+        self._vlm = vlm or AsyncMock(return_value=VlmScene(scene="", detections=[]))
+        self._on_compaction = None
+
+    @property
+    def backend_type(self) -> str:
+        return BackendType.CLOUD
+
+    @property
+    def agent(self) -> MagicMock:
+        return self._agent
+
+    @property
+    def last_reasoning(self) -> str:
+        return self._agent.last_reasoning
+
+    async def decide(self, snap, operator_cmd=None, epoch=None):
+        commands = await self._agent.decide(snap, operator_cmd=operator_cmd, epoch=epoch)
+        compaction = self._agent.last_compaction
+        if compaction is not None and self._on_compaction is not None:
+            try:
+                await self._on_compaction(compaction)
+            except Exception:
+                pass
+        return commands
+
+    async def vlm_scene(self, arm_id, image, known_handles=None, target_handle=None):
+        return await self._vlm(arm_id, image, known_handles, target_handle=target_handle)
+
+    async def health_check(self) -> bool:
+        return True
+
+    def reset_loop_state(self) -> None:
+        self._agent.reset_loop_state()
+
+    def set_on_compaction(self, callback) -> None:
+        self._on_compaction = callback
+
+
 def _make_switchboard(*, active=BackendType.CLOUD, bus=None):
     mock_cloud_agent = _mock_agent()
-    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
     mock_local_agent = _mock_agent(backend="local")
 
     with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
         patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_local_agent),
         patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
     ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
         from halo.cognitive.local_backend import LocalCognitiveBackend
 
-        cloud = CloudCognitiveBackend()
+        cloud = _FakeCloudBackend(mock_cloud_agent)
         local = LocalCognitiveBackend()
         ctx_store = ContextStore()
         lease_mgr = LeaseManager()
@@ -747,7 +784,6 @@ async def test_full_cycle_cloud_compact_switch_local_switch_cloud():
 
     mock_cloud_agent = _mock_agent()
     mock_cloud_agent.msg_history = cloud_mh
-    mock_cloud_vlm = AsyncMock(return_value=VlmScene(scene="", detections=[]))
 
     mock_local_agent = _mock_agent()
     mock_local_agent.msg_history = local_mh
@@ -768,15 +804,12 @@ async def test_full_cycle_cloud_compact_switch_local_switch_cloud():
     mock_local_agent.inject_compaction_state = AsyncMock(side_effect=_inject_compaction)
 
     with (
-        patch("halo.cognitive.cloud_backend.PlannerAgent", return_value=mock_cloud_agent),
-        patch("halo.services.target_perception_service.vlm_fn.make_vlm_fn", return_value=mock_cloud_vlm),
         patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_local_agent),
         patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
     ):
-        from halo.cognitive.cloud_backend import CloudCognitiveBackend
         from halo.cognitive.local_backend import LocalCognitiveBackend
 
-        cloud = CloudCognitiveBackend()
+        cloud = _FakeCloudBackend(mock_cloud_agent)
         local = LocalCognitiveBackend()
 
     ctx_store = ContextStore()
@@ -935,6 +968,37 @@ async def test_inject_compaction_state_empty_retained():
     assert records[0].is_summary is True
     assert records[0].text == "Summary text"
     assert records[0].role == "model"
+
+
+@pytest.mark.asyncio
+async def test_inject_compaction_state_empty_summary_replays_raw_history():
+    """Empty summary should not create a synthetic blank model turn."""
+    from pathlib import Path
+    from unittest.mock import patch as _patch
+
+    from halo.cognitive.compactor import MessageRecord
+
+    with _patch("halo.services.planner_service.agent._load_prompts", return_value="test prompt"):
+        from halo.services.planner_service.agent import PlannerAgent
+
+        agent = PlannerAgent(
+            model_name="gemini-3.1-flash-lite-preview",
+            base_url="",
+            prompts_dir=Path("/tmp"),
+            backend="cloud",
+        )
+
+    retained = [
+        MessageRecord(msg_id="a", role="user", text="snap_1", ts_ms=1),
+        MessageRecord(msg_id="b", role="model", text="reply_1", ts_ms=2),
+    ]
+    await agent.inject_compaction_state("", retained)
+
+    records = agent.msg_history.get_all()
+    assert len(records) == 2
+    assert [record.role for record in records] == ["user", "model"]
+    assert [record.text for record in records] == ["snap_1", "reply_1"]
+    assert all(not record.is_summary for record in records)
 
 
 @pytest.mark.asyncio

@@ -15,10 +15,11 @@ dependencies = [
     "Pillow>=10",
     "opencv-python>=4.8",
     "numpy>=1.26",
+    "google-cloud-firestore>=2.16",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "httpx>=0.28", "ruff>=0.8"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "httpx>=0.28", "ruff>=0.8"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["cloud_service"]

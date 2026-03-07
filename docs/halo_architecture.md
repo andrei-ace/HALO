@@ -521,7 +521,6 @@ PlannerService and TargetPerceptionService call `switchboard.decide()` / `switch
 | `compactor.py` | `MessageHistory` (UUID-tracked parallel message list), `CompactionResult` for cross-backend sync |
 | `compaction_plugin.py` | `CompactionPlugin` — ADK-native event compaction callback; detects compaction boundaries and triggers cross-backend sync |
 | `local_backend.py` | `LocalCognitiveBackend` — wraps PlannerAgent (ADK + LiteLLM/Ollama) + Ollama VLM |
-| `cloud_backend.py` | `CloudCognitiveBackend` — Gemini Live API, ADK compaction, audio I/O |
 | `remote_backend.py` | `RemoteCognitiveBackend` — HTTP client to Cloud Run cognitive service |
 | `live_session.py` | `LivePlannerSession` — Gemini Live API session management |
 | `audio_io.py` | Audio capture/playback for voice interaction with cloud backend |
@@ -649,4 +648,3 @@ Append-only journal (bounded to 200 entries) that captures what the planner know
 - `SafetyGuard`, `ReflexLayer`
 - `SkillOutcomeMonitor`
 - `RuntimeStateStore`, `EventBus`
-

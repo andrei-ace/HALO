@@ -26,47 +26,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     global _session_mgr, _config  # noqa: PLW0603
 
     _config = ServiceConfig.from_env()
-    if _config.backend == "cloud" and not _config.google_api_key:
+    if not _config.google_api_key:
         raise RuntimeError(
-            "GOOGLE_API_KEY not set. Required for cloud backend. Get a key at https://aistudio.google.com/apikey"
+            "GOOGLE_API_KEY not set. Required for cloud service. Get a key at https://aistudio.google.com/apikey"
         )
     logger.info(
-        "Starting cognitive service (backend=%s, planner=%s, vlm=%s)",
-        _config.backend,
+        "Starting cognitive service (planner=%s, vlm=%s)",
         _config.planner_model,
         _config.vlm_model,
     )
 
+    from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
+
     from cloud_service.session_manager import SessionManager
 
-    if _config.backend == "local":
-        from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
+    def _vlm_factory():
+        return make_gemini_vlm_fn(
+            model=_config.vlm_model,
+            api_key=_config.google_api_key or None,
+        )
 
-        def _vlm_factory():
-            return make_ollama_vlm_fn(
-                base_url=_config.ollama_base_url,
-                model=_config.vlm_model,
-            )
+    firestore_store = None
+    if _config.firestore_enabled:
+        from cloud_service.firestore_store import FirestoreSessionStore
+
+        firestore_store = FirestoreSessionStore(
+            collection=_config.firestore_collection,
+            ttl_hours=_config.firestore_ttl_hours,
+        )
+        logger.info("Firestore session persistence enabled (collection=%s)", _config.firestore_collection)
     else:
-        from halo.services.target_perception_service.gemini_vlm_fn import make_gemini_vlm_fn
-
-        def _vlm_factory():
-            return make_gemini_vlm_fn(
-                model=_config.vlm_model,
-                api_key=_config.google_api_key or None,
-            )
+        logger.info("Firestore session persistence disabled (in-memory only)")
 
     _session_mgr = SessionManager(
         model_name=_config.planner_model,
         prompts_dir=_config.prompts_dir,
         vlm_fn_factory=_vlm_factory,
-        backend=_config.backend,
-        ollama_base_url=_config.ollama_base_url,
         compaction_interval=_config.compaction_interval,
         compaction_overlap=_config.compaction_overlap,
+        firestore_store=firestore_store,
     )
 
-    logger.info("Cognitive service ready (backend=%s)", _config.backend)
+    logger.info("Cognitive service ready")
     yield
 
     _session_mgr = None

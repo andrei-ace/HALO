@@ -52,10 +52,8 @@ def _encode_jpeg(image: object, quality: int = 85) -> bytes:
 class RemoteCognitiveBackend:
     """Brain + eyes backed by remote GCP cognitive service (HTTP client).
 
-    NOTE: This backend uses HTTP request-response only. The Gemini Live API
-    bidirectional streaming path (audio, voice commands) is only available
-    via CloudCognitiveBackend running in-process. WebSocket streaming to
-    Cloud Run is a future milestone.
+    NOTE: This backend uses HTTP request-response only. WebSocket or other
+    bidirectional streaming support to the cloud service is a future milestone.
     """
 
     def __init__(
@@ -198,9 +196,14 @@ class RemoteCognitiveBackend:
         return self._last_token_usage
 
     def reset_loop_state(self) -> None:
-        """Clear local state — warm-up already establishes fresh context
-        on the remote side. Reset readiness so the next failback goes through
-        full COLD warm-up instead of reusing stale session history."""
+        """Clear local tracking state while preserving remote session identity.
+
+        The inactive backend is reset on every backend switch. Readiness/cursor
+        must drop back to COLD so the next failback performs a full warm-up,
+        but the remote ``session_id`` must stay stable so a restarted cloud
+        instance can rehydrate the existing persisted session instead of
+        creating a brand-new one.
+        """
         self._last_reasoning = ""
         self._readiness = BackendReadiness.COLD
         self._caught_up_cursor = -1

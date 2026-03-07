@@ -42,10 +42,25 @@ async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
     arm_id = snapshot.arm_id
 
     session = await session_mgr.get_or_create(arm_id, client_session_id=client_session_id)
-    if session.pending_handoff:
-        await session.agent.inject_handoff_context(session.pending_handoff)
+    handoff = session.pending_handoff
+    if handoff:
+        await session.agent.inject_handoff_context(handoff)
         session.pending_handoff = None
-    commands = await session.agent.decide(snapshot, operator_cmd=operator_cmd, epoch=epoch)
+    try:
+        commands = await session.agent.decide(snapshot, operator_cmd=operator_cmd, epoch=epoch)
+    except Exception:
+        # Restore handoff so same-instance retries still get the context.
+        if handoff:
+            session.pending_handoff = handoff
+        raise
+    try:
+        await session_mgr.persist_session(arm_id)
+    except Exception:
+        # Evict tainted in-memory session so the next request rehydrates
+        # from the last good Firestore snapshot (which still has the handoff
+        # if it was never persisted as cleared).
+        session_mgr.evict_session(arm_id)
+        raise
     reasoning = session.agent.last_reasoning
     compaction = session.agent.last_compaction
     compacted = compaction is not None

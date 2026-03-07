@@ -259,30 +259,32 @@ class PlannerAgent:
             session_id=_THREAD_ID,
         )
 
-        # Inject summary as model event
-        summary_inv_id = uuid.uuid4().hex
-        summary_event = Event(
-            author="planner",
-            invocation_id=summary_inv_id,
-            content=types.Content(
-                role="model",
-                parts=[types.Part.from_text(text=summary)],
-            ),
-        )
-        await self._session_service.append_event(session, summary_event)
-        self._msg_history.append("model", summary)
-        # Mark summary record
-        recs = self._msg_history.get_all()
-        if recs:
-            last = recs[-1]
-            # Replace with is_summary=True variant
-            self._msg_history._records[-1] = MessageRecord(
-                msg_id=last.msg_id,
-                role=last.role,
-                text=last.text,
-                ts_ms=last.ts_ms,
-                is_summary=True,
+        # Inject summary as model event when one exists. Empty summary means
+        # "replay the raw retained transcript" rather than inventing a blank turn.
+        if summary:
+            summary_inv_id = uuid.uuid4().hex
+            summary_event = Event(
+                author="planner",
+                invocation_id=summary_inv_id,
+                content=types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(text=summary)],
+                ),
             )
+            await self._session_service.append_event(session, summary_event)
+            self._msg_history.append("model", summary)
+            # Mark summary record
+            recs = self._msg_history.get_all()
+            if recs:
+                last = recs[-1]
+                # Replace with is_summary=True variant
+                self._msg_history._records[-1] = MessageRecord(
+                    msg_id=last.msg_id,
+                    role=last.role,
+                    text=last.text,
+                    ts_ms=last.ts_ms,
+                    is_summary=True,
+                )
 
         # Inject retained records as user+model pairs
         i = 0

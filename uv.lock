@@ -835,6 +835,23 @@ wheels = [
 ]
 
 [[package]]
+name = "google-cloud-firestore"
+version = "2.24.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "google-api-core", extra = ["grpc"] },
+    { name = "google-auth" },
+    { name = "google-cloud-core" },
+    { name = "grpcio" },
+    { name = "proto-plus" },
+    { name = "protobuf" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c4/5e/9a0f2378623a21d46800815e6ff4c3119af3914e3b8405b1f33f12b4f1b1/google_cloud_firestore-2.24.0.tar.gz", hash = "sha256:e7f831f150e787c46ac3a96407f58d9edccd5455dbc9dae472f4cadb6daf6dc9", size = 620822, upload-time = "2026-03-06T21:53:04.143Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/69/d0/2ac7ff231eb380c88ddac21551156b7d03e25b1699b55641cf694def7c60/google_cloud_firestore-2.24.0-py3-none-any.whl", hash = "sha256:8b778fe766dacc54ef19b4f1b64adc751fca51b59ce569f1ec38c2ebd985dda1", size = 416388, upload-time = "2026-03-06T21:52:50.144Z" },
+]
+
+[[package]]
 name = "google-cloud-iam"
 version = "2.21.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1235,6 +1252,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "google-adk" },
+    { name = "google-cloud-firestore" },
     { name = "httpx" },
     { name = "litellm" },
     { name = "msgpack" },
@@ -1260,6 +1278,7 @@ sim = [
 [package.metadata]
 requires-dist = [
     { name = "google-adk", specifier = ">=1.0" },
+    { name = "google-cloud-firestore", specifier = ">=2.16" },
     { name = "halo-mujoco-sim", extras = ["sim"], marker = "extra == 'sim'", editable = "mujoco_sim" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "litellm", specifier = ">=1.0" },
@@ -1282,6 +1301,7 @@ source = { editable = "cloud_service" }
 dependencies = [
     { name = "fastapi" },
     { name = "google-adk" },
+    { name = "google-cloud-firestore" },
     { name = "halo" },
     { name = "numpy" },
     { name = "opencv-python" },
@@ -1294,6 +1314,7 @@ dependencies = [
 dev = [
     { name = "httpx" },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
     { name = "ruff" },
 ]
 
@@ -1301,12 +1322,14 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-adk", specifier = ">=1.0" },
+    { name = "google-cloud-firestore", specifier = ">=2.16" },
     { name = "halo", editable = "." },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", specifier = ">=4.8" },
     { name = "pillow", specifier = ">=10" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
