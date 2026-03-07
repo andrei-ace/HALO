@@ -1,6 +1,6 @@
 """Trajectory-planned PICK teacher using privileged sim state.
 
-Mirrors the PickFSM phase sequence from ``halo/services/skill_runner_service/fsm.py``.
+Mirrors the PICK skill phase sequence from ``configs/skills/pick/default.mmd``.
 On the first ``step()`` call, pre-computes the full trajectory (grasp evaluation →
 keyframes → IK waypoints → jerk-limited ruckig segments).  Each subsequent ``step()``
 samples the trajectory at ``t = step_count * dt``.

@@ -13,7 +13,6 @@ from halo.contracts.events import EventType
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.service import SkillRunnerService
-from halo.services.skill_runner_service.track_fsm import TrackFSM
 from halo.testing.state_seeder import make_perception, make_target, seed_store
 
 ARM = "arm0"
@@ -43,10 +42,11 @@ def _make_svc(runtime: HALORuntime, **kw) -> SkillRunnerService:
 
 
 async def test_track_creates_track_fsm(rt: HALORuntime):
-    """Starting a TRACK skill creates a TrackFSM."""
+    """Starting a TRACK skill activates ACQUIRING phase."""
     svc = _make_svc(rt)
     await svc.start_skill(SkillName.TRACK, "run-1", "cube-1")
-    assert isinstance(svc._fsm, TrackFSM)
+    assert svc._active_run is not None
+    assert svc._active_run.skill_name == SkillName.TRACK
     assert svc._fsm.phase == PhaseId.ACQUIRING
 
 

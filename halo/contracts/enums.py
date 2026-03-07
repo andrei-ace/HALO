@@ -52,7 +52,7 @@ class PhaseId(IntEnum):
 
 
 # Phases where the wrist camera provides real frames (vs. black/masked).
-# Shared contract consumed by PickFSM, ControlService, and sim constants.
+# Shared contract consumed by FsmEngine handlers, ControlService, and sim constants.
 WRIST_ACTIVE_PHASES: frozenset[PhaseId] = frozenset(
     {
         PhaseId.VISUAL_ALIGN,
