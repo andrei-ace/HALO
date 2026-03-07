@@ -181,15 +181,6 @@ class ExecuteApproachHandler:
 class CloseGripperHandler:
     def evaluate(self, ctx: StateContext) -> HandlerResult:
         if ctx.elapsed_ms >= ctx.config.close_gripper_duration_ms:
-            if ctx.config.skip_verify_grasp:
-                return HandlerResult.go("LIFT", trigger="skip_verify")
-            return HandlerResult.go("VERIFY_GRASP", trigger="timer_elapsed")
-        return HandlerResult.stay()
-
-
-class VerifyGraspHandler:
-    def evaluate(self, ctx: StateContext) -> HandlerResult:
-        if ctx.elapsed_ms >= ctx.config.verify_duration_ms:
             return HandlerResult.go("LIFT", trigger="timer_elapsed")
         return HandlerResult.stay()
 
@@ -197,6 +188,15 @@ class VerifyGraspHandler:
 class LiftHandler:
     def evaluate(self, ctx: StateContext) -> HandlerResult:
         if ctx.elapsed_ms >= ctx.config.lift_duration_ms:
+            if ctx.config.skip_verify_grasp:
+                return HandlerResult.done(trigger="skip_verify")
+            return HandlerResult.go("VERIFY_GRASP", trigger="lift_complete")
+        return HandlerResult.stay()
+
+
+class VerifyGraspHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.verify_duration_ms:
             return HandlerResult.done(trigger="success")
         return HandlerResult.stay()
 

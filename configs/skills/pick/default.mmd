@@ -13,9 +13,9 @@ stateDiagram-v2
     EXECUTE_APPROACH --> CLOSE_GRIPPER : grasp_qualified
     EXECUTE_APPROACH --> RECOVER_RETRY_APPROACH : target_lost
     EXECUTE_APPROACH --> DONE : timeout
-    CLOSE_GRIPPER --> VERIFY_GRASP : timer_elapsed
-    CLOSE_GRIPPER --> LIFT : skip_verify
-    VERIFY_GRASP --> LIFT : timer_elapsed
-    LIFT --> DONE : success
+    CLOSE_GRIPPER --> LIFT : timer_elapsed
+    LIFT --> VERIFY_GRASP : lift_complete
+    LIFT --> DONE : skip_verify
+    VERIFY_GRASP --> DONE : success
     RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry
     RECOVER_RETRY_APPROACH --> DONE : max_retries

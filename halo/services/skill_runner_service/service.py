@@ -353,7 +353,7 @@ class SkillRunnerService:
 
             # Early failure detection (server planning failed or trajectory
             # ended before reaching the success phase).
-            min_success_phase = PhaseId.RETREAT.value if is_place else PhaseId.LIFT.value
+            min_success_phase = PhaseId.RETREAT.value if is_place else PhaseId.VERIFY_GRASP.value
             if done and phase_id < min_success_phase:
                 fail_code = SkillFailureCode.PLACE_MISS if is_place else SkillFailureCode.NO_GRASP
                 logger.warning("Sim done=True with early phase_id=%d — treating as %s", phase_id, fail_code.name)

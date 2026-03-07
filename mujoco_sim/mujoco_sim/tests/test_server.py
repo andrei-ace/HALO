@@ -442,6 +442,50 @@ class TestHandlers:
         assert reply["type"] == "ok"
         assert shutdown is False
 
+    def test_start_place_tray_accepted(self, env_state):
+        from mujoco_sim.server.handlers import dispatch_command
+
+        env, state = env_state
+        reply, _ = dispatch_command(
+            {"type": "start_place", "target_body": "yellow_tray", "held_body": "green_cube"}, env, state
+        )
+        assert reply["type"] == "start_place_ok"
+        assert reply["target_body"] == "yellow_tray"
+        assert reply.get("deferred") is True
+
+    def test_start_place_tray_suffix_strip_accepted(self, env_state):
+        """VLM returns 'yellow_tray_01' — should resolve via suffix stripping."""
+        from mujoco_sim.server.handlers import dispatch_command
+
+        env, state = env_state
+        reply, _ = dispatch_command(
+            {"type": "start_place", "target_body": "yellow_tray_01", "held_body": "green_cube"}, env, state
+        )
+        assert reply["type"] == "start_place_ok"
+
+    def test_start_place_tray_rejects_unknown_held(self, env_state):
+        from mujoco_sim.server.handlers import dispatch_command
+
+        env, state = env_state
+        reply, _ = dispatch_command(
+            {"type": "start_place", "target_body": "yellow_tray", "held_body": "banana"}, env, state
+        )
+        assert reply["type"] == "start_place_error"
+        assert "Unknown body" in reply["message"]
+
+    def test_start_pick_tray_fails_in_planning(self, env_state):
+        """Tray is not a pickable object — planning should fail (not a known cube body)."""
+        from mujoco_sim.server.handlers import dispatch_command, execute_pending_pick
+
+        env, state = env_state
+        # Handler accepts because MuJoCo resolves the body name...
+        reply, _ = dispatch_command({"type": "start_pick", "target_body": "yellow_tray"}, env, state)
+        assert reply["type"] == "start_pick_ok"
+        # ...but planning fails because yellow_tray is not in half_sizes_for_body
+        execute_pending_pick(env, state)
+        assert state.error is not None
+        assert state.done is True
+
     def test_set_hint(self, env_state):
         from mujoco_sim.server.handlers import dispatch_command
 

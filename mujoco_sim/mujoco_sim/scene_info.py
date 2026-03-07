@@ -21,6 +21,8 @@ GREEN_CUBE_GEOM_NAME = "green_cube_geom"
 GREEN_CUBE_BODY_NAME = "green_cube"
 RED_CUBE_GEOM_NAME = "red_cube_geom"
 RED_CUBE_BODY_NAME = "red_cube"
+TRAY_BODY_NAME = "yellow_tray"
+TRAY_BOTTOM_GEOM_NAME = "yellow_tray_bottom"
 TABLE_BODY_NAME = "table"
 TABLE_GEOM_NAME = "table_top"
 EE_SITE_NAME = "gripperframe"
@@ -64,7 +66,7 @@ DEFAULT_TABLE_MARGIN = 0.01  # 10 mm
 # ---------------------------------------------------------------------------
 
 # Pregrasp standoff: distance (m) along approach direction above grasp contact.
-DEFAULT_PREGRASP_STANDOFF = 0.08
+DEFAULT_PREGRASP_STANDOFF = 0.02
 
 # Lift height (m) above grasp contact point.
 DEFAULT_LIFT_HEIGHT = 0.08
@@ -100,6 +102,8 @@ class SceneInfo:
     red_cube_half_sizes: np.ndarray  # (3,) from model.geom_size[red_cube_geom_id]
     red_cube_default_pos: np.ndarray  # (3,) from model.body_pos[red_cube_body_id]
     table_z: float  # table body Z + table_top geom half-height
+    tray_pos: np.ndarray  # (3,) tray body position
+    tray_floor_z: float  # Z of the tray interior floor (top of bottom plate)
 
     def half_sizes_for_body(self, body_name: str) -> np.ndarray:
         """Look up cube half-sizes by body name.
@@ -131,6 +135,8 @@ class SceneInfo:
         red_cube_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, RED_CUBE_BODY_NAME)
         table_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, TABLE_BODY_NAME)
         table_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, TABLE_GEOM_NAME)
+        tray_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, TRAY_BODY_NAME)
+        tray_bottom_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, TRAY_BOTTOM_GEOM_NAME)
 
         green_cube_half_sizes = model.geom_size[green_cube_geom_id].copy()
         green_cube_default_pos = model.body_pos[green_cube_body_id].copy()
@@ -140,10 +146,17 @@ class SceneInfo:
         # Table surface = table body Z + table_top geom half-height (Z component of box size)
         table_z = float(model.body_pos[table_body_id][2] + model.geom_size[table_geom_id][2])
 
+        # Tray: body position + top of bottom plate (bottom_half_z * 2)
+        tray_pos = model.body_pos[tray_body_id].copy()
+        tray_bottom_half_z = model.geom_size[tray_bottom_geom_id][2]
+        tray_floor_z = float(tray_pos[2] + tray_bottom_half_z * 2)
+
         return cls(
             green_cube_half_sizes=green_cube_half_sizes,
             green_cube_default_pos=green_cube_default_pos,
             red_cube_half_sizes=red_cube_half_sizes,
             red_cube_default_pos=red_cube_default_pos,
             table_z=table_z,
+            tray_pos=tray_pos,
+            tray_floor_z=tray_floor_z,
         )

@@ -117,17 +117,17 @@ def plan_pick_keyframes(
             label="grasp_closed",
         ),
         Keyframe(
-            position=grasp_pos,
-            orientation=grasp_rot,
-            gripper=GRIPPER_CLOSE,
-            phase_id=PHASE_VERIFY_GRASP,
-            label="verify_grasp",
-        ),
-        Keyframe(
             position=lift_pos,
             orientation=grasp_rot,
             gripper=GRIPPER_CLOSE,
             phase_id=PHASE_LIFT,
             label="lift",
+        ),
+        Keyframe(
+            position=lift_pos,
+            orientation=grasp_rot,
+            gripper=GRIPPER_CLOSE,
+            phase_id=PHASE_VERIFY_GRASP,
+            label="verify_grasp",
         ),
     ]

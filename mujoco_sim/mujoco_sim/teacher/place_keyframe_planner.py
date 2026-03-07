@@ -177,6 +177,7 @@ def plan_place_candidates(
     ref_half_sizes: np.ndarray,
     *,
     target_body: str = "",
+    tray_floor_z: float | None = None,
     config: PlaceConfig | None = None,
     n_candidates: int = DEFAULT_PLACE_N_CANDIDATES,
 ) -> list[list[Keyframe]]:
@@ -194,7 +195,9 @@ def plan_place_candidates(
         table_z: Table surface height (Z).
         held_half_sizes: (3,) half-sizes of the held object.
         ref_half_sizes: (3,) half-sizes of the reference object.
-        target_body: Name of the target body (use "floor" for floor placement).
+        target_body: Name of the target body (use "floor" for floor placement,
+            "tray" for tray placement).
+        tray_floor_z: Z height of the tray interior floor (required when target_body == "tray").
         config: Optional PlaceConfig overrides.
         n_candidates: Number of candidate positions to generate.
 
@@ -208,7 +211,21 @@ def plan_place_candidates(
 
     candidates: list[list[Keyframe]] = []
 
-    if target_body == "floor":
+    if tray_floor_z is not None:
+        # Single candidate centered on tray interior
+        place_pos = np.array(
+            [
+                reference_pos[0],
+                reference_pos[1],
+                tray_floor_z + held_half_sizes[2],
+            ]
+        )
+        preplace_pos = place_pos.copy()
+        preplace_pos[2] = place_pos[2] + cfg.preplace_height
+        retreat_pos = place_pos.copy()
+        retreat_pos[2] = place_pos[2] + cfg.retreat_height
+        candidates.append(_build_place_keyframes(current_pos, current_rot, place_pos, preplace_pos, retreat_pos))
+    elif target_body == "floor":
         # 4x4 grid centered on gripper's current XY
         grid_side = 4
         spacing = held_half_sizes[0] * 2 + 0.01

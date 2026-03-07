@@ -152,7 +152,7 @@ Top-level entry point. Owns `RuntimeStateStore`, `EventBus`, and `CommandRouter`
 Single source of truth (transport TBD: ROS2 topics, ZeroMQ, Redis, shared memory). Partitioned by `arm_id` from day one.
 
 ### Pick Skill FSM states
-`IDLE → SELECT_GRASP → PLAN_APPROACH → MOVE_PREGRASP → VISUAL_ALIGN → EXECUTE_APPROACH → CLOSE_GRIPPER → VERIFY_GRASP → LIFT → DONE`
+`IDLE → SELECT_GRASP → PLAN_APPROACH → MOVE_PREGRASP → VISUAL_ALIGN → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → VERIFY_GRASP → DONE`
 Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_REGRASP`, `RECOVER_ABORT`
 
 `CLOSE_GRIPPER` is triggered **deterministically** (distance < threshold held for `grasp_persistence_ms`), never by the planner.
@@ -171,7 +171,7 @@ Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`,
 - Perception failure codes: `OK`, `OCCLUDED`, `OUT_OF_VIEW`, `DEPTH_INVALID`, `MULTIPLE_CANDIDATES`, `CALIB_INVALID`, `TRACK_JUMP_REJECTED`, `REACQUIRE_FAILED`
 - Skill failure codes: `TIMEOUT`, `NO_PROGRESS`, `NO_GRASP`, `DROP_DETECTED`, `PLACE_MISS`, `PERCEPTION_LOST`, `TARGET_MISMATCH`, `UNSAFE_ABORT`
 - Safety reflex reasons: `JOINT_LIMIT`, `WORKSPACE_LIMIT`, `COLLISION_RISK`, `OVERCURRENT`, `ESTOP`
-- Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 VERIFY_GRASP`, `8 LIFT`, `9 DONE`, `20 ACQUIRING`, `30-33 PLACE_*`, `50-52 RECOVER_*`
+- Phase IDs: `0 IDLE`, `1 SELECT_GRASP`, `2 PLAN_APPROACH`, `3 MOVE_PREGRASP`, `4 VISUAL_ALIGN`, `5 EXECUTE_APPROACH`, `6 CLOSE_GRIPPER`, `7 LIFT`, `8 VERIFY_GRASP`, `9 DONE`, `20 ACQUIRING`, `30-33 PLACE_*`, `50-52 RECOVER_*`
 
 ## Hardware (real SO-ARM101 phase — phase 3)
 

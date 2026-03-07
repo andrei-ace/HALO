@@ -121,7 +121,7 @@ class TestKeyframePlanner:
 
         keyframes = plan_pick_keyframes(home_joints, grasp_pose, ee_site_id, mj_model, mj_data)
         labels = [kf.label for kf in keyframes]
-        assert labels == ["home", "pregrasp", "grasp", "grasp_closed", "verify_grasp", "lift"]
+        assert labels == ["home", "pregrasp", "grasp", "grasp_closed", "lift", "verify_grasp"]
 
     def test_keyframe_phases(self, scene_info, mj_model, mj_data, ee_site_id):
         home_joints = mj_data.qpos[:6].copy()
@@ -134,8 +134,8 @@ class TestKeyframePlanner:
             PHASE_MOVE_PREGRASP,
             PHASE_EXECUTE_APPROACH,
             PHASE_CLOSE_GRIPPER,
-            PHASE_VERIFY_GRASP,
             PHASE_LIFT,
+            PHASE_VERIFY_GRASP,
         ]
 
     def test_pregrasp_along_approach(self, scene_info, mj_model, mj_data, ee_site_id):
@@ -456,3 +456,82 @@ class TestIntegratedPipeline:
             )
             plan = plan_trajectory(waypoints)
             assert plan.total_duration > 0
+
+
+# ---------------------------------------------------------------------------
+# Place keyframe planner — tray target
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceTrayCandidate:
+    """Tests for plan_place_candidates with target_body='tray'."""
+
+    def test_tray_single_candidate(self, mj_model, mj_data, ee_site_id, scene_info):
+        from mujoco_sim.teacher.place_keyframe_planner import plan_place_candidates
+
+        home = np.zeros(6)
+        held_half = scene_info.green_cube_half_sizes
+
+        candidates = plan_place_candidates(
+            current_joints=home,
+            reference_pos=scene_info.tray_pos,
+            ee_site_id=ee_site_id,
+            model=mj_model,
+            data=mj_data,
+            table_z=scene_info.table_z,
+            held_half_sizes=held_half,
+            ref_half_sizes=np.zeros(3),
+            target_body="tray",
+            tray_floor_z=scene_info.tray_floor_z,
+        )
+
+        assert len(candidates) == 1
+        keyframes = candidates[0]
+        assert len(keyframes) == 5
+
+    def test_tray_place_z_uses_tray_floor(self, mj_model, mj_data, ee_site_id, scene_info):
+        from mujoco_sim.teacher.place_keyframe_planner import plan_place_candidates
+
+        home = np.zeros(6)
+        held_half = scene_info.green_cube_half_sizes
+
+        candidates = plan_place_candidates(
+            current_joints=home,
+            reference_pos=scene_info.tray_pos,
+            ee_site_id=ee_site_id,
+            model=mj_model,
+            data=mj_data,
+            table_z=scene_info.table_z,
+            held_half_sizes=held_half,
+            ref_half_sizes=np.zeros(3),
+            target_body="tray",
+            tray_floor_z=scene_info.tray_floor_z,
+        )
+
+        # Place keyframe (index 2) Z should be tray_floor_z + held_half_z
+        place_kf = candidates[0][2]
+        expected_z = scene_info.tray_floor_z + held_half[2]
+        assert abs(place_kf.position[2] - expected_z) < 1e-6
+
+    def test_tray_place_xy_centered(self, mj_model, mj_data, ee_site_id, scene_info):
+        from mujoco_sim.teacher.place_keyframe_planner import plan_place_candidates
+
+        home = np.zeros(6)
+        held_half = scene_info.green_cube_half_sizes
+
+        candidates = plan_place_candidates(
+            current_joints=home,
+            reference_pos=scene_info.tray_pos,
+            ee_site_id=ee_site_id,
+            model=mj_model,
+            data=mj_data,
+            table_z=scene_info.table_z,
+            held_half_sizes=held_half,
+            ref_half_sizes=np.zeros(3),
+            target_body="tray",
+            tray_floor_z=scene_info.tray_floor_z,
+        )
+
+        place_kf = candidates[0][2]
+        assert abs(place_kf.position[0] - scene_info.tray_pos[0]) < 1e-6
+        assert abs(place_kf.position[1] - scene_info.tray_pos[1]) < 1e-6

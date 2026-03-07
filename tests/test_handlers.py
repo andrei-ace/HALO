@@ -190,33 +190,33 @@ def test_execute_approach_persistence_reset():
 # --- CloseGripperHandler ---
 
 
-def test_close_gripper_to_verify():
+def test_close_gripper_to_lift():
     h = CloseGripperHandler()
-    result = h.evaluate(_ctx(elapsed_ms=1000, config=_cfg(close_gripper_duration_ms=1000, skip_verify_grasp=False)))
-    assert result.transition_to == "VERIFY_GRASP"
-
-
-def test_close_gripper_skip_verify():
-    h = CloseGripperHandler()
-    result = h.evaluate(_ctx(elapsed_ms=1000, config=_cfg(close_gripper_duration_ms=1000, skip_verify_grasp=True)))
-    assert result.transition_to == "LIFT"
-
-
-# --- VerifyGraspHandler ---
-
-
-def test_verify_grasp_to_lift():
-    h = VerifyGraspHandler()
-    result = h.evaluate(_ctx(elapsed_ms=500, config=_cfg(verify_duration_ms=500)))
+    result = h.evaluate(_ctx(elapsed_ms=1000, config=_cfg(close_gripper_duration_ms=1000)))
     assert result.transition_to == "LIFT"
 
 
 # --- LiftHandler ---
 
 
-def test_lift_succeeds():
+def test_lift_to_verify_grasp():
     h = LiftHandler()
-    result = h.evaluate(_ctx(elapsed_ms=2000, config=_cfg(lift_duration_ms=2000)))
+    result = h.evaluate(_ctx(elapsed_ms=2000, config=_cfg(lift_duration_ms=2000, skip_verify_grasp=False)))
+    assert result.transition_to == "VERIFY_GRASP"
+
+
+def test_lift_skip_verify():
+    h = LiftHandler()
+    result = h.evaluate(_ctx(elapsed_ms=2000, config=_cfg(lift_duration_ms=2000, skip_verify_grasp=True)))
+    assert result.succeed is True
+
+
+# --- VerifyGraspHandler ---
+
+
+def test_verify_grasp_succeeds():
+    h = VerifyGraspHandler()
+    result = h.evaluate(_ctx(elapsed_ms=500, config=_cfg(verify_duration_ms=500)))
     assert result.succeed is True
 
 

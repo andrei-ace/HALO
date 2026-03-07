@@ -39,12 +39,14 @@ def build_tools(ctx: AgentContext) -> list:
         Args:
             skill_name: Skill to run. One of: PICK, TRACK, PLACE.
                 For PLACE, target_handle is the reference object handle.
-                Use options to specify the modifier (PLACE_FLOOR or PLACE_NEXT_TO).
+                Use options to specify the modifier (PLACE_FLOOR, PLACE_NEXT_TO, or PLACE_IN_TRAY).
             target_handle: Target object handle string (from perception).
                 For PLACE_FLOOR: the held object handle.
                 For PLACE_NEXT_TO: the reference object handle to place next to.
+                For PLACE_IN_TRAY: the tray handle.
             options: Optional JSON string of key/value overrides for the skill.
-                For PLACE: '{"modifier": "PLACE_FLOOR"}' or '{"modifier": "PLACE_NEXT_TO"}'.
+                For PLACE: '{"modifier": "PLACE_FLOOR"}', '{"modifier": "PLACE_NEXT_TO"}',
+                or '{"modifier": "PLACE_IN_TRAY"}'.
         """
         if err := _once("start_skill"):
             return err

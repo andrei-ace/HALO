@@ -20,9 +20,13 @@ import msgpack
 import numpy as np
 import zmq
 
+from mujoco_sim.constants import PHASE_LIFT, PHASE_VERIFY_GRASP
 from mujoco_sim.server.config import SimServerConfig
 from mujoco_sim.server.handlers import ServerState, dispatch_command, execute_pending_pick, execute_pending_place
 from mujoco_sim.server.protocol import pack_telemetry
+
+# Minimum Z change (metres) during lift to confirm grasp
+_VERIFY_GRASP_Z_THRESHOLD = 0.005
 
 logger = logging.getLogger(__name__)
 
@@ -168,14 +172,39 @@ class SimServer:
                 action = np.concatenate([arm_joints, [gripper]])
                 env.step(action)
                 state.hold_target = action.copy()
+                state.trajectory = None
+
+                # Verify grasp: check if the object Z changed during lift
+                if phase_id == PHASE_VERIFY_GRASP and state.pick_target_body_id is not None:
+                    obj_z = float(env.mujoco_data.xpos[state.pick_target_body_id][2])
+                    pre_z = state.pre_lift_object_z
+                    if pre_z is not None:
+                        dz = obj_z - pre_z
+                        if dz < _VERIFY_GRASP_Z_THRESHOLD:
+                            logger.warning(
+                                "VERIFY_GRASP failed: object Z delta=%.4f m (threshold=%.4f m)",
+                                dz,
+                                _VERIFY_GRASP_Z_THRESHOLD,
+                            )
+                            state.phase_id = PHASE_LIFT  # below success threshold
+                            state.error = "NO_GRASP"
+                            state.done = True
+                            return
+                        logger.info("VERIFY_GRASP passed: object Z delta=%.4f m", dz)
+
                 state.phase_id = phase_id
                 state.done = True
-                state.trajectory = None
                 logger.info("Trajectory complete (phase_id=%d)", phase_id)
             else:
                 arm_joints, gripper, phase_id = state.trajectory.sample(t)
                 action = np.concatenate([arm_joints, [gripper]])
                 env.step(action)
+
+                # Record object Z when entering LIFT phase (before lift motion)
+                if phase_id == PHASE_LIFT and state.phase_id != PHASE_LIFT and state.pick_target_body_id is not None:
+                    state.pre_lift_object_z = float(env.mujoco_data.xpos[state.pick_target_body_id][2])
+                    logger.info("Pre-lift object Z recorded: %.4f m", state.pre_lift_object_z)
+
                 state.phase_id = phase_id
         else:
             # Hold fixed target position (prevents gravity drift)

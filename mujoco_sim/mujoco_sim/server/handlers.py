@@ -141,6 +141,10 @@ class ServerState:
         self.pending_place_target: str | None = None
         self.pending_place_held_body: str | None = None
 
+        # Pick grasp verification
+        self.pick_target_body_id: int | None = None
+        self.pre_lift_object_z: float | None = None
+
         # Cached IDs (lazy init on first start_pick)
         self._ee_site_id: int | None = None
         self._arm_joint_ids: list[int] | None = None
@@ -457,6 +461,8 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
         server_state.phase_id = 0
         server_state.done = False
         server_state.error = None
+        server_state.pick_target_body_id = target_body_id
+        server_state.pre_lift_object_z = None
 
     except (GraspPlanningFailure, IKFailure) as exc:
         logger.warning("start_pick planning failed: %s", exc)
@@ -483,14 +489,18 @@ def _handle_start_place(msg: dict, env: SO101Env, server_state: ServerState | No
     # Validate both bodies exist
     import mujoco as mj
 
-    from mujoco_sim.scene_info import GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME
+    from mujoco_sim.scene_info import GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME, TRAY_BODY_NAME
 
-    known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
-    for body_name, label in [(target_body, "target"), (held_body, "held")]:
+    place_known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME, TRAY_BODY_NAME)
+    held_known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
+    for body_name, label, known in [
+        (target_body, "target", place_known_bodies),
+        (held_body, "held", held_known_bodies),
+    ]:
         try:
             _resolve_target_body(
                 requested_body=body_name,
-                known_bodies=known_bodies,
+                known_bodies=known,
                 name_to_body_id=lambda name: mj.mj_name2id(env.mujoco_model, mj.mjtObj.mjOBJ_BODY, name),
             )
         except KeyError as exc:
@@ -526,6 +536,7 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
             EE_SITE_NAME,
             GREEN_CUBE_BODY_NAME,
             RED_CUBE_BODY_NAME,
+            TRAY_BODY_NAME,
             SceneInfo,
         )
         from mujoco_sim.teacher.place_keyframe_planner import PlaceConfig, plan_place_candidates, plan_place_keyframes
@@ -547,24 +558,28 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
 
         scene_info = server_state._scene_info
 
-        known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
+        place_known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME, TRAY_BODY_NAME)
+        held_known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
 
         # Resolve reference body
         resolved_target, target_body_id = _resolve_target_body(
             requested_body=target_body,
-            known_bodies=known_bodies,
+            known_bodies=place_known_bodies,
             name_to_body_id=lambda name: mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, name),
         )
         # Resolve held body
         resolved_held, _held_body_id = _resolve_target_body(
             requested_body=held_body,
-            known_bodies=known_bodies,
+            known_bodies=held_known_bodies,
             name_to_body_id=lambda name: mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, name),
         )
 
-        # Get half-sizes for both objects
-        ref_half_sizes = scene_info.half_sizes_for_body(resolved_target)
+        # Get half-sizes for held object
         held_half_sizes = scene_info.half_sizes_for_body(resolved_held)
+
+        # For tray target, use dummy ref_half_sizes (not a pickable object)
+        is_tray = resolved_target == TRAY_BODY_NAME
+        ref_half_sizes = np.zeros(3) if is_tray else scene_info.half_sizes_for_body(resolved_target)
 
         # Read current state
         current_joints = np.array(data.qpos[:6], copy=True)
@@ -579,7 +594,7 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
             max_jerk=config.max_jerk or JointLimits().max_jerk,
         )
 
-        # Generate 16 candidate place positions and validate each
+        # Generate candidate place positions and validate each
         all_candidates = plan_place_candidates(
             current_joints=current_joints,
             reference_pos=reference_pos,
@@ -590,6 +605,7 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
             held_half_sizes=held_half_sizes,
             ref_half_sizes=ref_half_sizes,
             target_body=resolved_target,
+            tray_floor_z=scene_info.tray_floor_z if is_tray else None,
             config=PlaceConfig(),
         )
 

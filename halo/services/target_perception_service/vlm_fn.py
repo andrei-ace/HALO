@@ -41,16 +41,32 @@ _VLM_INPUT_WIDTH_OLLAMA = 1024
 _OLLAMA_SCHEMA = {
     "type": "object",
     "properties": {
-        "scene": {"type": "string"},
+        "scene": {
+            "type": "string",
+            "description": "One sentence describing the workspace layout.",
+        },
         "detections": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "handle": {"type": "string"},
-                    "label": {"type": "string"},
-                    "bounding_box": {"type": "array", "items": {"type": "integer"}},
-                    "is_graspable": {"type": "boolean"},
+                    "handle": {
+                        "type": "string",
+                        "description": "Unique stable ID as {color}_{type}_{nn}, e.g. green_cube_01 or yellow_tray_01.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Short description (e.g. 'small green cube'). Not a copy of handle.",
+                    },
+                    "bounding_box": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "[x1, y1, x2, y2] in pixels.",
+                    },
+                    "is_graspable": {
+                        "type": "boolean",
+                        "description": "true for pickable items, false for containers and robot hand.",
+                    },
                 },
                 "required": ["handle", "label", "bounding_box", "is_graspable"],
             },
@@ -62,16 +78,32 @@ _OLLAMA_SCHEMA = {
 _GEMINI_SCHEMA = {
     "type": "object",
     "properties": {
-        "scene": {"type": "string"},
+        "scene": {
+            "type": "string",
+            "description": "One sentence describing the workspace layout.",
+        },
         "detections": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "handle": {"type": "string"},
-                    "label": {"type": "string"},
-                    "box_2d": {"type": "array", "items": {"type": "integer"}},
-                    "is_graspable": {"type": "boolean"},
+                    "handle": {
+                        "type": "string",
+                        "description": "Unique stable ID as {color}_{type}_{nn}, e.g. green_cube_01 or yellow_tray_01.",
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Short description (e.g. 'small green cube'). Not a copy of handle.",
+                    },
+                    "box_2d": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "[y_min, x_min, y_max, x_max] in 0-1000 range.",
+                    },
+                    "is_graspable": {
+                        "type": "boolean",
+                        "description": "true for pickable items, false for containers and robot hand.",
+                    },
                 },
                 "required": ["handle", "label", "box_2d", "is_graspable"],
             },

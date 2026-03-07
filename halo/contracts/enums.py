@@ -29,6 +29,7 @@ class SkillName(StrEnum):
 class PlaceModifier(StrEnum):
     PLACE_FLOOR = "PLACE_FLOOR"
     PLACE_NEXT_TO = "PLACE_NEXT_TO"
+    PLACE_IN_TRAY = "PLACE_IN_TRAY"
 
 
 class PhaseId(IntEnum):
@@ -40,8 +41,8 @@ class PhaseId(IntEnum):
     VISUAL_ALIGN = 4
     EXECUTE_APPROACH = 5
     CLOSE_GRIPPER = 6
-    VERIFY_GRASP = 7
-    LIFT = 8
+    LIFT = 7
+    VERIFY_GRASP = 8
     DONE = 9
     # -- TRACK sub-phases --
     ACQUIRING = 20

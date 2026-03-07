@@ -51,8 +51,8 @@ def test_phase_id_values():
     assert PhaseId.VISUAL_ALIGN == 4
     assert PhaseId.EXECUTE_APPROACH == 5
     assert PhaseId.CLOSE_GRIPPER == 6
-    assert PhaseId.VERIFY_GRASP == 7
-    assert PhaseId.LIFT == 8
+    assert PhaseId.LIFT == 7
+    assert PhaseId.VERIFY_GRASP == 8
     assert PhaseId.DONE == 9
     assert PhaseId.TRANSIT_PREPLACE == 30
     assert PhaseId.SELECT_PLACE == 34
@@ -103,7 +103,8 @@ def test_str_enum_values_are_strings():
 def test_place_modifier_values():
     assert PlaceModifier.PLACE_FLOOR == "PLACE_FLOOR"
     assert PlaceModifier.PLACE_NEXT_TO == "PLACE_NEXT_TO"
-    assert {m.value for m in PlaceModifier} == {"PLACE_FLOOR", "PLACE_NEXT_TO"}
+    assert PlaceModifier.PLACE_IN_TRAY == "PLACE_IN_TRAY"
+    assert {m.value for m in PlaceModifier} == {"PLACE_FLOOR", "PLACE_NEXT_TO", "PLACE_IN_TRAY"}
 
 
 # ---------------------------------------------------------------------------
