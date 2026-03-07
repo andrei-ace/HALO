@@ -20,6 +20,7 @@ from mujoco_sim.server.protocol import (
     CMD_SET_STATE,
     CMD_SHUTDOWN,
     CMD_START_PICK,
+    CMD_START_PLACE,
     CMD_STEP,
     RESP_ABORT_PICK_OK,
     RESP_ERROR,
@@ -27,6 +28,8 @@ from mujoco_sim.server.protocol import (
     RESP_RESET_OK,
     RESP_START_PICK_ERROR,
     RESP_START_PICK_OK,
+    RESP_START_PLACE_ERROR,
+    RESP_START_PLACE_OK,
     RESP_STATE,
     RESP_STEP_OK,
     ndarray_to_bytes,
@@ -98,6 +101,9 @@ def dispatch_command(
     if cmd == CMD_START_PICK:
         return _handle_start_pick(msg, env, server_state), False
 
+    if cmd == CMD_START_PLACE:
+        return _handle_start_place(msg, env, server_state), False
+
     if cmd == CMD_ABORT_PICK:
         return _handle_abort_pick(server_state, env), False
 
@@ -130,6 +136,10 @@ class ServerState:
 
         # Deferred pick planning — stored by handler, executed by main loop
         self.pending_pick_target: str | None = None
+
+        # Deferred place planning — stored by handler, executed by main loop
+        self.pending_place_target: str | None = None
+        self.pending_place_held_body: str | None = None
 
         # Cached IDs (lazy init on first start_pick)
         self._ee_site_id: int | None = None
@@ -399,6 +409,178 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
         server_state.done = True
     except Exception as exc:
         logger.exception("start_pick unexpected error")
+        server_state.error = str(exc)
+        server_state.done = True
+
+
+def _handle_start_place(msg: dict, env: SO101Env, server_state: ServerState | None) -> dict:
+    """Accept a place request and defer planning to the main loop."""
+    if server_state is None:
+        return {"type": RESP_START_PLACE_ERROR, "message": "server_state not available"}
+
+    target_body = msg.get("target_body")
+    held_body = msg.get("held_body")
+    if not target_body:
+        return {"type": RESP_START_PLACE_ERROR, "message": "start_place requires 'target_body' field"}
+    if not held_body:
+        return {"type": RESP_START_PLACE_ERROR, "message": "start_place requires 'held_body' field"}
+
+    # Validate both bodies exist
+    import mujoco as mj
+
+    from mujoco_sim.scene_info import GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME
+
+    known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
+    for body_name, label in [(target_body, "target"), (held_body, "held")]:
+        try:
+            _resolve_target_body(
+                requested_body=body_name,
+                known_bodies=known_bodies,
+                name_to_body_id=lambda name: mj.mj_name2id(env.mujoco_model, mj.mjtObj.mjOBJ_BODY, name),
+            )
+        except KeyError as exc:
+            logger.warning("start_place rejected unknown %s body: %s", label, exc)
+            return {"type": RESP_START_PLACE_ERROR, "message": str(exc)}
+
+    # Defer — main loop will call execute_pending_place() on next iteration
+    server_state.pending_place_target = target_body
+    server_state.pending_place_held_body = held_body
+    server_state.phase_id = 0
+    server_state.done = False
+    server_state.error = None
+
+    return {"type": RESP_START_PLACE_OK, "target_body": target_body, "deferred": True}
+
+
+def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
+    """Run the heavy place planning (called from the main loop)."""
+    target_body = server_state.pending_place_target
+    held_body = server_state.pending_place_held_body
+    server_state.pending_place_target = None
+    server_state.pending_place_held_body = None
+    if not target_body or not held_body:
+        return
+
+    try:
+        import time
+
+        import mujoco as mj
+
+        from mujoco_sim.scene_info import (
+            EE_SITE_NAME,
+            GREEN_CUBE_BODY_NAME,
+            RED_CUBE_BODY_NAME,
+            SceneInfo,
+        )
+        from mujoco_sim.teacher.place_keyframe_planner import PlaceConfig, plan_place_keyframes
+        from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
+        from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
+
+        model = env.mujoco_model
+        data = env.mujoco_data
+
+        # Lazy-init cached IDs and scene info
+        if server_state._scene_info is None:
+            server_state._scene_info = SceneInfo.from_model(model)
+            server_state._ee_site_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_SITE, EE_SITE_NAME)
+            server_state._arm_joint_ids = [
+                mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, name)
+                for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
+            ]
+
+        scene_info = server_state._scene_info
+
+        known_bodies = (GREEN_CUBE_BODY_NAME, RED_CUBE_BODY_NAME)
+
+        # Resolve reference body
+        resolved_target, target_body_id = _resolve_target_body(
+            requested_body=target_body,
+            known_bodies=known_bodies,
+            name_to_body_id=lambda name: mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, name),
+        )
+        # Resolve held body
+        resolved_held, _held_body_id = _resolve_target_body(
+            requested_body=held_body,
+            known_bodies=known_bodies,
+            name_to_body_id=lambda name: mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, name),
+        )
+
+        # Get half-sizes for both objects
+        ref_half_sizes = scene_info.half_sizes_for_body(resolved_target)
+        held_half_sizes = scene_info.half_sizes_for_body(resolved_held)
+
+        # Read current state
+        current_joints = np.array(data.qpos[:6], copy=True)
+        reference_pos = data.xpos[target_body_id].copy()
+
+        # Plan place keyframes
+        keyframes = plan_place_keyframes(
+            current_joints=current_joints,
+            reference_pos=reference_pos,
+            ee_site_id=server_state._ee_site_id,
+            model=model,
+            data=data,
+            table_z=scene_info.table_z,
+            held_half_sizes=held_half_sizes,
+            ref_half_sizes=ref_half_sizes,
+            config=PlaceConfig(),
+        )
+
+        logger.info(
+            "start_place: target=%s held=%s planned %d keyframes: %s",
+            resolved_target,
+            resolved_held,
+            len(keyframes),
+            [kf.label for kf in keyframes],
+        )
+        for kf in keyframes:
+            logger.info("  keyframe '%s': pos=%s phase_id=%d", kf.label, kf.position, kf.phase_id)
+
+        # IK → joint waypoints
+        from mujoco_sim.teacher.pick_teacher import TeacherConfig
+
+        config = TeacherConfig()
+        waypoints = generate_joint_waypoints(
+            keyframes=keyframes,
+            model=model,
+            data=data,
+            ee_site_id=server_state._ee_site_id,
+            arm_joint_ids=server_state._arm_joint_ids,
+            seed_joints=current_joints[:5],
+            pos_weight=config.ik_pos_weight,
+            ori_weight=config.ik_ori_weight,
+            max_iters=config.ik_max_iters,
+            tol=config.ik_tol,
+            pos_tol=config.ik_pos_tol,
+        )
+
+        # Jerk-limited trajectory
+        limits = JointLimits(
+            max_velocity=config.max_velocity or JointLimits().max_velocity,
+            max_acceleration=config.max_acceleration or JointLimits().max_acceleration,
+            max_jerk=config.max_jerk or JointLimits().max_jerk,
+        )
+        trajectory = plan_trajectory(waypoints, limits)
+
+        logger.info(
+            "start_place: planned %d segments, %.2f s total",
+            len(trajectory.segments),
+            trajectory.total_duration,
+        )
+
+        # Store trajectory for the physics loop
+        server_state.trajectory = trajectory
+        server_state.traj_start_time = time.monotonic()
+        server_state.phase_id = 0
+        server_state.done = False
+        server_state.error = None
+
+    except (IKFailure,) as exc:
+        logger.warning("start_place planning failed (target=%s, held=%s): %s", target_body, held_body, exc)
+        server_state.error = str(exc)
+        server_state.done = True
+    except Exception as exc:
+        logger.exception("start_place unexpected error (target=%s, held=%s)", target_body, held_body)
         server_state.error = str(exc)
         server_state.done = True
 

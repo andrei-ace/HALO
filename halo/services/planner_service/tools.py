@@ -37,9 +37,14 @@ def build_tools(ctx: AgentContext) -> list:
         """Start a named skill on the arm.
 
         Args:
-            skill_name: Skill to run. One of: PICK, TRACK.
+            skill_name: Skill to run. One of: PICK, TRACK, PLACE.
+                For PLACE, target_handle is the reference object handle.
+                Use options to specify the modifier (PLACE_FLOOR or PLACE_NEXT_TO).
             target_handle: Target object handle string (from perception).
+                For PLACE_FLOOR: the held object handle.
+                For PLACE_NEXT_TO: the reference object handle to place next to.
             options: Optional JSON string of key/value overrides for the skill.
+                For PLACE: '{"modifier": "PLACE_FLOOR"}' or '{"modifier": "PLACE_NEXT_TO"}'.
         """
         if err := _once("start_skill"):
             return err

@@ -68,6 +68,7 @@ class SimSource:
         self._latest_qvel: np.ndarray | None = None
         self._latest_phase_id: int = 0
         self._latest_done: bool = False
+        self._latest_error: str | None = None
 
         self._poll_thread: threading.Thread | None = None
         self._poll_stop = threading.Event()
@@ -145,6 +146,12 @@ class SimSource:
         with self._cond:
             return self._latest_done
 
+    @property
+    def latest_error(self) -> str | None:
+        """Most recent error string from sim telemetry, or None."""
+        with self._cond:
+            return self._latest_error
+
     def make_capture_fn(self, arm_id: str = "arm0") -> object:
         """Return a CaptureFn that reads sequential frames from telemetry."""
         source = self
@@ -199,6 +206,7 @@ class SimSource:
                     self._latest_qvel = telemetry["qvel"]
                     self._latest_phase_id = telemetry.get("phase_id", 0)
                     self._latest_done = telemetry.get("done", False)
+                    self._latest_error = telemetry.get("error")
                     self._frame_queue.append(bgr)
                     self._cond.notify_all()
             else:

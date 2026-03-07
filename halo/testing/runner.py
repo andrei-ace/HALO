@@ -233,6 +233,7 @@ class HeadlessRunner:
                     skill_name=payload.skill_name,
                     skill_run_id=f"run-{cmd.command_id[:8]}",
                     target_handle=payload.target_handle,
+                    options=payload.options or None,
                 )
             elif cmd.type == CommandType.ABORT_SKILL and self.skill_runner_svc is not None:
                 await self.skill_runner_svc.abort_skill()

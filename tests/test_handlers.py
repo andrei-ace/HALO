@@ -11,14 +11,20 @@ from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.handlers import (
     AcquiringHandler,
     CloseGripperHandler,
+    DescendPlaceHandler,
     ExecuteApproachHandler,
     LiftHandler,
     MovePregraspHandler,
+    OpenHandler,
+    PlaceRecoverRetryHandler,
     PlanApproachHandler,
     ReacquireFailedGuard,
     RecoverRetryApproachHandler,
+    RetreatHandler,
     SelectGraspHandler,
+    SelectPlaceHandler,
     StateContext,
+    TransitPreplaceHandler,
     VerifyGraspHandler,
 )
 
@@ -302,3 +308,153 @@ def test_reacquire_failed_guard_passes():
     g = ReacquireFailedGuard()
     result = g.check(_ctx())
     assert result is None
+
+
+# --- SelectPlaceHandler ---
+
+
+def test_select_place_transitions_on_tracking():
+    h = SelectPlaceHandler()
+    result = h.evaluate(_ctx())
+    assert result.transition_to == "TRANSIT_PREPLACE"
+
+
+def test_select_place_stays_when_not_tracking():
+    h = SelectPlaceHandler()
+    result = h.evaluate(_ctx(perception=_perception(TrackingStatus.IDLE)))
+    assert result.transition_to is None
+
+
+def test_select_place_stays_when_wrong_handle():
+    h = SelectPlaceHandler()
+    result = h.evaluate(_ctx(target=_target(handle="wrong")))
+    assert result.transition_to is None
+
+
+def test_select_place_timeout():
+    h = SelectPlaceHandler()
+    result = h.evaluate(_ctx(elapsed_ms=10000, config=_cfg(select_place_timeout_ms=10000)))
+    assert result.fail_code == SkillFailureCode.PERCEPTION_LOST
+
+
+# --- TransitPreplaceHandler ---
+
+
+def test_transit_preplace_transitions_on_close():
+    h = TransitPreplaceHandler()
+    result = h.evaluate(_ctx(target=_target(distance_m=0.05), config=_cfg(place_align_threshold_m=0.10)))
+    assert result.transition_to == "DESCEND_PLACE"
+
+
+def test_transit_preplace_stays_when_far():
+    h = TransitPreplaceHandler()
+    result = h.evaluate(_ctx(target=_target(distance_m=0.5), config=_cfg(place_align_threshold_m=0.10)))
+    assert result.transition_to is None
+
+
+def test_transit_preplace_timeout():
+    h = TransitPreplaceHandler()
+    result = h.evaluate(_ctx(elapsed_ms=10000, config=_cfg(transit_preplace_timeout_ms=10000)))
+    assert result.fail_code == SkillFailureCode.NO_PROGRESS
+
+
+def test_transit_preplace_target_loss():
+    h = TransitPreplaceHandler()
+    bag: dict = {}
+    h.evaluate(_ctx(target=_target(hint_valid=False), state_bag=bag, config=_cfg(no_target_tolerance_ms=500)))
+    result = h.evaluate(
+        _ctx(
+            target=_target(hint_valid=False),
+            state_bag=bag,
+            config=_cfg(no_target_tolerance_ms=500),
+            now_ms=1500,
+            elapsed_ms=500,
+        )
+    )
+    assert result.transition_to == "RECOVER_RETRY_APPROACH"
+
+
+# --- DescendPlaceHandler ---
+
+
+def test_descend_place_transitions_on_close():
+    h = DescendPlaceHandler()
+    result = h.evaluate(_ctx(target=_target(distance_m=0.01), config=_cfg(place_distance_threshold_m=0.02)))
+    assert result.transition_to == "OPEN"
+
+
+def test_descend_place_stays_when_far():
+    h = DescendPlaceHandler()
+    result = h.evaluate(_ctx(target=_target(distance_m=0.05), config=_cfg(place_distance_threshold_m=0.02)))
+    assert result.transition_to is None
+
+
+def test_descend_place_timeout():
+    h = DescendPlaceHandler()
+    result = h.evaluate(_ctx(elapsed_ms=5000, config=_cfg(descend_place_timeout_ms=5000)))
+    assert result.fail_code == SkillFailureCode.PLACE_MISS
+
+
+def test_descend_place_target_loss():
+    h = DescendPlaceHandler()
+    bag: dict = {}
+    h.evaluate(_ctx(target=_target(hint_valid=False), state_bag=bag, config=_cfg(no_target_tolerance_ms=500)))
+    result = h.evaluate(
+        _ctx(
+            target=_target(hint_valid=False),
+            state_bag=bag,
+            config=_cfg(no_target_tolerance_ms=500),
+            now_ms=1500,
+            elapsed_ms=500,
+        )
+    )
+    assert result.transition_to == "RECOVER_RETRY_APPROACH"
+
+
+# --- OpenHandler ---
+
+
+def test_open_transitions_after_timer():
+    h = OpenHandler()
+    result = h.evaluate(_ctx(elapsed_ms=1000, config=_cfg(open_gripper_duration_ms=1000)))
+    assert result.transition_to == "RETREAT"
+
+
+def test_open_stays_before_timer():
+    h = OpenHandler()
+    result = h.evaluate(_ctx(elapsed_ms=500, config=_cfg(open_gripper_duration_ms=1000)))
+    assert result.transition_to is None
+
+
+# --- RetreatHandler ---
+
+
+def test_retreat_succeeds_after_timer():
+    h = RetreatHandler()
+    result = h.evaluate(_ctx(elapsed_ms=2000, config=_cfg(retreat_duration_ms=2000)))
+    assert result.succeed is True
+
+
+def test_retreat_stays_before_timer():
+    h = RetreatHandler()
+    result = h.evaluate(_ctx(elapsed_ms=1000, config=_cfg(retreat_duration_ms=2000)))
+    assert result.succeed is False
+    assert result.transition_to is None
+
+
+# --- PlaceRecoverRetryHandler ---
+
+
+def test_place_recover_retry():
+    h = PlaceRecoverRetryHandler()
+    bag: dict = {"reacquire_count": 0}
+    result = h.evaluate(_ctx(elapsed_ms=500, config=_cfg(recover_wait_ms=500, max_reacquire_attempts=3), state_bag=bag))
+    assert result.transition_to == "TRANSIT_PREPLACE"
+    assert bag["reacquire_count"] == 1
+
+
+def test_place_recover_max_retries():
+    h = PlaceRecoverRetryHandler()
+    bag: dict = {"reacquire_count": 3}
+    result = h.evaluate(_ctx(elapsed_ms=500, config=_cfg(recover_wait_ms=500, max_reacquire_attempts=3), state_bag=bag))
+    assert result.fail_code == SkillFailureCode.TIMEOUT

@@ -18,6 +18,7 @@ from halo.contracts.enums import (
     CommandType,
     PerceptionFailureCode,
     PhaseId,
+    PlaceModifier,
     SafetyReflexReason,
     SafetyState,
     SkillFailureCode,
@@ -54,6 +55,7 @@ def test_phase_id_values():
     assert PhaseId.LIFT == 8
     assert PhaseId.DONE == 9
     assert PhaseId.TRANSIT_PREPLACE == 30
+    assert PhaseId.SELECT_PLACE == 34
     assert PhaseId.RECOVER_RETRY_APPROACH == 50
     assert PhaseId.RECOVER_REGRASP == 51
     assert PhaseId.RECOVER_ABORT == 52
@@ -96,6 +98,12 @@ def test_str_enum_values_are_strings():
     assert str(PerceptionFailureCode.OK) == "OK"
     assert str(TrackingStatus.TRACKING) == "TRACKING"
     assert str(SkillName.PICK) == "PICK"
+
+
+def test_place_modifier_values():
+    assert PlaceModifier.PLACE_FLOOR == "PLACE_FLOOR"
+    assert PlaceModifier.PLACE_NEXT_TO == "PLACE_NEXT_TO"
+    assert {m.value for m in PlaceModifier} == {"PLACE_FLOOR", "PLACE_NEXT_TO"}
 
 
 # ---------------------------------------------------------------------------

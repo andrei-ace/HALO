@@ -181,8 +181,11 @@ For a "move X to Y" instruction, the full sequence is:
 5. `start_skill(PLACE, Y)` → wait for SKILL_SUCCEEDED
 6. Report completion
 
-In v0, `PLACE` is not available. After PICK succeeds, ask the operator for a
-place target/instruction and wait. Do not call `start_skill(PLACE, ...)`.
+For PLACE, pass options to specify the modifier:
+- `PLACE_FLOOR`: place the held object beside the arm. `target_handle` = held object handle.
+- `PLACE_NEXT_TO`: place the held object next to a reference object. `target_handle` = reference object handle.
+
+Example: `start_skill(PLACE, "cup-1", options='{"modifier": "PLACE_NEXT_TO"}')`.
 
 Only pause and ask the operator when something goes wrong (repeated failures,
 ambiguous target, safety fault) or when you genuinely cannot determine what

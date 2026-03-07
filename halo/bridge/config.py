@@ -34,6 +34,9 @@ class SimBridgeConfig:
     command_timeout_ms: int = 10_000
     heartbeat_timeout_ms: int = 5000
 
+    # Server log file (managed mode only — redirect server stdout/stderr)
+    log_file: str | None = None
+
     # Frame settings
     wrist_rgb_height: int = 480
     wrist_rgb_width: int = 640

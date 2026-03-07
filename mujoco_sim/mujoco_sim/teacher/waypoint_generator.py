@@ -13,7 +13,13 @@ from dataclasses import dataclass
 import mujoco
 import numpy as np
 
-from mujoco_sim.constants import PHASE_LIFT
+from mujoco_sim.constants import (
+    PHASE_DESCEND_PLACE,
+    PHASE_LIFT,
+    PHASE_OPEN,
+    PHASE_RETREAT,
+    PHASE_TRANSIT_PREPLACE,
+)
 from mujoco_sim.teacher.ik_helper import solve_ik, solve_ik_with_orientation
 from mujoco_sim.teacher.keyframe_planner import Keyframe
 
@@ -85,9 +91,19 @@ def generate_joint_waypoints(
         seeds_to_try = [prev_joints] + list(reversed(all_solved[:-1]))
         solved = False
 
-        # Lift phase: object is already grasped, orientation can relax.
-        # Use position-only IK (matching score_grasp) with relaxed tolerance.
-        position_only = kf.phase_id == PHASE_LIFT
+        # Lift and PLACE phases: 5-DOF arm can't fully control 6D pose,
+        # orientation matters less for lifting/placing. Position-only IK with
+        # relaxed tolerance (3 cm) avoids unnecessary IK failures.
+        _POSITION_ONLY_PHASES = frozenset(
+            {
+                PHASE_LIFT,
+                PHASE_TRANSIT_PREPLACE,
+                PHASE_DESCEND_PLACE,
+                PHASE_OPEN,
+                PHASE_RETREAT,
+            }
+        )
+        position_only = kf.phase_id in _POSITION_ONLY_PHASES
         kf_pos_tol = max(pos_tol, 0.03) if position_only else pos_tol
 
         for seed in seeds_to_try:
@@ -218,7 +234,7 @@ def _solve_with_retries(
                 )
             return joints
 
-        logger.debug(
+        logger.info(
             "IK for '%s' yaw_offset=%.1f° pos_err=%.4f m (tol=%.4f)",
             label,
             np.degrees(yaw_offset),

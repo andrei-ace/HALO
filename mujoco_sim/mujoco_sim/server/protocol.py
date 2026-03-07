@@ -24,6 +24,7 @@ CMD_GET_STATE = "get_state"
 CMD_SET_STATE = "set_state"
 CMD_TEACHER_STEP = "teacher_step"  # deprecated — kept for protocol compat
 CMD_START_PICK = "start_pick"
+CMD_START_PLACE = "start_place"
 CMD_ABORT_PICK = "abort_pick"
 CMD_CONFIGURE = "configure"
 CMD_SET_HINT = "set_hint"
@@ -36,6 +37,8 @@ RESP_STATE = "state"
 RESP_TEACHER_STEP_OK = "teacher_step_ok"  # deprecated
 RESP_START_PICK_OK = "start_pick_ok"
 RESP_START_PICK_ERROR = "start_pick_error"
+RESP_START_PLACE_OK = "start_place_ok"
+RESP_START_PLACE_ERROR = "start_place_error"
 RESP_ABORT_PICK_OK = "abort_pick_ok"
 RESP_OK = "ok"
 RESP_ERROR = "error"
@@ -145,9 +148,10 @@ def pack_telemetry(
     rgb_scene: np.ndarray,
     rgb_wrist: np.ndarray,
     jpeg_quality: int = 85,
+    error: str | None = None,
 ) -> dict:
     """Build a telemetry message dict (ready for msgpack)."""
-    return {
+    msg = {
         "type": MSG_TELEMETRY,
         "ts_ms": ts_ms,
         "step_count": step_count,
@@ -164,11 +168,14 @@ def pack_telemetry(
         "rgb_scene": jpeg_encode(rgb_scene, jpeg_quality),
         "rgb_wrist": jpeg_encode(rgb_wrist, jpeg_quality),
     }
+    if error is not None:
+        msg["error"] = error
+    return msg
 
 
 def unpack_telemetry(msg: dict) -> dict:
     """Decode a telemetry message dict into numpy arrays + native types."""
-    return {
+    result = {
         "type": msg["type"],
         "ts_ms": msg["ts_ms"],
         "step_count": msg["step_count"],
@@ -184,4 +191,6 @@ def unpack_telemetry(msg: dict) -> dict:
         "action": bytes_to_ndarray(msg["action"], shape=(6,)),
         "rgb_scene": jpeg_decode(msg["rgb_scene"]),
         "rgb_wrist": jpeg_decode(msg["rgb_wrist"]),
+        "error": msg.get("error"),
     }
+    return result

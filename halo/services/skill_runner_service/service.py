@@ -38,6 +38,7 @@ PushFn = Callable[[ActionChunk], Awaitable[None]]
 # --- Sim mode types ---
 
 StartPickFn = Callable[[str, str], Awaitable[dict]]  # (arm_id, target_body) → server response
+StartPlaceFn = Callable[[str, str, str], Awaitable[dict]]  # (arm_id, target_body, held_body) → server response
 AbortPickFn = Callable[[], Awaitable[dict]]  # () → server response
 SimPhaseFn = Callable[[], tuple[int, bool]]  # () → (phase_id, done)
 
@@ -67,17 +68,18 @@ class SkillRunnerService:
         config: SkillRunnerConfig = SkillRunnerConfig(),
         *,
         start_pick_fn: StartPickFn | None = None,
+        start_place_fn: StartPlaceFn | None = None,
         abort_pick_fn: AbortPickFn | None = None,
         sim_phase_fn: SimPhaseFn | None = None,
         registry: SkillRegistry | None = None,
     ) -> None:
         act_mode = chunk_fn is not None or push_fn is not None
-        sim_mode = start_pick_fn is not None
+        sim_mode = start_pick_fn is not None or start_place_fn is not None
 
         if act_mode and sim_mode:
-            raise ValueError("Cannot provide both ACT (chunk_fn/push_fn) and sim (start_pick_fn) callables")
+            raise ValueError("Cannot provide both ACT and sim callables")
         if not act_mode and not sim_mode:
-            raise ValueError("Must provide either ACT (chunk_fn + push_fn) or sim (start_pick_fn) callables")
+            raise ValueError("Must provide either ACT (chunk_fn + push_fn) or sim callables")
 
         if act_mode:
             if chunk_fn is None or push_fn is None:
@@ -94,6 +96,7 @@ class SkillRunnerService:
 
         # Sim mode callables
         self._start_pick_fn = start_pick_fn
+        self._start_place_fn = start_place_fn
         self._abort_pick_fn = abort_pick_fn
         self._sim_phase_fn = sim_phase_fn
 
@@ -108,7 +111,9 @@ class SkillRunnerService:
         self._skill_start_ms: int = 0
         self._last_distance_m: float | None = None
 
-        self._sim_pick_triggered: bool = False  # sim mode: True after start_pick_fn called
+        self._sim_triggered: bool = False  # sim mode: True after start_pick/place_fn called
+        self._sim_seen_active: bool = False  # True after telemetry shows done=False post-trigger
+        self._sim_trigger_ms: int = 0  # monotonic ms when sim trajectory was triggered
 
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -194,7 +199,7 @@ class SkillRunnerService:
                 )
             return
 
-        await self._activate_skill(skill_name, skill_run_id, target_handle, variant, defn)
+        await self._activate_skill(skill_name, skill_run_id, target_handle, variant, defn, options=options)
 
     async def abort_skill(self) -> None:
         """Abort the current skill run (idempotent if not active)."""
@@ -202,7 +207,7 @@ class SkillRunnerService:
             return
 
         # Stop the sim trajectory first so the arm freezes immediately
-        if self._sim_mode and self._abort_pick_fn is not None and self._sim_pick_triggered:
+        if self._sim_mode and self._abort_pick_fn is not None and self._sim_triggered:
             try:
                 await self._abort_pick_fn()
             except Exception:
@@ -292,18 +297,18 @@ class SkillRunnerService:
 
         return self._active_run.phase_id
 
-    # --- Sim mode tick ---
+    # --- Sim mode tick (unified for PICK and PLACE) ---
 
     async def _tick_sim(self) -> PhaseId | None:
         if self._active_run is None or not self._active_run.is_active:
             return None
 
         now_ms = int(time.monotonic() * 1000)
-
         run = self._active_run
+        is_place = self._skill_name == SkillName.PLACE
 
-        # Phase 1: waiting for tracking (FSM in SELECT_GRASP / PLAN_APPROACH)
-        if not self._sim_pick_triggered:
+        # Phase 1: handler-driven gate (SELECT_GRASP / SELECT_PLACE)
+        if not self._sim_triggered:
             snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
 
             old_phase = self._engine.advance(run, now_ms, snap.target, snap.perception, snap.act)
@@ -312,20 +317,48 @@ class SkillRunnerService:
                 if not run.is_active:
                     return run.phase_id
 
-            # FSM advanced past SELECT_GRASP -> trigger sim pick
-            if run.phase_id.value >= PhaseId.PLAN_APPROACH.value and run.phase_id != PhaseId.DONE:
-                await self._trigger_sim_pick(now_ms)
+            # Gate passed — trigger sim trajectory
+            if is_place:
+                if run.phase_id == PhaseId.TRANSIT_PREPLACE:
+                    logger.info("PLACE gate passed (TRANSIT_PREPLACE) — triggering sim trajectory")
+                    await self._trigger_sim_trajectory(now_ms)
+            else:
+                if run.phase_id.value >= PhaseId.PLAN_APPROACH.value and run.phase_id != PhaseId.DONE:
+                    await self._trigger_sim_trajectory(now_ms)
         else:
-            # Phase 2: sim pick running — sync FSM from sim telemetry
+            # Phase 2: sim trajectory running — sync FSM from telemetry
             if self._sim_phase_fn is not None:
                 phase_id, done = self._sim_phase_fn()
             else:
                 return run.phase_id
 
-            if done and phase_id < PhaseId.LIFT.value:
-                logger.warning("Sim done=True with early phase_id=%d — treating as NO_GRASP failure", phase_id)
+            # Stale telemetry guard: after triggering a new sim command,
+            # the server resets done=False. Until we see that first
+            # done=False frame, any done=True is leftover from the
+            # previous skill's completed trajectory.
+            if not done:
+                if not self._sim_seen_active:
+                    logger.info("Sim telemetry: first done=False frame received (phase_id=%d)", phase_id)
+                self._sim_seen_active = True
+            elif not self._sim_seen_active:
+                stale_wait_ms = now_ms - self._sim_trigger_ms
+                if stale_wait_ms < self._config.sim_stale_guard_timeout_ms:
+                    return run.phase_id  # plausible stale — keep waiting
+                logger.warning(
+                    "Stale guard timeout (%d ms) — accepting done=True (phase_id=%d)",
+                    stale_wait_ms,
+                    phase_id,
+                )
+                self._sim_seen_active = True  # break out, fall through to failure detection
+
+            # Early failure detection (server planning failed or trajectory
+            # ended before reaching the success phase).
+            min_success_phase = PhaseId.RETREAT.value if is_place else PhaseId.LIFT.value
+            if done and phase_id < min_success_phase:
+                fail_code = SkillFailureCode.PLACE_MISS if is_place else SkillFailureCode.NO_GRASP
+                logger.warning("Sim done=True with early phase_id=%d — treating as %s", phase_id, fail_code.name)
                 old_phase = run.phase_id
-                self._engine.fail(run, now_ms, SkillFailureCode.NO_GRASP)
+                self._engine.fail(run, now_ms, fail_code)
                 await self._handle_transition(old_phase)
                 return run.phase_id
 
@@ -353,10 +386,29 @@ class SkillRunnerService:
 
         return self._active_run.phase_id
 
-    async def _trigger_sim_pick(self, now_ms: int) -> None:
-        if self._start_pick_fn is None or self._active_target_handle is None:
+    async def _trigger_sim_trajectory(self, now_ms: int) -> None:
+        """Send the sim command (start_pick or start_place) to the server."""
+        if self._active_target_handle is None:
             return
-        self._sim_pick_triggered = True
+
+        if self._skill_name == SkillName.PLACE:
+            if self._start_place_fn is None:
+                logger.warning("PLACE in sim mode but start_place_fn not provided")
+                return
+            self._sim_triggered = True
+            self._sim_seen_active = False
+            self._sim_trigger_ms = now_ms
+            await self._do_trigger_place(now_ms)
+        else:
+            if self._start_pick_fn is None:
+                logger.warning("PICK in sim mode but start_pick_fn not provided")
+                return
+            self._sim_triggered = True
+            self._sim_seen_active = False
+            self._sim_trigger_ms = now_ms
+            await self._do_trigger_pick(now_ms)
+
+    async def _do_trigger_pick(self, now_ms: int) -> None:
         try:
             resp = await self._start_pick_fn(self._arm_id, self._active_target_handle)
             if resp.get("type") == "start_pick_error":
@@ -366,6 +418,31 @@ class SkillRunnerService:
                 await self._handle_transition(old_phase)
         except BridgeTransportError:
             logger.warning("start_pick_fn bridge transport failed, aborting skill")
+            old_phase = self._active_run.phase_id
+            self._engine.abort(self._active_run, now_ms)
+            await self._handle_transition(old_phase)
+
+    async def _do_trigger_place(self, now_ms: int) -> None:
+        # Determine which object is held
+        snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
+        held_handle = snap.held_object_handle
+        logger.info("start_place: target=%s held=%s", self._active_target_handle, held_handle)
+        if not held_handle:
+            logger.warning("start_place_fn: no held_object_handle in runtime state")
+            old_phase = self._active_run.phase_id
+            self._engine.fail(self._active_run, now_ms, SkillFailureCode.PLACE_MISS)
+            await self._handle_transition(old_phase)
+            return
+        try:
+            resp = await self._start_place_fn(self._arm_id, self._active_target_handle, held_handle)
+            logger.info("start_place_fn response: %s", resp)
+            if resp.get("type") == "start_place_error":
+                logger.warning("start_place_fn returned error: %s", resp.get("message"))
+                old_phase = self._active_run.phase_id
+                self._engine.fail(self._active_run, now_ms, SkillFailureCode.PLACE_MISS)
+                await self._handle_transition(old_phase)
+        except BridgeTransportError:
+            logger.warning("start_place_fn bridge transport failed, aborting skill")
             old_phase = self._active_run.phase_id
             self._engine.abort(self._active_run, now_ms)
             await self._handle_transition(old_phase)
@@ -389,6 +466,8 @@ class SkillRunnerService:
             if self._active_run.outcome == SkillOutcomeState.SUCCESS:
                 if self._skill_name == SkillName.PICK:
                     await store.update_held_object_handle(self._arm_id, self._active_target_handle)
+                elif self._skill_name == SkillName.PLACE:
+                    await store.update_held_object_handle(self._arm_id, None)
                 await store.update_outcome(
                     self._arm_id,
                     OutcomeInfo(
@@ -477,6 +556,8 @@ class SkillRunnerService:
         target_handle: str,
         variant: str,
         defn=None,
+        *,
+        options: dict | None = None,
     ) -> None:
         if defn is None:
             defn = self._registry.get(skill_name, variant)
@@ -493,13 +574,17 @@ class SkillRunnerService:
             global_guards=defn.global_guard_factory(),
         )
         self._active_run = self._engine.create_run(now_ms, skill_run_id, target_handle, variant)
+        if options:
+            self._active_run.state_bag.update(options)
 
         self._skill_name = skill_name
         self._skill_run_id = skill_run_id
         self._active_target_handle = target_handle
         self._skill_start_ms = now_ms
         self._last_distance_m = None
-        self._sim_pick_triggered = False
+        self._sim_triggered = False
+        self._sim_seen_active = False
+        self._sim_trigger_ms = 0
 
         initial_phase = self._active_run.phase_id
         store = self._runtime.store
@@ -512,7 +597,9 @@ class SkillRunnerService:
             OutcomeInfo(
                 state=SkillOutcomeState.IN_PROGRESS,
                 reason_code=None,
-                needs_verify=False if skill_name == SkillName.TRACK else not self._config.skip_verify_grasp,
+                needs_verify=False
+                if skill_name in (SkillName.TRACK, SkillName.PLACE)
+                else not self._config.skip_verify_grasp,
             ),
         )
         await store.update_progress(
@@ -546,6 +633,7 @@ class SkillRunnerService:
             queued.target_handle,
             queued.variant,
             defn,
+            options=queued.options or None,
         )
 
     # --- Private ---

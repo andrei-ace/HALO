@@ -16,6 +16,7 @@ from halo.contracts.events import EventType
 from halo.contracts.snapshots import ActInfo, PerceptionInfo, TargetInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
+from halo.services.skill_runner_service.definitions import SkillRegistry
 from halo.services.skill_runner_service.service import SkillRunnerService
 
 ARM = "arm0"
@@ -107,6 +108,7 @@ def _make_svc(
     chunk_fn=None,
     push_fn=None,
     cfg: SkillRunnerConfig | None = None,
+    registry: SkillRegistry | None = None,
 ) -> tuple[SkillRunnerService, list[ActionChunk]]:
     chunks_pushed: list[ActionChunk] = []
 
@@ -124,6 +126,7 @@ def _make_svc(
         chunk_fn=chunk_fn,
         push_fn=push_fn,
         config=cfg or _cfg(),
+        registry=registry,
     )
     return svc, chunks_pushed
 
@@ -163,8 +166,9 @@ async def test_start_skill_updates_store_skill_info(rt: HALORuntime):
 
 
 async def test_start_skill_rejects_unsupported_skill(rt: HALORuntime):
-    svc, _ = _make_svc(rt)
-    await svc.start_skill(SkillName.PLACE, RUN_ID, "obj-1")
+    empty_registry = SkillRegistry()
+    svc, _ = _make_svc(rt, registry=empty_registry)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.skill is not None
@@ -180,7 +184,10 @@ async def test_start_skill_rejects_unsupported_skill(rt: HALORuntime):
 async def test_start_skill_rejects_unsupported_skill_without_clobbering_active(rt: HALORuntime):
     svc, _ = _make_svc(rt)
     await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
-    await svc.start_skill(SkillName.PLACE, "run-place", "obj-1")
+    # Use an empty registry svc to attempt a second skill — but since the
+    # rejection path doesn't check registry when active run exists, we test
+    # by using default registry + unknown variant instead.
+    await svc.start_skill(SkillName.PICK, "run-bad", "obj-1", variant="nonexistent")
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
     assert snap.skill is not None
@@ -190,7 +197,7 @@ async def test_start_skill_rejects_unsupported_skill_without_clobbering_active(r
 
     events = rt.bus.get_recent_events(ARM)
     failed = [e for e in events if e.type == EventType.SKILL_FAILED]
-    assert any(e.data.get("skill_run_id") == "run-place" for e in failed)
+    assert any(e.data.get("skill_run_id") == "run-bad" for e in failed)
 
 
 # --- tick before start ---
@@ -551,11 +558,12 @@ async def test_sim_mode_start_pick_error_fails_skill(rt: HALORuntime):
 async def test_sim_mode_deferred_planning_failure(rt: HALORuntime):
     """Sim mode: done=True with early phase_id (deferred GraspPlanningFailure) emits SKILL_FAILED."""
     # Simulate what happens when execute_pending_pick fails:
-    # server sets done=True, phase_id stays at 0 (IDLE).
+    # server accepts start_pick (done=False), then planning fails (done=True, phase stays at 0).
     svc = _make_sim_svc(
         rt,
         phase_sequence=[
-            (int(PhaseId.IDLE), True),  # done=True but phase never advanced
+            (int(PhaseId.IDLE), False),  # server accepted, trajectory pending
+            (int(PhaseId.IDLE), True),  # planning failed, done=True
         ],
     )
     await _seed_store(rt, distance_m=0.5)
@@ -563,8 +571,170 @@ async def test_sim_mode_deferred_planning_failure(rt: HALORuntime):
 
     # Tick 1: SELECT_GRASP→PLAN_APPROACH (advance, tracking OK) + triggers sim pick
     await svc.tick()
-    # Tick 2: sim_phase_fn returns (0, True) — deferred planning failure
+    # Tick 2: sim_phase_fn returns (0, False) — server accepted, waiting
     await svc.tick()
+    # Tick 3: sim_phase_fn returns (0, True) — deferred planning failure
+    await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_FAILED for e in events)
+    assert not any(e.type == EventType.SKILL_SUCCEEDED for e in events)
+
+
+# --- Sim mode PLACE tests ---
+
+
+def _make_mock_start_place_fn(success: bool = True):
+    async def start_place_fn(arm_id: str, target_body: str, held_body: str) -> dict:
+        if success:
+            return {"type": "start_place_ok", "target_body": target_body}
+        return {"type": "start_place_error", "message": "mock failure"}
+
+    return start_place_fn
+
+
+def _make_sim_place_svc(
+    rt: HALORuntime,
+    phase_sequence: list[tuple[int, bool]] | None = None,
+    start_place_success: bool = True,
+) -> SkillRunnerService:
+    if phase_sequence is None:
+        # Server trajectory reports the last segment phase with done=True,
+        # not PhaseId.DONE(9). HALO interprets done=True as DONE.
+        phase_sequence = [
+            (int(PhaseId.TRANSIT_PREPLACE), False),
+            (int(PhaseId.DESCEND_PLACE), False),
+            (int(PhaseId.OPEN), False),
+            (int(PhaseId.RETREAT), False),
+            (int(PhaseId.RETREAT), True),
+        ]
+
+    svc = SkillRunnerService(
+        arm_id=ARM,
+        runtime=rt,
+        config=_cfg(),
+        start_pick_fn=_make_mock_start_pick_fn(),
+        start_place_fn=_make_mock_start_place_fn(start_place_success),
+        sim_phase_fn=_make_sim_phase_fn(phase_sequence),
+    )
+    return svc
+
+
+async def test_sim_place_happy_path(rt: HALORuntime):
+    """Sim PLACE: SELECT_PLACE → trigger → sync through TRANSIT_PREPLACE..DONE."""
+    svc = _make_sim_place_svc(rt)
+    await _seed_store(rt, distance_m=0.5)
+    await rt.store.update_held_object_handle(ARM, "obj-1")
+    await svc.start_skill(SkillName.PLACE, RUN_ID, "obj-1")
+
+    # Tick 1: SELECT_PLACE → TRANSIT_PREPLACE (handler advance) + triggers sim place
+    await svc.tick()
+    # Ticks 2-6: sync phases from sim telemetry
+    for _ in range(5):
+        await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_SUCCEEDED for e in events)
+
+    snap = await rt.get_latest_runtime_snapshot(ARM)
+    assert snap.held_object_handle is None
+
+
+async def test_sim_place_stale_telemetry_ignored(rt: HALORuntime):
+    """Sim PLACE: stale done=True from previous PICK is ignored until fresh telemetry arrives."""
+    phase_sequence = [
+        # Stale frames from previous PICK (done=True, phase_id=LIFT)
+        (int(PhaseId.LIFT), True),
+        (int(PhaseId.LIFT), True),
+        # Fresh frames: server acknowledged start_place
+        (int(PhaseId.TRANSIT_PREPLACE), False),
+        (int(PhaseId.DESCEND_PLACE), False),
+        (int(PhaseId.RETREAT), False),
+        (int(PhaseId.RETREAT), True),
+    ]
+    svc = _make_sim_place_svc(rt, phase_sequence=phase_sequence)
+    await _seed_store(rt, distance_m=0.5)
+    await rt.store.update_held_object_handle(ARM, "obj-1")
+    await svc.start_skill(SkillName.PLACE, RUN_ID, "obj-1")
+
+    # Tick 1: gate (SELECT_PLACE → TRANSIT_PREPLACE) + trigger
+    await svc.tick()
+    # Ticks 2-7: stale frames skipped, then fresh frames synced
+    for _ in range(6):
+        await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_SUCCEEDED for e in events)
+
+
+async def test_sim_place_immediate_ik_failure(rt: HALORuntime):
+    """Sim PLACE: all done=True frames (IK failed immediately) → SKILL_FAILED after stale guard timeout."""
+    # All frames are (IDLE, True) — simulates immediate IK failure with no done=False frame ever sent
+    phase_sequence = [
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+    ]
+    svc = SkillRunnerService(
+        arm_id=ARM,
+        runtime=rt,
+        config=_cfg(sim_stale_guard_timeout_ms=100),
+        start_pick_fn=_make_mock_start_pick_fn(),
+        start_place_fn=_make_mock_start_place_fn(),
+        sim_phase_fn=_make_sim_phase_fn(phase_sequence),
+    )
+    await _seed_store(rt, distance_m=0.5)
+    await rt.store.update_held_object_handle(ARM, "obj-1")
+    await svc.start_skill(SkillName.PLACE, RUN_ID, "obj-1")
+
+    # Tick 1: SELECT_PLACE → TRANSIT_PREPLACE + trigger
+    await svc.tick()
+
+    # Wait for stale guard timeout to expire
+    import asyncio
+
+    await asyncio.sleep(0.15)
+
+    # Tick 2+: stale guard times out, accepts done=True → SKILL_FAILED
+    for _ in range(3):
+        await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_FAILED for e in events)
+    assert not any(e.type == EventType.SKILL_SUCCEEDED for e in events)
+
+
+async def test_sim_pick_immediate_ik_failure(rt: HALORuntime):
+    """Sim PICK: all done=True frames (IK failed immediately) → SKILL_FAILED after stale guard timeout."""
+    phase_sequence = [
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+        (int(PhaseId.IDLE), True),
+    ]
+    svc = SkillRunnerService(
+        arm_id=ARM,
+        runtime=rt,
+        config=_cfg(sim_stale_guard_timeout_ms=100),
+        start_pick_fn=_make_mock_start_pick_fn(),
+        sim_phase_fn=_make_sim_phase_fn(phase_sequence),
+    )
+    await _seed_store(rt, distance_m=0.5)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    # Tick 1: SELECT_GRASP → PLAN_APPROACH + trigger
+    await svc.tick()
+
+    import asyncio
+
+    await asyncio.sleep(0.15)
+
+    # Tick 2+: stale guard times out, accepts done=True → SKILL_FAILED
+    for _ in range(3):
+        await svc.tick()
 
     events = rt.bus.get_recent_events(ARM)
     assert any(e.type == EventType.SKILL_FAILED for e in events)

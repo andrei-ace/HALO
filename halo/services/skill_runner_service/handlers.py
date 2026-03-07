@@ -233,6 +233,69 @@ class AcquiringHandler:
         return HandlerResult.done(trigger="tracking_ok")
 
 
+# --- PLACE handlers ---
+
+
+class SelectPlaceHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.select_place_timeout_ms:
+            return HandlerResult.fail(SkillFailureCode.PERCEPTION_LOST, trigger="timeout")
+        if ctx.perception.tracking_status != TrackingStatus.TRACKING:
+            return HandlerResult.stay()
+        if ctx.target is None or ctx.target.handle != ctx.target_handle:
+            return HandlerResult.stay()
+        return HandlerResult.go("TRANSIT_PREPLACE", trigger="tracking_ok")
+
+
+class TransitPreplaceHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.transit_preplace_timeout_ms:
+            return HandlerResult.fail(SkillFailureCode.NO_PROGRESS, trigger="timeout")
+        loss = _check_target_loss(ctx)
+        if loss is not None:
+            return loss
+        if ctx.target is not None and ctx.target.distance_m < ctx.config.place_align_threshold_m:
+            return HandlerResult.go("DESCEND_PLACE", trigger="close_enough")
+        return HandlerResult.stay()
+
+
+class DescendPlaceHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.descend_place_timeout_ms:
+            return HandlerResult.fail(SkillFailureCode.PLACE_MISS, trigger="timeout")
+        loss = _check_target_loss(ctx)
+        if loss is not None:
+            return loss
+        if ctx.target is not None and ctx.target.distance_m < ctx.config.place_distance_threshold_m:
+            return HandlerResult.go("OPEN", trigger="close_enough")
+        return HandlerResult.stay()
+
+
+class OpenHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.open_gripper_duration_ms:
+            return HandlerResult.go("RETREAT", trigger="timer_elapsed")
+        return HandlerResult.stay()
+
+
+class RetreatHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.retreat_duration_ms:
+            return HandlerResult.done(trigger="success")
+        return HandlerResult.stay()
+
+
+class PlaceRecoverRetryHandler:
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.recover_wait_ms:
+            ctx.state_bag["reacquire_count"] = ctx.state_bag.get("reacquire_count", 0) + 1
+            if ctx.state_bag["reacquire_count"] > ctx.config.max_reacquire_attempts:
+                return HandlerResult.fail(SkillFailureCode.TIMEOUT, trigger="max_retries")
+            ctx.state_bag["no_target_start_ms"] = None
+            return HandlerResult.go("TRANSIT_PREPLACE", trigger="retry")
+        return HandlerResult.stay()
+
+
 # --- Handler factories ---
 
 
@@ -256,9 +319,24 @@ def build_track_handlers() -> dict[str, StateHandler]:
     }
 
 
+def build_place_handlers() -> dict[str, StateHandler]:
+    return {
+        "SELECT_PLACE": SelectPlaceHandler(),
+        "TRANSIT_PREPLACE": TransitPreplaceHandler(),
+        "DESCEND_PLACE": DescendPlaceHandler(),
+        "OPEN": OpenHandler(),
+        "RETREAT": RetreatHandler(),
+        "RECOVER_RETRY_APPROACH": PlaceRecoverRetryHandler(),
+    }
+
+
 def build_pick_global_guards() -> list[GlobalGuard]:
     return [ReacquireFailedGuard()]
 
 
 def build_track_global_guards() -> list[GlobalGuard]:
     return []
+
+
+def build_place_global_guards() -> list[GlobalGuard]:
+    return [ReacquireFailedGuard()]

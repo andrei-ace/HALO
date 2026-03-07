@@ -19,11 +19,19 @@ def main() -> None:
     parser.add_argument("--physics-hz", type=int, default=20, help="Physics loop rate (default: 20)")
     parser.add_argument("--jpeg-quality", type=int, default=85, help="JPEG quality 0-100 (default: 85)")
     parser.add_argument("--control-freq", type=int, default=20, help="Env control frequency (default: 20)")
+    parser.add_argument("--log-file", default=None, help="Write logs to file instead of stderr")
     parser.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    if args.log_file:
+        logging.basicConfig(
+            level=level,
+            format="%(asctime)s %(name)s %(levelname)s %(message)s",
+            handlers=[logging.FileHandler(args.log_file, mode="w")],
+        )
+    else:
+        logging.basicConfig(level=level, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
     env_config = EnvConfig(control_freq=args.control_freq)
 

@@ -21,7 +21,7 @@ import numpy as np
 import zmq
 
 from mujoco_sim.server.config import SimServerConfig
-from mujoco_sim.server.handlers import ServerState, dispatch_command, execute_pending_pick
+from mujoco_sim.server.handlers import ServerState, dispatch_command, execute_pending_pick, execute_pending_place
 from mujoco_sim.server.protocol import pack_telemetry
 
 logger = logging.getLogger(__name__)
@@ -135,6 +135,11 @@ class SimServer:
                     last_render = time.monotonic()
                     execute_pending_pick(self._env, self._state)
 
+                if self._state.pending_place_target is not None:
+                    self._publish_telemetry(step_count)
+                    last_render = time.monotonic()
+                    execute_pending_place(self._env, self._state)
+
                 # 3. Autonomous physics at physics_hz
                 now = time.monotonic()
                 if now - last_physics >= physics_interval:
@@ -202,6 +207,7 @@ class SimServer:
             rgb_scene=obs["rgb_scene"],
             rgb_wrist=obs["rgb_wrist"],
             jpeg_quality=self._config.jpeg_quality,
+            error=self._state.error,
         )
         packed = msgpack.packb(msg, use_bin_type=True)
         try:

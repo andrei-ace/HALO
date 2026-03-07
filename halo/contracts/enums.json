@@ -17,9 +17,13 @@
       "enum": ["PICK", "TRACK", "PLACE"]
     },
     "PhaseId": {
-      "description": "Integer phase identifiers. PICK sub-phases: 0–9. TRACK sub-phases: 20. PLACE sub-phases (reserved): 30–33. Recovery: 50–52. Names: 0=IDLE, 1=SELECT_GRASP, 2=PLAN_APPROACH, 3=MOVE_PREGRASP, 4=VISUAL_ALIGN, 5=EXECUTE_APPROACH, 6=CLOSE_GRIPPER, 7=VERIFY_GRASP, 8=LIFT, 9=DONE, 20=ACQUIRING, 30=TRANSIT_PREPLACE, 31=DESCEND_PLACE, 32=OPEN, 33=RETREAT, 50=RECOVER_RETRY_APPROACH, 51=RECOVER_REGRASP, 52=RECOVER_ABORT",
+      "description": "Integer phase identifiers. PICK sub-phases: 0–9. TRACK sub-phases: 20. PLACE sub-phases: 30–34. Recovery: 50–52. Names: 0=IDLE, 1=SELECT_GRASP, 2=PLAN_APPROACH, 3=MOVE_PREGRASP, 4=VISUAL_ALIGN, 5=EXECUTE_APPROACH, 6=CLOSE_GRIPPER, 7=VERIFY_GRASP, 8=LIFT, 9=DONE, 20=ACQUIRING, 30=TRANSIT_PREPLACE, 31=DESCEND_PLACE, 32=OPEN, 33=RETREAT, 34=SELECT_PLACE, 50=RECOVER_RETRY_APPROACH, 51=RECOVER_REGRASP, 52=RECOVER_ABORT",
       "type": "integer",
-      "enum": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20, 30, 31, 32, 33, 50, 51, 52]
+      "enum": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 20, 30, 31, 32, 33, 34, 50, 51, 52]
+    },
+    "PlaceModifier": {
+      "type": "string",
+      "enum": ["PLACE_FLOOR", "PLACE_NEXT_TO"]
     },
     "SkillOutcomeState": {
       "type": "string",
@@ -27,7 +31,7 @@
     },
     "SkillFailureCode": {
       "type": "string",
-      "enum": ["TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "PERCEPTION_LOST", "UNSAFE_ABORT"]
+      "enum": ["TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "PERCEPTION_LOST", "TARGET_MISMATCH", "UNSAFE_ABORT"]
     },
     "SafetyReflexReason": {
       "type": "string",

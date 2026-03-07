@@ -4,10 +4,11 @@ from halo.contracts.enums import PhaseId, SkillName
 from halo.services.skill_runner_service.definitions import build_default_registry
 
 
-def test_default_registry_has_pick_and_track():
+def test_default_registry_has_pick_track_and_place():
     r = build_default_registry()
     assert r.get(SkillName.PICK, "default") is not None
     assert r.get(SkillName.TRACK, "default") is not None
+    assert r.get(SkillName.PLACE, "default") is not None
 
 
 def test_default_registry_pick_graph():
@@ -25,17 +26,27 @@ def test_default_registry_track_graph():
     assert "DONE" in defn.graph.terminal_nodes
 
 
+def test_default_registry_place_graph():
+    r = build_default_registry()
+    defn = r.get(SkillName.PLACE)
+    assert defn.graph.entry_node == "SELECT_PLACE"
+    assert "DONE" in defn.graph.terminal_nodes
+    assert defn.graph.nodes["SELECT_PLACE"].phase_id == PhaseId.SELECT_PLACE
+
+
 def test_list_variants():
     r = build_default_registry()
     pick_variants = r.list_variants(SkillName.PICK)
     assert "default" in pick_variants
     track_variants = r.list_variants(SkillName.TRACK)
     assert "default" in track_variants
+    place_variants = r.list_variants(SkillName.PLACE)
+    assert "default" in place_variants
 
 
-def test_unknown_skill_returns_none():
+def test_unknown_variant_returns_none_for_place():
     r = build_default_registry()
-    assert r.get(SkillName.PLACE) is None
+    assert r.get(SkillName.PLACE, "custom") is None
 
 
 def test_unknown_variant_returns_none():
@@ -54,6 +65,11 @@ def test_handler_factories_return_handlers():
     handlers = defn.handler_factory()
     assert "ACQUIRING" in handlers
 
+    defn = r.get(SkillName.PLACE)
+    handlers = defn.handler_factory()
+    assert "SELECT_PLACE" in handlers
+    assert "RETREAT" in handlers
+
 
 def test_global_guard_factories():
     r = build_default_registry()
@@ -64,3 +80,7 @@ def test_global_guard_factories():
     defn = r.get(SkillName.TRACK)
     guards = defn.global_guard_factory()
     assert len(guards) == 0  # TRACK has no global guards
+
+    defn = r.get(SkillName.PLACE)
+    guards = defn.global_guard_factory()
+    assert len(guards) >= 1  # ReacquireFailedGuard

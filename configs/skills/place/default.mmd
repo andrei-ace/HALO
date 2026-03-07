@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> SELECT_PLACE
+    SELECT_PLACE --> TRANSIT_PREPLACE : tracking_ok
+    SELECT_PLACE --> DONE : timeout
+    TRANSIT_PREPLACE --> DESCEND_PLACE : close_enough
+    TRANSIT_PREPLACE --> RECOVER_RETRY_APPROACH : target_lost
+    TRANSIT_PREPLACE --> DONE : timeout
+    DESCEND_PLACE --> OPEN : close_enough
+    DESCEND_PLACE --> RECOVER_RETRY_APPROACH : target_lost
+    DESCEND_PLACE --> DONE : timeout
+    OPEN --> RETREAT : timer_elapsed
+    RETREAT --> DONE : success
+    RECOVER_RETRY_APPROACH --> TRANSIT_PREPLACE : retry
+    RECOVER_RETRY_APPROACH --> DONE : max_retries

@@ -40,5 +40,18 @@ class SkillRunnerConfig:
 
     skip_verify_grasp: bool = False
 
+    # PLACE thresholds
+    select_place_timeout_ms: int = 10_000
+    place_align_threshold_m: float = 0.10
+    place_distance_threshold_m: float = 0.02
+    transit_preplace_timeout_ms: int = 10_000
+    descend_place_timeout_ms: int = 5_000
+    open_gripper_duration_ms: int = 1_000
+    retreat_duration_ms: int = 2_000
+
+    # Sim stale guard: max ms to wait for first done=False frame before
+    # accepting done=True (handles immediate IK failure in server)
+    sim_stale_guard_timeout_ms: int = 2_000
+
     # Skill queue
     max_queue_size: int = 16

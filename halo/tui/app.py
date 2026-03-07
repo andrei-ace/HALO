@@ -1925,9 +1925,11 @@ def _run_live(args: list[str]) -> None:
     cognitive_stack = stack
 
     if source_type == "mujoco":
+        from halo.bridge.config import SimBridgeConfig
         from halo.bridge.sim_source import SimSource
 
-        video_source = SimSource(managed=True)
+        sim_cfg = SimBridgeConfig(managed=True, log_file=str(run_logger.run_dir / "sim.log"))
+        video_source = SimSource(config=sim_cfg)
     else:
         video_source = VideoSource()
     video_source.start()
@@ -1957,6 +1959,10 @@ def _run_live(args: list[str]) -> None:
             loop = _asyncio.get_running_loop()
             return await loop.run_in_executor(None, sim_client.start_pick, target_body)
 
+        async def start_place_fn(arm_id_: str, target_body: str, held_body: str) -> dict:
+            loop = _asyncio.get_running_loop()
+            return await loop.run_in_executor(None, sim_client.start_place, target_body, held_body)
+
         async def abort_pick_fn() -> dict:
             loop = _asyncio.get_running_loop()
             return await loop.run_in_executor(None, sim_client.abort_pick)
@@ -1969,6 +1975,7 @@ def _run_live(args: list[str]) -> None:
             runtime=runtime,
             config=SkillRunnerConfig(),
             start_pick_fn=start_pick_fn,
+            start_place_fn=start_place_fn,
             abort_pick_fn=abort_pick_fn,
             sim_phase_fn=sim_phase_fn,
         )

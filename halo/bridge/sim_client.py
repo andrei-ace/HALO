@@ -65,6 +65,7 @@ class SimClient:
 
         # Managed subprocess
         self._server_proc: subprocess.Popen | None = None
+        self._server_log_fh = None  # file handle for server log redirection
 
         # Command lock (REQ/REP is strictly sequential)
         self._cmd_lock = threading.Lock()
@@ -217,6 +218,21 @@ class SimClient:
         from mujoco_sim.server.protocol import CMD_START_PICK
 
         return self._send_command({"type": CMD_START_PICK, "target_body": target_body})
+
+    def start_place(self, target_body: str, held_body: str) -> dict:
+        """Trigger trajectory planning + autonomous place execution on the server.
+
+        Args:
+            target_body: MuJoCo body name of the reference object to place next to.
+            held_body: MuJoCo body name of the currently held object.
+
+        Returns:
+            Dict with keys: type ("start_place_ok" | "start_place_error"),
+            target_body on success, or message (str) on error.
+        """
+        from mujoco_sim.server.protocol import CMD_START_PLACE
+
+        return self._send_command({"type": CMD_START_PLACE, "target_body": target_body, "held_body": held_body})
 
     def abort_pick(self) -> dict:
         """Abort the active pick trajectory on the sim server.
@@ -373,8 +389,17 @@ class SimClient:
         cmd.extend(["--telemetry-port", str(self._parse_port(cfg.telemetry_url))])
         cmd.extend(["--command-port", str(self._parse_port(cfg.command_url))])
 
+        stdout_target = subprocess.DEVNULL
+        stderr_target: int | object = subprocess.PIPE
+
+        if cfg.log_file:
+            cmd.extend(["--log-file", cfg.log_file, "-v"])
+            self._server_log_fh = open(cfg.log_file, "w")  # noqa: SIM115
+            stdout_target = self._server_log_fh.fileno()
+            stderr_target = subprocess.STDOUT
+
         logger.info("Starting managed sim server: %s", " ".join(cmd))
-        self._server_proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        self._server_proc = subprocess.Popen(cmd, stdout=stdout_target, stderr=stderr_target)
 
         # Give the server a moment to bind sockets
         time.sleep(1.0)
@@ -398,6 +423,9 @@ class SimClient:
             self._server_proc.kill()
             self._server_proc.wait()
         self._server_proc = None
+        if self._server_log_fh is not None:
+            self._server_log_fh.close()
+            self._server_log_fh = None
 
     @staticmethod
     def _parse_port(url: str) -> int:

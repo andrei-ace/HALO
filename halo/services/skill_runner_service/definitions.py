@@ -11,6 +11,8 @@ from halo.services.skill_runner_service.handlers import (
     StateHandler,
     build_pick_global_guards,
     build_pick_handlers,
+    build_place_global_guards,
+    build_place_handlers,
     build_track_global_guards,
     build_track_handlers,
 )
@@ -68,6 +70,19 @@ def build_default_registry() -> SkillRegistry:
             graph=track_graph,
             handler_factory=build_track_handlers,
             global_guard_factory=build_track_global_guards,
+        )
+    )
+
+    # PLACE:default
+    place_mmd = (_SKILLS_DIR / "place" / "default.mmd").read_text()
+    place_graph = parse_mermaid_fsm(place_mmd, SkillName.PLACE, variant="default")
+    registry.register(
+        SkillDefinition(
+            skill_name=SkillName.PLACE,
+            variant="default",
+            graph=place_graph,
+            handler_factory=build_place_handlers,
+            global_guard_factory=build_place_global_guards,
         )
     )
 

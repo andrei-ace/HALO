@@ -123,6 +123,110 @@ class TestProtocol:
         assert decoded["rgb_scene"].shape == (48, 64, 3)
         assert decoded["rgb_wrist"].shape == (24, 32, 3)
 
+    def test_pack_telemetry_with_error(self):
+        from mujoco_sim.server.protocol import pack_telemetry
+
+        qpos = np.random.randn(20)
+        qvel = np.random.randn(18)
+        ee_pose = np.random.randn(7)
+        object_pose = np.random.randn(7)
+        red_object_pose = np.random.randn(7)
+        joint_pos = np.random.randn(6)
+        action = np.random.randn(6)
+        rgb_scene = np.random.randint(0, 255, (48, 64, 3), dtype=np.uint8)
+        rgb_wrist = np.random.randint(0, 255, (24, 32, 3), dtype=np.uint8)
+
+        msg = pack_telemetry(
+            ts_ms=100,
+            step_count=1,
+            phase_id=0,
+            done=True,
+            qpos=qpos,
+            qvel=qvel,
+            ee_pose=ee_pose,
+            object_pose=object_pose,
+            red_object_pose=red_object_pose,
+            joint_pos=joint_pos,
+            gripper=0.0,
+            action=action,
+            rgb_scene=rgb_scene,
+            rgb_wrist=rgb_wrist,
+            error="IK failed",
+        )
+        assert msg["error"] == "IK failed"
+
+        # Without error, key should not be present
+        msg_no_err = pack_telemetry(
+            ts_ms=100,
+            step_count=1,
+            phase_id=0,
+            done=False,
+            qpos=qpos,
+            qvel=qvel,
+            ee_pose=ee_pose,
+            object_pose=object_pose,
+            red_object_pose=red_object_pose,
+            joint_pos=joint_pos,
+            gripper=0.0,
+            action=action,
+            rgb_scene=rgb_scene,
+            rgb_wrist=rgb_wrist,
+        )
+        assert "error" not in msg_no_err
+
+    def test_unpack_telemetry_extracts_error(self):
+        from mujoco_sim.server.protocol import pack_telemetry, unpack_telemetry
+
+        qpos = np.random.randn(20)
+        qvel = np.random.randn(18)
+        ee_pose = np.random.randn(7)
+        object_pose = np.random.randn(7)
+        red_object_pose = np.random.randn(7)
+        joint_pos = np.random.randn(6)
+        action = np.random.randn(6)
+        rgb_scene = np.random.randint(0, 255, (48, 64, 3), dtype=np.uint8)
+        rgb_wrist = np.random.randint(0, 255, (24, 32, 3), dtype=np.uint8)
+
+        msg = pack_telemetry(
+            ts_ms=100,
+            step_count=1,
+            phase_id=0,
+            done=True,
+            qpos=qpos,
+            qvel=qvel,
+            ee_pose=ee_pose,
+            object_pose=object_pose,
+            red_object_pose=red_object_pose,
+            joint_pos=joint_pos,
+            gripper=0.0,
+            action=action,
+            rgb_scene=rgb_scene,
+            rgb_wrist=rgb_wrist,
+            error="IK failed for keyframe 'preplace'",
+        )
+        decoded = unpack_telemetry(msg)
+        assert decoded["error"] == "IK failed for keyframe 'preplace'"
+
+        # Without error
+        msg2 = pack_telemetry(
+            ts_ms=200,
+            step_count=2,
+            phase_id=3,
+            done=False,
+            qpos=qpos,
+            qvel=qvel,
+            ee_pose=ee_pose,
+            object_pose=object_pose,
+            red_object_pose=red_object_pose,
+            joint_pos=joint_pos,
+            gripper=0.0,
+            action=action,
+            rgb_scene=rgb_scene,
+            rgb_wrist=rgb_wrist,
+        )
+        decoded2 = unpack_telemetry(msg2)
+        assert decoded2["error"] is None
+
     def test_message_type_constants(self):
         from mujoco_sim.server.protocol import (
             CMD_CONFIGURE,

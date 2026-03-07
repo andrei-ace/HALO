@@ -26,6 +26,11 @@ class SkillName(StrEnum):
     PLACE = "PLACE"
 
 
+class PlaceModifier(StrEnum):
+    PLACE_FLOOR = "PLACE_FLOOR"
+    PLACE_NEXT_TO = "PLACE_NEXT_TO"
+
+
 class PhaseId(IntEnum):
     # -- PICK sub-phases --
     IDLE = 0
@@ -40,11 +45,12 @@ class PhaseId(IntEnum):
     DONE = 9
     # -- TRACK sub-phases --
     ACQUIRING = 20
-    # -- PLACE sub-phases (reserved, not used in milestone 1) --
+    # -- PLACE sub-phases --
     TRANSIT_PREPLACE = 30
     DESCEND_PLACE = 31
     OPEN = 32
     RETREAT = 33
+    SELECT_PLACE = 34
     # -- Recovery --
     RECOVER_RETRY_APPROACH = 50
     RECOVER_REGRASP = 51
@@ -60,6 +66,9 @@ WRIST_ACTIVE_PHASES: frozenset[PhaseId] = frozenset(
         PhaseId.CLOSE_GRIPPER,
         PhaseId.VERIFY_GRASP,
         PhaseId.LIFT,
+        PhaseId.DESCEND_PLACE,
+        PhaseId.OPEN,
+        PhaseId.RETREAT,
     }
 )
 

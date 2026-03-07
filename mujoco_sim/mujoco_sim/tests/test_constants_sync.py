@@ -11,16 +11,21 @@ from mujoco_sim.constants import (
     GRIPPER_JOINT_NAME,
     GRIPPER_OPEN,
     PHASE_CLOSE_GRIPPER,
+    PHASE_DESCEND_PLACE,
     PHASE_DONE,
     PHASE_EXECUTE_APPROACH,
     PHASE_IDLE,
     PHASE_LIFT,
     PHASE_MOVE_PREGRASP,
+    PHASE_OPEN,
     PHASE_PLAN_APPROACH,
     PHASE_RECOVER_ABORT,
     PHASE_RECOVER_REGRASP,
     PHASE_RECOVER_RETRY_APPROACH,
+    PHASE_RETREAT,
     PHASE_SELECT_GRASP,
+    PHASE_SELECT_PLACE,
+    PHASE_TRANSIT_PREPLACE,
     PHASE_VERIFY_GRASP,
     PHASE_VISUAL_ALIGN,
     SO101_ARM_JOINT_NAMES,
@@ -41,6 +46,11 @@ def test_phase_id_values():
         "VERIFY_GRASP": (PHASE_VERIFY_GRASP, 7),
         "LIFT": (PHASE_LIFT, 8),
         "DONE": (PHASE_DONE, 9),
+        "TRANSIT_PREPLACE": (PHASE_TRANSIT_PREPLACE, 30),
+        "DESCEND_PLACE": (PHASE_DESCEND_PLACE, 31),
+        "OPEN": (PHASE_OPEN, 32),
+        "RETREAT": (PHASE_RETREAT, 33),
+        "SELECT_PLACE": (PHASE_SELECT_PLACE, 34),
         "RECOVER_RETRY_APPROACH": (PHASE_RECOVER_RETRY_APPROACH, 50),
         "RECOVER_REGRASP": (PHASE_RECOVER_REGRASP, 51),
         "RECOVER_ABORT": (PHASE_RECOVER_ABORT, 52),
@@ -70,7 +80,16 @@ def test_gripper_semantics():
 def test_wrist_active_phases():
     """WRIST_ACTIVE_PHASES contains exactly the expected phases."""
     expected = frozenset(
-        {PHASE_VISUAL_ALIGN, PHASE_EXECUTE_APPROACH, PHASE_CLOSE_GRIPPER, PHASE_VERIFY_GRASP, PHASE_LIFT}
+        {
+            PHASE_VISUAL_ALIGN,
+            PHASE_EXECUTE_APPROACH,
+            PHASE_CLOSE_GRIPPER,
+            PHASE_VERIFY_GRASP,
+            PHASE_LIFT,
+            PHASE_DESCEND_PLACE,
+            PHASE_OPEN,
+            PHASE_RETREAT,
+        }
     )
     assert WRIST_ACTIVE_PHASES == expected
 
