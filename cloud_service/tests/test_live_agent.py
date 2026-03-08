@@ -214,6 +214,76 @@ class TestLiveAgentSession:
         session = LiveAgentSession(arm_id="arm0")
         session.on_audio_chunk(b"\x00" * 100)
 
+    def test_interrupt_ignored_when_not_speaking(self):
+        """event.interrupted should be ignored when turn_active is False."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        interrupted = []
+        session.set_callbacks(on_interrupted=lambda: interrupted.append(True))
+
+        event = MagicMock()
+        event.interrupted = True
+        event.content = None
+        event.input_transcription = None
+        event.output_transcription = None
+        event.turn_complete = False
+
+        assert session._state.turn_active is False
+        session._handle_event(event)
+        assert interrupted == []
+
+    def test_interrupt_fires_when_speaking(self):
+        """event.interrupted should fire when turn_active is True."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        interrupted = []
+        session.set_callbacks(on_interrupted=lambda: interrupted.append(True))
+
+        # Simulate model outputting audio (sets turn_active)
+        session._state.turn_active = True
+
+        event = MagicMock()
+        event.interrupted = True
+        event.content = None
+        event.input_transcription = None
+        event.output_transcription = None
+        event.turn_complete = False
+
+        session._handle_event(event)
+        assert interrupted == [True]
+        assert session._state.turn_active is False
+
+    def test_audio_output_sets_turn_active(self):
+        """Receiving audio content should set turn_active to True."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        audio_chunks = []
+        session.set_callbacks(on_audio_out=lambda data: audio_chunks.append(data))
+
+        assert session._state.turn_active is False
+
+        part = MagicMock()
+        part.inline_data = MagicMock()
+        part.inline_data.mime_type = "audio/pcm"
+        part.inline_data.data = b"\x00" * 100
+        part.text = None
+
+        event = MagicMock()
+        event.interrupted = False
+        event.content = MagicMock()
+        event.content.parts = [part]
+        event.input_transcription = None
+        event.output_transcription = None
+        event.turn_complete = False
+        event.partial = False
+
+        session._handle_event(event)
+        assert session._state.turn_active is True
+        assert len(audio_chunks) == 1
+
     @pytest.mark.asyncio
     async def test_stop_cancels_pending_futures(self):
         from cloud_service.live_agent import LiveAgentSession

@@ -387,8 +387,11 @@ class LiveAgentSession:
     def _handle_event(self, event) -> None:
         """Process a single ADK Event from the live stream."""
         # Handle interruption (barge-in: user spoke while model was outputting)
-        if event.interrupted:
+        # Only fire when model is actively speaking to avoid spurious interrupts
+        # from Gemini's auto-activity-detection (ambient noise, etc.)
+        if event.interrupted and self._state.turn_active:
             logger.info("Barge-in detected — interrupting audio output")
+            self._state.turn_active = False
             if self._on_interrupted:
                 self._on_interrupted()
 
@@ -398,6 +401,8 @@ class LiveAgentSession:
                 # Audio data
                 if part.inline_data and part.inline_data.mime_type and "audio" in part.inline_data.mime_type:
                     if self._on_audio_out and part.inline_data.data:
+                        if not self._state.turn_active:
+                            self._state.turn_active = True
                         self._on_audio_out(part.inline_data.data)
                 # Text content (non-partial)
                 elif part.text and not event.partial:
