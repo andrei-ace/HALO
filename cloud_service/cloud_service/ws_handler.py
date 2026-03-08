@@ -150,4 +150,6 @@ async def live_agent_ws(websocket: WebSocket, arm_id: str) -> None:
         logger.exception("Live agent WS error for arm_id=%s", arm_id)
     finally:
         session.set_callbacks()
+        # Close the live request queue to unblock any pending run_live iteration
+        session.close_queue()
         await live_mgr.remove(arm_id)

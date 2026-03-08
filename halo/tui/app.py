@@ -9,6 +9,7 @@ Run with:
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 
 from rich.text import Text
@@ -731,7 +732,12 @@ class AudioPanel(Container):
 
         spk_text = Text()
         spk_text.append("Speaker: ", style="bold white")
-        spk_text.append(speaker_status, style="bright_green" if "Speaking" in speaker_status else "#9e9e9e")
+        if speaker_status == "Interrupted":
+            spk_text.append(speaker_status, style="#ffa726")
+        elif "Speaking" in speaker_status:
+            spk_text.append(speaker_status, style="bright_green")
+        else:
+            spk_text.append(speaker_status, style="#9e9e9e")
         if speaker_level > 0.001:
             bars = int(speaker_level * 20)
             spk_text.append("  ")
@@ -1535,6 +1541,10 @@ class HALOApp(App):
                 speaker_status = "Speaking"
             else:
                 speaker_status = "Silent"
+
+            # Flash "Interrupted" for ~2s after barge-in
+            if time.monotonic() - client_state.last_interrupted_ts < 2.0:
+                speaker_status = "Interrupted"
 
             mic_level = capture.state.input_level if capture is not None else 0.0
             spk_level = playback.state.output_level if playback is not None else 0.0

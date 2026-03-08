@@ -13,6 +13,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class LiveAgentClientState:
     last_transcription_out: str = ""
     last_text_out: str = ""
     last_status: str = ""
+    last_interrupted_ts: float = 0.0
     reconnect_count: int = 0
 
 
@@ -242,6 +244,7 @@ class LiveAgentClient:
             self._state.last_status = msg.get("text", "")
 
         elif msg_type == "interrupt":
+            self._state.last_interrupted_ts = time.monotonic()
             if self._on_interrupt and callable(self._on_interrupt):
                 self._on_interrupt()
 

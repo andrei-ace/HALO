@@ -249,6 +249,11 @@ class LiveAgentSession:
         self._started = False
         self._state.connected = False
 
+    def close_queue(self) -> None:
+        """Close the live request queue (unblocks run_live)."""
+        if self._queue is not None:
+            self._queue.close()
+
     def on_audio_chunk(self, pcm_bytes: bytes) -> None:
         """Forward raw PCM audio to Gemini via send_realtime."""
         if self._queue is not None and self._state.connected:
@@ -321,6 +326,9 @@ class LiveAgentSession:
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
             session_resumption=types.SessionResumptionConfig(),
+            context_window_compression=types.ContextWindowCompressionConfig(
+                sliding_window=types.SlidingWindow(),
+            ),
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=False,

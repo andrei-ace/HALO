@@ -186,6 +186,28 @@ class TestLiveAgentSession:
         session = LiveAgentSession(arm_id="arm0")
         session.send_text("hello")
 
+    def test_build_run_config_has_context_compression(self):
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        rc = session._build_run_config()
+        assert rc.context_window_compression is not None
+
+    def test_close_queue(self):
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session._queue = MagicMock()
+        session.close_queue()
+        session._queue.close.assert_called_once()
+
+    def test_close_queue_when_none(self):
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        # Should not raise
+        session.close_queue()
+
     def test_on_audio_chunk_when_not_connected(self):
         from cloud_service.live_agent import LiveAgentSession
 
@@ -392,6 +414,14 @@ class TestLiveAgentClient:
         )
         client._handle_message("interrupt", {"type": "interrupt"})
         assert interrupted == [True]
+
+    def test_handle_interrupt_sets_timestamp(self):
+        from halo.cognitive.live_agent_client import LiveAgentClient
+
+        client = LiveAgentClient(url="http://localhost:8000", arm_id="arm0")
+        assert client.state.last_interrupted_ts == 0.0
+        client._handle_message("interrupt", {"type": "interrupt"})
+        assert client.state.last_interrupted_ts > 0.0
 
     def test_handle_commands(self):
         from halo.cognitive.live_agent_client import LiveAgentClient
