@@ -528,6 +528,9 @@ class SkillRunnerService:
                         "failure_code": (
                             self._active_run.failure_code.value if self._active_run.failure_code else None
                         ),
+                        "trigger": self._active_run.failure_trigger,
+                        "failed_phase": self._active_run.failure_phase,
+                        "target_handle": self._active_run.target_handle,
                     },
                 )
                 # Clear queue on failure — stale follow-up commands are invalid

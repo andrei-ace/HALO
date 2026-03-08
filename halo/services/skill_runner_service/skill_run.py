@@ -46,6 +46,8 @@ class SkillRun:
     skill_start_ms: int = 0
     outcome: SkillOutcomeState = SkillOutcomeState.IN_PROGRESS
     failure_code: SkillFailureCode | None = None
+    failure_trigger: str = ""
+    failure_phase: str = ""
     transition_history: list[TransitionRecord] = field(default_factory=list)
 
     @property

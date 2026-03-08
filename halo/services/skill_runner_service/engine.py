@@ -95,9 +95,10 @@ class FsmEngine:
     def abort(self, run: SkillRun, now_ms: int, code: SkillFailureCode = SkillFailureCode.UNSAFE_ABORT) -> None:
         if run.current_node in self._graph.terminal_nodes and not run.is_active:
             return
-        old_phase = run.phase_id
+        run.failure_phase = run.current_node
         run.node_statuses[run.current_node] = NodeStatus.FAILED
         run.failure_code = code
+        run.failure_trigger = "abort"
         run.outcome = SkillOutcomeState.FAILURE
         # Move to DONE
         done_node = self._find_node_by_phase(PhaseId.DONE) or "DONE"
@@ -106,17 +107,17 @@ class FsmEngine:
             run.node_statuses[done_node] = NodeStatus.ACTIVE
         run.current_node = done_node
         run.phase_start_ms = now_ms
-        # old_phase recorded in transition_history
-        _ = old_phase
 
-    def fail(self, run: SkillRun, now_ms: int, code: SkillFailureCode) -> None:
+    def fail(self, run: SkillRun, now_ms: int, code: SkillFailureCode, trigger: str = "") -> None:
         if run.current_node in self._graph.terminal_nodes and not run.is_active:
             return
+        run.failure_phase = run.current_node
         run.node_statuses[run.current_node] = NodeStatus.FAILED
         run.failure_code = code
+        run.failure_trigger = trigger or f"fail:{code.value}"
         run.outcome = SkillOutcomeState.FAILURE
         done_node = self._find_node_by_phase(PhaseId.DONE) or "DONE"
-        run.transition_history.append(TransitionRecord(run.current_node, done_node, now_ms, f"fail:{code.value}"))
+        run.transition_history.append(TransitionRecord(run.current_node, done_node, now_ms, run.failure_trigger))
         if done_node in run.node_statuses:
             run.node_statuses[done_node] = NodeStatus.ACTIVE
         run.current_node = done_node
@@ -153,7 +154,7 @@ class FsmEngine:
     def _apply_result(self, run: SkillRun, now_ms: int, result: HandlerResult) -> PhaseId | None:
         if result.fail_code is not None:
             old = run.phase_id
-            self.fail(run, now_ms, result.fail_code)
+            self.fail(run, now_ms, result.fail_code, trigger=result.trigger)
             return old
         if result.succeed:
             return self._succeed(run, now_ms)
