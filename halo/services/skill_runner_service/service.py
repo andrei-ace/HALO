@@ -27,6 +27,22 @@ from halo.services.skill_runner_service.view_model import FsmViewModel, build_fs
 
 logger = logging.getLogger(__name__)
 
+
+_TRANSIT_NODES = frozenset({"RETURNING"})
+
+
+def _resolve_failure_node(run: SkillRun) -> str:
+    """Attribute failure to the node that actually caused it.
+
+    When the FSM is at a transit node like RETURNING, the real failure
+    originated at the preceding node (e.g. VERIFY_GRASP).  Returns the
+    current node when it is already the substantive failure source.
+    """
+    if run.current_node in _TRANSIT_NODES and run.transition_history:
+        return run.transition_history[-1].from_node
+    return run.current_node
+
+
 # Injected callables — decoupled from ACT model and ControlService instance
 ChunkFn = Callable[
     [str, PhaseId, object],  # (arm_id, phase, PlannerSnapshot)
@@ -374,11 +390,20 @@ class SkillRunnerService:
 
             # Sim server reported an error (e.g. NO_GRASP from failed VERIFY_GRASP).
             # The error persists across the return trajectory so we catch it here.
+            # Attribute the failure to the node that preceded the current transit
+            # node (e.g. VERIFY_GRASP, not RETURNING).
             if done and sim_error:
                 fail_code = SkillFailureCode.PLACE_MISS if is_place else SkillFailureCode.NO_GRASP
-                logger.warning("Sim error=%s (phase_id=%d) — treating as %s", sim_error, phase_id, fail_code.name)
+                blame_node = _resolve_failure_node(run)
+                logger.warning(
+                    "Sim error=%s (phase_id=%d) — treating as %s (blame=%s)",
+                    sim_error,
+                    phase_id,
+                    fail_code.name,
+                    blame_node,
+                )
                 old_phase = run.phase_id
-                self._engine.fail(run, now_ms, fail_code)
+                self._engine.fail(run, now_ms, fail_code, failure_node=blame_node)
                 await self._handle_transition(old_phase)
                 return run.phase_id
 
@@ -387,9 +412,15 @@ class SkillRunnerService:
             min_success_phase = PhaseId.RETREAT.value if is_place else PhaseId.VERIFY_GRASP.value
             if done and phase_id < min_success_phase:
                 fail_code = SkillFailureCode.PLACE_MISS if is_place else SkillFailureCode.NO_GRASP
-                logger.warning("Sim done=True with early phase_id=%d — treating as %s", phase_id, fail_code.name)
+                blame_node = _resolve_failure_node(run)
+                logger.warning(
+                    "Sim done=True with early phase_id=%d — treating as %s (blame=%s)",
+                    phase_id,
+                    fail_code.name,
+                    blame_node,
+                )
                 old_phase = run.phase_id
-                self._engine.fail(run, now_ms, fail_code)
+                self._engine.fail(run, now_ms, fail_code, failure_node=blame_node)
                 await self._handle_transition(old_phase)
                 return run.phase_id
 

@@ -108,11 +108,26 @@ class FsmEngine:
         run.current_node = done_node
         run.phase_start_ms = now_ms
 
-    def fail(self, run: SkillRun, now_ms: int, code: SkillFailureCode, trigger: str = "") -> None:
+    def fail(
+        self,
+        run: SkillRun,
+        now_ms: int,
+        code: SkillFailureCode,
+        trigger: str = "",
+        failure_node: str = "",
+    ) -> None:
         if run.current_node in self._graph.terminal_nodes and not run.is_active:
             return
-        run.failure_phase = run.current_node
-        run.node_statuses[run.current_node] = NodeStatus.FAILED
+        # Allow caller to specify the actual failure node (e.g. when the error
+        # is detected after the FSM already transitioned to a transit node).
+        blame = failure_node or run.current_node
+        run.failure_phase = blame
+        if blame != run.current_node and blame in run.node_statuses:
+            run.node_statuses[blame] = NodeStatus.FAILED
+            # Current node (e.g. RETURNING) was just a transit — not the cause.
+            run.node_statuses[run.current_node] = NodeStatus.COMPLETED
+        else:
+            run.node_statuses[run.current_node] = NodeStatus.FAILED
         run.failure_code = code
         run.failure_trigger = trigger or f"fail:{code.value}"
         run.outcome = SkillOutcomeState.FAILURE

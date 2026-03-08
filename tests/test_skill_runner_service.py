@@ -18,6 +18,7 @@ from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.definitions import SkillRegistry
 from halo.services.skill_runner_service.service import SkillRunnerService
+from halo.services.skill_runner_service.skill_run import NodeStatus
 
 ARM = "arm0"
 RUN_ID = "run-test-1"
@@ -613,6 +614,43 @@ async def test_sim_mode_verify_grasp_error_fails_skill(rt: HALORuntime):
     events = rt.bus.get_recent_events(ARM)
     assert any(e.type == EventType.SKILL_FAILED for e in events), "Expected SKILL_FAILED for NO_GRASP"
     assert not any(e.type == EventType.SKILL_SUCCEEDED for e in events), "Should NOT succeed with NO_GRASP error"
+
+    # The failure should be attributed to VERIFY_GRASP, not RETURNING
+    run = svc._active_run
+    assert run.failure_phase == "VERIFY_GRASP", f"Expected failure_phase=VERIFY_GRASP, got {run.failure_phase}"
+    assert run.node_statuses["VERIFY_GRASP"] == NodeStatus.FAILED
+    assert run.node_statuses["RETURNING"] != NodeStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_sim_mode_verify_grasp_error_blames_verify_not_returning(rt: HALORuntime):
+    """When the FSM reaches RETURNING before the error is detected,
+    failure_phase should still point to VERIFY_GRASP (the causal node),
+    not RETURNING (the transit node)."""
+    svc = _make_sim_svc(
+        rt,
+        phase_sequence=[
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.EXECUTE_APPROACH), False),
+            (int(PhaseId.CLOSE_GRIPPER), False),
+            (int(PhaseId.LIFT), False),
+            (int(PhaseId.VERIFY_GRASP), False),
+            # FSM syncs to RETURNING (done=False), then error on next tick
+            (60, False),
+            (60, True, "NO_GRASP"),
+        ],
+    )
+    await _seed_store(rt, distance_m=0.5)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    for _ in range(12):
+        await svc.tick()
+
+    run = svc._active_run
+    assert run.outcome == SkillOutcomeState.FAILURE
+    assert run.failure_phase == "VERIFY_GRASP", f"Expected VERIFY_GRASP, got {run.failure_phase}"
+    assert run.node_statuses["VERIFY_GRASP"] == NodeStatus.FAILED
+    assert run.node_statuses["RETURNING"] == NodeStatus.COMPLETED
 
 
 # --- Sim mode PLACE tests ---
