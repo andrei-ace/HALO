@@ -40,9 +40,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _TARGET_SUFFIX_RE = re.compile(r"_\d+$")
-_COLOR_PREFIX_RE = re.compile(
-    r"^(red|green|blue|yellow|orange|purple|pink|black|white|grey|gray|brown|beige|tan|dark|light)_"
-)
+
+
+def _base_type(name: str) -> str:
+    """Extract the base object type: strip numeric suffix, then strip one leading prefix.
+
+    Examples: ``wooden_tray_01`` → ``tray``, ``red_cube`` → ``cube``,
+    ``yellow_tray`` → ``tray``, ``big_green_cube_03`` → ``green_cube``.
+    """
+    s = _TARGET_SUFFIX_RE.sub("", name)
+    # Strip exactly one leading prefix (colour / material adjective)
+    parts = s.split("_", maxsplit=1)
+    return parts[1] if len(parts) > 1 else s
 
 
 def _resolve_target_body(
@@ -56,8 +65,8 @@ def _resolve_target_body(
     Resolution order:
     1) Exact body name
     2) Trailing numeric suffix stripped (e.g. ``red_cube_01`` -> ``red_cube``)
-    3) Color-agnostic: strip color prefix + suffix, match known bodies by base type
-       (e.g. ``beige_tray_01`` -> ``tray`` matches ``yellow_tray``)
+    3) Base-type match: strip all prefixes to get the noun (e.g. ``wooden_tray_01``
+       -> ``tray`` matches ``yellow_tray``)
     """
     candidates = [requested_body]
     stripped = _TARGET_SUFFIX_RE.sub("", requested_body)
@@ -69,15 +78,13 @@ def _resolve_target_body(
         if body_id != -1:
             return candidate, body_id
 
-    # Color-agnostic fallback: match known bodies by base object type
-    base = _COLOR_PREFIX_RE.sub("", stripped)
-    if base != stripped:
-        for known in known_bodies:
-            known_base = _COLOR_PREFIX_RE.sub("", _TARGET_SUFFIX_RE.sub("", known))
-            if known_base == base:
-                body_id = name_to_body_id(known)
-                if body_id != -1:
-                    return known, body_id
+    # Base-type fallback: match known bodies by final noun
+    req_base = _base_type(requested_body)
+    for known in known_bodies:
+        if _base_type(known) == req_base:
+            body_id = name_to_body_id(known)
+            if body_id != -1:
+                return known, body_id
 
     known_str = ", ".join(repr(name) for name in known_bodies)
     tried = ", ".join(repr(name) for name in candidates)
@@ -155,6 +162,10 @@ class ServerState:
         # Deferred place planning — stored by handler, executed by main loop
         self.pending_place_target: str | None = None
         self.pending_place_held_body: str | None = None
+
+        # Deferred return-to-home — stored by handler, planned by main loop
+        self.pending_return_target: np.ndarray | None = None
+        self.pending_return_gripper: float | None = None
 
         # Pick grasp verification
         self.pick_target_body_id: int | None = None
@@ -272,8 +283,9 @@ def _handle_abort_pick(server_state: ServerState | None, env: SO101Env) -> dict:
     if was_active:
         # Cancel deferred pick before it gets executed by the main loop
         server_state.pending_pick_target = None
-        # Return to home position after abort (open gripper)
-        server_state.hold_target = env.home_qpos.copy()
+        # Return to home position after abort (smooth ruckig trajectory)
+        server_state.pending_return_target = env.home_qpos.copy()
+        server_state.pending_return_gripper = float(env.home_qpos[5])
         server_state.reset_trajectory()
         logger.info("abort_pick: trajectory aborted, returning to home")
     else:

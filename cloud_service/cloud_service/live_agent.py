@@ -347,6 +347,13 @@ class LiveAgentSession:
                 self._state.reconnect_count += 1
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, _MAX_RECONNECT_DELAY_S)
+                # Fresh session ID + queue so ADK doesn't replay stale history
+                self._session_id = f"live_agent-{self._arm_id}-{uuid.uuid4().hex[:8]}"
+                await self._session_service.create_session(
+                    app_name=_APP_NAME,
+                    user_id=_USER_ID,
+                    session_id=self._session_id,
+                )
                 self._queue = LiveRequestQueue()
                 continue
             break

@@ -430,15 +430,18 @@ async def test_progress_info_updated_in_store(rt: HALORuntime):
 # --- Sim mode ---
 
 
-def _make_sim_phase_fn(phase_sequence: list[tuple[int, bool]]):
+def _make_sim_phase_fn(phase_sequence: list[tuple[int, bool]], *, error: str | None = None):
     """Create a sim_phase_fn that plays through a fixed phase sequence."""
     idx = 0
 
-    def sim_phase_fn() -> tuple[int, bool]:
+    def sim_phase_fn() -> tuple[int, bool, str | None]:
         nonlocal idx
-        phase_id, done = phase_sequence[min(idx, len(phase_sequence) - 1)]
+        entry = phase_sequence[min(idx, len(phase_sequence) - 1)]
+        phase_id, done = entry[0], entry[1]
+        # Allow per-entry error via 3-tuples, or use the default error kwarg
+        err = entry[2] if len(entry) > 2 else (error if done else None)
         idx += 1
-        return phase_id, done
+        return phase_id, done, err
 
     return sim_phase_fn
 
@@ -579,6 +582,37 @@ async def test_sim_mode_deferred_planning_failure(rt: HALORuntime):
     events = rt.bus.get_recent_events(ARM)
     assert any(e.type == EventType.SKILL_FAILED for e in events)
     assert not any(e.type == EventType.SKILL_SUCCEEDED for e in events)
+
+
+async def test_sim_mode_verify_grasp_error_fails_skill(rt: HALORuntime):
+    """Sim mode: NO_GRASP error from VERIFY_GRASP propagates as SKILL_FAILED.
+
+    Reproduces the bug where the sim server detects a failed grasp (Z delta
+    below threshold) but the error is cleared by the return trajectory,
+    causing the skill to report SUCCESS instead of FAILURE.
+    """
+    # Simulate: normal phases → return trajectory completes with NO_GRASP error
+    svc = _make_sim_svc(
+        rt,
+        phase_sequence=[
+            (int(PhaseId.MOVE_PREGRASP), False),
+            (int(PhaseId.EXECUTE_APPROACH), False),
+            (int(PhaseId.CLOSE_GRIPPER), False),
+            (int(PhaseId.LIFT), False),
+            (int(PhaseId.VERIFY_GRASP), False),
+            # Return trajectory completes with error preserved
+            (60, True, "NO_GRASP"),  # PHASE_RETURNING=60, done=True, error
+        ],
+    )
+    await _seed_store(rt, distance_m=0.5)
+    await svc.start_skill(SkillName.PICK, RUN_ID, "obj-1")
+
+    for _ in range(10):
+        await svc.tick()
+
+    events = rt.bus.get_recent_events(ARM)
+    assert any(e.type == EventType.SKILL_FAILED for e in events), "Expected SKILL_FAILED for NO_GRASP"
+    assert not any(e.type == EventType.SKILL_SUCCEEDED for e in events), "Should NOT succeed with NO_GRASP error"
 
 
 # --- Sim mode PLACE tests ---

@@ -291,7 +291,16 @@ class OpenHandler:
 class RetreatHandler:
     def evaluate(self, ctx: StateContext) -> HandlerResult:
         if ctx.elapsed_ms >= ctx.config.retreat_duration_ms:
-            return HandlerResult.done(trigger="success")
+            return HandlerResult.go("RETURNING", trigger="trajectory_complete")
+        return HandlerResult.stay()
+
+
+class ReturningHandler:
+    """Waits for sim to complete the return trajectory, then transitions to DONE."""
+
+    def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.elapsed_ms >= ctx.config.returning_timeout_ms:
+            return HandlerResult.done(trigger="trajectory_complete")
         return HandlerResult.stay()
 
 
@@ -319,6 +328,7 @@ def build_pick_handlers() -> dict[str, StateHandler]:
         "CLOSE_GRIPPER": CloseGripperHandler(),
         "VERIFY_GRASP": VerifyGraspHandler(),
         "LIFT": LiftHandler(),
+        "RETURNING": ReturningHandler(),
         "RECOVER_RETRY_APPROACH": RecoverRetryApproachHandler(),
     }
 
@@ -336,6 +346,7 @@ def build_place_handlers() -> dict[str, StateHandler]:
         "DESCEND_PLACE": DescendPlaceHandler(),
         "OPEN": OpenHandler(),
         "RETREAT": RetreatHandler(),
+        "RETURNING": ReturningHandler(),
         "RECOVER_RETRY_APPROACH": PlaceRecoverRetryHandler(),
     }
 

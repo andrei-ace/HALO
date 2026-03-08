@@ -40,7 +40,7 @@ PushFn = Callable[[ActionChunk], Awaitable[None]]
 StartPickFn = Callable[[str, str], Awaitable[dict]]  # (arm_id, target_body) → server response
 StartPlaceFn = Callable[[str, str, str], Awaitable[dict]]  # (arm_id, target_body, held_body) → server response
 AbortPickFn = Callable[[], Awaitable[dict]]  # () → server response
-SimPhaseFn = Callable[[], tuple[int, bool]]  # () → (phase_id, done)
+SimPhaseFn = Callable[[], tuple[int, bool, str | None]]  # () → (phase_id, done, error)
 
 
 class SkillRunnerService:
@@ -349,7 +349,7 @@ class SkillRunnerService:
         else:
             # Phase 2: sim trajectory running — sync FSM from telemetry
             if self._sim_phase_fn is not None:
-                phase_id, done = self._sim_phase_fn()
+                phase_id, done, sim_error = self._sim_phase_fn()
             else:
                 return run.phase_id
 
@@ -371,6 +371,16 @@ class SkillRunnerService:
                     phase_id,
                 )
                 self._sim_seen_active = True  # break out, fall through to failure detection
+
+            # Sim server reported an error (e.g. NO_GRASP from failed VERIFY_GRASP).
+            # The error persists across the return trajectory so we catch it here.
+            if done and sim_error:
+                fail_code = SkillFailureCode.PLACE_MISS if is_place else SkillFailureCode.NO_GRASP
+                logger.warning("Sim error=%s (phase_id=%d) — treating as %s", sim_error, phase_id, fail_code.name)
+                old_phase = run.phase_id
+                self._engine.fail(run, now_ms, fail_code)
+                await self._handle_transition(old_phase)
+                return run.phase_id
 
             # Early failure detection (server planning failed or trajectory
             # ended before reaching the success phase).

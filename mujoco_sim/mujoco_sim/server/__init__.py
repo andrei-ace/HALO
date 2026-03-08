@@ -144,6 +144,9 @@ class SimServer:
                     last_render = time.monotonic()
                     execute_pending_place(self._env, self._state)
 
+                if self._state.pending_return_target is not None:
+                    self._execute_pending_return()
+
                 # 3. Autonomous physics at physics_hz
                 now = time.monotonic()
                 if now - last_physics >= physics_interval:
@@ -189,21 +192,24 @@ class SimServer:
                             state.phase_id = PHASE_LIFT  # below success threshold
                             state.error = "NO_GRASP"
                             state.done = True
-                            # Return to home after failed pick (open gripper)
-                            state.hold_target = env.home_qpos.copy()
+                            # Return to home after failed pick (smooth ruckig trajectory)
+                            home = env.home_qpos.copy()
+                            state.pending_return_target = home
+                            state.pending_return_gripper = float(home[5])
                             return
                         logger.info("VERIFY_GRASP passed: object Z delta=%.4f m", dz)
 
                 state.phase_id = phase_id
                 state.done = True
 
-                # After PLACE RETREAT, return arm to home pose.
+                # After PLACE RETREAT, return arm to home via smooth ruckig trajectory.
                 # Preserve gripper state (don't open if holding an object).
                 if phase_id == PHASE_RETREAT:
                     home = env.home_qpos.copy()
                     home[5] = action[5]  # preserve gripper
-                    state.hold_target = home
-                    logger.info("Trajectory complete (phase_id=%d), returning to home", phase_id)
+                    state.pending_return_target = home
+                    state.pending_return_gripper = float(action[5])
+                    logger.info("Trajectory complete (phase_id=%d), planning return to home", phase_id)
                 else:
                     logger.info("Trajectory complete (phase_id=%d)", phase_id)
             else:
@@ -223,6 +229,41 @@ class SimServer:
                 env.step(state.hold_target)
             else:
                 env.step(np.array(env.mujoco_data.ctrl[:6], copy=True))
+
+    def _execute_pending_return(self) -> None:
+        """Plan a smooth ruckig trajectory from current joints to the return target."""
+        state = self._state
+        target = state.pending_return_target
+        gripper = state.pending_return_gripper
+        state.pending_return_target = None
+        state.pending_return_gripper = None
+        if target is None:
+            return
+
+        from mujoco_sim.constants import PHASE_RETURNING
+        from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
+        from mujoco_sim.teacher.waypoint_generator import JointWaypoint
+
+        current_joints = np.array(self._env.mujoco_data.qpos[:6], copy=True)
+        current_gripper = float(current_joints[5])
+        target_gripper = gripper if gripper is not None else float(target[5])
+
+        waypoints = [
+            JointWaypoint(
+                arm_joints=current_joints[:5].copy(),
+                gripper=current_gripper,
+                phase_id=PHASE_RETURNING,
+                label="current",
+            ),
+            JointWaypoint(arm_joints=target[:5].copy(), gripper=target_gripper, phase_id=PHASE_RETURNING, label="home"),
+        ]
+        trajectory = plan_trajectory(waypoints, JointLimits())
+        state.trajectory = trajectory
+        state.traj_start_time = time.monotonic()
+        state.done = False
+        # Preserve error from failed VERIFY_GRASP so HALO can detect it
+        # after the return trajectory completes.
+        logger.info("Return trajectory planned: %.2f s", trajectory.total_duration)
 
     def _publish_telemetry(self, step_count: int) -> None:
         """Render current state and publish on TelemetryStream."""

@@ -329,8 +329,9 @@ def make_mock_sim_phase_fn(
 ):
     """Return a ``sim_phase_fn`` compatible with SkillRunnerService sim mode.
 
-    *phase_sequence*: list of ``(phase_id, done)`` tuples. Each call returns the
-    next entry. After exhausting the list, keeps returning the last entry.
+    *phase_sequence*: list of ``(phase_id, done[, error])`` tuples. Each call
+    returns the next entry. After exhausting the list, keeps returning the last
+    entry.
 
     Default sequence: ``MOVE_PREGRASP(x3) → EXECUTE_APPROACH(x2) → CLOSE_GRIPPER(x2) → LIFT(x2) → DONE``
     """
@@ -350,11 +351,13 @@ def make_mock_sim_phase_fn(
 
     idx = 0
 
-    def sim_phase_fn() -> tuple[int, bool]:
+    def sim_phase_fn() -> tuple[int, bool, str | None]:
         nonlocal idx
-        phase_id, done = phase_sequence[min(idx, len(phase_sequence) - 1)]
+        entry = phase_sequence[min(idx, len(phase_sequence) - 1)]
+        phase_id, done = entry[0], entry[1]
+        error = entry[2] if len(entry) > 2 else None
         idx += 1
-        return phase_id, done
+        return phase_id, done, error
 
     return sim_phase_fn
 

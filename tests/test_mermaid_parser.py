@@ -117,7 +117,7 @@ def test_parse_from_file():
     skills_dir = Path(__file__).resolve().parent.parent / "configs" / "skills"
     pick_graph = parse_mermaid_fsm((skills_dir / "pick" / "default.mmd").read_text(), SkillName.PICK)
     assert pick_graph.entry_node == "SELECT_GRASP"
-    assert len(pick_graph.nodes) == 10
+    assert len(pick_graph.nodes) == 11
 
     track_graph = parse_mermaid_fsm((skills_dir / "track" / "default.mmd").read_text(), SkillName.TRACK)
     assert track_graph.entry_node == "ACQUIRING"

@@ -17,5 +17,7 @@ stateDiagram-v2
     LIFT --> VERIFY_GRASP : lift_complete
     LIFT --> DONE : skip_verify
     VERIFY_GRASP --> DONE : success
+    VERIFY_GRASP --> RETURNING : no_grasp
+    RETURNING --> DONE : trajectory_complete
     RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry
     RECOVER_RETRY_APPROACH --> DONE : max_retries

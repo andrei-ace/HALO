@@ -23,6 +23,7 @@ from mujoco_sim.constants import (
     PHASE_RECOVER_REGRASP,
     PHASE_RECOVER_RETRY_APPROACH,
     PHASE_RETREAT,
+    PHASE_RETURNING,
     PHASE_SELECT_GRASP,
     PHASE_SELECT_PLACE,
     PHASE_TRANSIT_PREPLACE,
@@ -54,6 +55,7 @@ def test_phase_id_values():
         "RECOVER_RETRY_APPROACH": (PHASE_RECOVER_RETRY_APPROACH, 50),
         "RECOVER_REGRASP": (PHASE_RECOVER_REGRASP, 51),
         "RECOVER_ABORT": (PHASE_RECOVER_ABORT, 52),
+        "RETURNING": (PHASE_RETURNING, 60),
     }
     for name, (actual, expected_val) in expected.items():
         assert actual == expected_val, f"PHASE_{name}: got {actual}, expected {expected_val}"

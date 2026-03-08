@@ -56,6 +56,8 @@ class PhaseId(IntEnum):
     RECOVER_RETRY_APPROACH = 50
     RECOVER_REGRASP = 51
     RECOVER_ABORT = 52
+    # -- Transient --
+    RETURNING = 60
 
 
 # Phases where the wrist camera provides real frames (vs. black/masked).

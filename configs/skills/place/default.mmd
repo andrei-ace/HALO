@@ -9,6 +9,7 @@ stateDiagram-v2
     DESCEND_PLACE --> RECOVER_RETRY_APPROACH : target_lost
     DESCEND_PLACE --> DONE : timeout
     OPEN --> RETREAT : timer_elapsed
-    RETREAT --> DONE : success
+    RETREAT --> RETURNING : trajectory_complete
+    RETURNING --> DONE : trajectory_complete
     RECOVER_RETRY_APPROACH --> TRANSIT_PREPLACE : retry
     RECOVER_RETRY_APPROACH --> DONE : max_retries

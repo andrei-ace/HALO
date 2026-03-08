@@ -28,6 +28,7 @@ try:
         PHASE_RECOVER_REGRASP,
         PHASE_RECOVER_RETRY_APPROACH,
         PHASE_RETREAT,
+        PHASE_RETURNING,
         PHASE_SELECT_GRASP,
         PHASE_SELECT_PLACE,
         PHASE_TRANSIT_PREPLACE,
@@ -66,6 +67,7 @@ def test_phase_id_values_match():
         "PHASE_RECOVER_RETRY_APPROACH": (PHASE_RECOVER_RETRY_APPROACH, PhaseId.RECOVER_RETRY_APPROACH),
         "PHASE_RECOVER_REGRASP": (PHASE_RECOVER_REGRASP, PhaseId.RECOVER_REGRASP),
         "PHASE_RECOVER_ABORT": (PHASE_RECOVER_ABORT, PhaseId.RECOVER_ABORT),
+        "PHASE_RETURNING": (PHASE_RETURNING, PhaseId.RETURNING),
     }
     for const_name, (sim_val, phase_id) in expected.items():
         assert sim_val == int(phase_id), f"{const_name}: mujoco_sim={sim_val} != halo={int(phase_id)}"

@@ -1729,7 +1729,6 @@ class HALOApp(App):
             "SKILL_SUCCEEDED",
             "SKILL_FAILED",
             "SAFETY_REFLEX_TRIGGERED",
-            "TARGET_ACQUIRED",
             "COMMAND_REJECTED",
         }
     )
@@ -1797,7 +1796,16 @@ class HALOApp(App):
                 evt_data = getattr(evt, "data", {}) or {}
                 is_operator_abort = evt_type_name == "SKILL_FAILED" and evt_data.get("reason") == "abort"
                 if self._agent_queue is not None and evt_type_name in self._AGENT_WAKE_EVENTS and not is_operator_abort:
-                    self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type_name}]"))
+                    # Include event detail so the planner LLM can disambiguate
+                    detail_parts = [f"[event: {evt_type_name}"]
+                    if evt_data.get("skill_name"):
+                        detail_parts.append(f" skill={evt_data['skill_name']}")
+                    if evt_data.get("target_handle"):
+                        detail_parts.append(f" target={evt_data['target_handle']}")
+                    if evt_data.get("reason_code"):
+                        detail_parts.append(f" reason={evt_data['reason_code']}")
+                    wake_msg = "".join(detail_parts) + "]"
+                    self._agent_queue.put_nowait(self._with_task_context(wake_msg))
         except asyncio.CancelledError:
             pass
 
@@ -1850,8 +1858,20 @@ class HALOApp(App):
             # Event wake signals (e.g. "[event: COMMAND_REJECTED]\nOperator task: ...")
             # are NOT operator commands — pass them as context only so they don't
             # reset loop detection.  Real operator messages never start with "[".
+            # When batching combines events with a real operator message, extract
+            # the operator part so it's properly framed as a NEW OPERATOR TASK.
             is_event_wake = msg is not None and msg.startswith("[")
-            operator_cmd = None if is_event_wake else msg
+            operator_cmd: str | None = None
+            if is_event_wake and msg is not None:
+                # Check if a real operator message got batched after event lines
+                lines = msg.split("\n")
+                non_event_lines = [
+                    ln for ln in lines if not ln.startswith("[") and not ln.startswith("Operator task (act on it now):")
+                ]
+                if non_event_lines:
+                    operator_cmd = "\n".join(non_event_lines).strip() or None
+            elif not is_event_wake:
+                operator_cmd = msg
             _t0 = _time.monotonic()
             commands = await self._agent.decide(snap, operator_cmd=operator_cmd)  # type: ignore[union-attr]
             inference_ms = int((_time.monotonic() - _t0) * 1000)
@@ -2181,8 +2201,8 @@ def _run_live(args: list[str]) -> None:
             loop = _asyncio.get_running_loop()
             return await loop.run_in_executor(None, sim_client.abort_pick)
 
-        def sim_phase_fn() -> tuple[int, bool]:
-            return video_source.latest_phase_id, video_source.latest_done
+        def sim_phase_fn() -> tuple[int, bool, str | None]:
+            return video_source.latest_phase_id, video_source.latest_done, video_source.latest_error
 
         skill_runner_svc = SkillRunnerService(
             arm_id=arm_id,

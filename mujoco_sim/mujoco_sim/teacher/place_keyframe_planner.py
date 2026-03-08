@@ -50,9 +50,6 @@ DEFAULT_PLACE_OFFSET_X = 0.02
 # Height above the table surface for preplace hover
 DEFAULT_PREPLACE_HEIGHT = 0.08
 
-# Retreat height above the place point
-DEFAULT_RETREAT_HEIGHT = 0.08
-
 
 @dataclass
 class PlaceConfig:
@@ -60,7 +57,6 @@ class PlaceConfig:
 
     place_offset_x: float = DEFAULT_PLACE_OFFSET_X
     preplace_height: float = DEFAULT_PREPLACE_HEIGHT
-    retreat_height: float = DEFAULT_RETREAT_HEIGHT
 
 
 def plan_place_keyframes(
@@ -105,9 +101,8 @@ def plan_place_keyframes(
     preplace_pos = place_pos.copy()
     preplace_pos[2] = place_pos[2] + cfg.preplace_height
 
-    # Retreat: above the place position after releasing
-    retreat_pos = place_pos.copy()
-    retreat_pos[2] = place_pos[2] + cfg.retreat_height
+    # Retreat: retrace to preplace position
+    retreat_pos = preplace_pos.copy()
 
     return _build_place_keyframes(current_pos, current_rot, place_pos, preplace_pos, retreat_pos)
 
@@ -222,8 +217,7 @@ def plan_place_candidates(
         )
         preplace_pos = place_pos.copy()
         preplace_pos[2] = place_pos[2] + cfg.preplace_height
-        retreat_pos = place_pos.copy()
-        retreat_pos[2] = place_pos[2] + cfg.retreat_height
+        retreat_pos = preplace_pos.copy()
         candidates.append(_build_place_keyframes(current_pos, current_rot, place_pos, preplace_pos, retreat_pos))
     elif target_body == "floor":
         # 4x4 grid centered on gripper's current XY
@@ -242,8 +236,7 @@ def plan_place_candidates(
                 )
                 preplace_pos = place_pos.copy()
                 preplace_pos[2] = place_z + cfg.preplace_height
-                retreat_pos = place_pos.copy()
-                retreat_pos[2] = place_z + cfg.retreat_height
+                retreat_pos = preplace_pos.copy()
                 candidates.append(
                     _build_place_keyframes(current_pos, current_rot, place_pos, preplace_pos, retreat_pos)
                 )
@@ -261,8 +254,7 @@ def plan_place_candidates(
             )
             preplace_pos = place_pos.copy()
             preplace_pos[2] = place_z + cfg.preplace_height
-            retreat_pos = place_pos.copy()
-            retreat_pos[2] = place_z + cfg.retreat_height
+            retreat_pos = preplace_pos.copy()
             candidates.append(_build_place_keyframes(current_pos, current_rot, place_pos, preplace_pos, retreat_pos))
 
     return candidates

@@ -39,7 +39,6 @@ _NARRATION_EVENTS = frozenset(
         "SKILL_SUCCEEDED",
         "SKILL_FAILED",
         "SAFETY_REFLEX_TRIGGERED",
-        "TARGET_ACQUIRED",
         "PERCEPTION_FAILURE",
     }
 )
