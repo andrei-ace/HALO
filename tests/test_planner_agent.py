@@ -141,21 +141,19 @@ def test_different_tools_allowed_same_tick() -> None:
 
 
 def test_global_call_cap() -> None:
-    """After MAX_TOOL_CALLS (5) tool calls, further calls are rejected."""
+    """After MAX_TOOL_CALLS (10) tool calls, further calls are rejected."""
     ctx = _make_ctx()
     tools = _tools_by_name(ctx)
-    # TRACK + PICK + TRACK + PLACE + describe_scene = 5 calls (full pick-and-place + 1)
-    tools["start_skill"](skill_name="TRACK", target_handle="obj-0")
-    tools["start_skill"](skill_name="PICK", target_handle="obj-0")
-    tools["start_skill"](skill_name="TRACK", target_handle="tray-1")
-    tools["start_skill"](skill_name="PLACE", target_handle="tray-1")
-    tools["describe_scene"](reason="check")
-    assert len(ctx.commands) == 5
-    assert ctx.total_calls == 5
-    # 6th call should be hard-stopped
+    # 2-object workflow: (TRACK+PICK+TRACK+PLACE) × 2 + describe_scene + spare = 10
+    for i in range(5):
+        tools["start_skill"](skill_name="TRACK", target_handle=f"obj-{i}")
+        tools["start_skill"](skill_name="PICK", target_handle=f"obj-{i}")
+    assert len(ctx.commands) == 10
+    assert ctx.total_calls == 10
+    # 11th call should be hard-stopped
     result = tools["start_skill"](skill_name="TRACK", target_handle="obj-99")
     assert "HARD STOP" in result
-    assert len(ctx.commands) == 5
+    assert len(ctx.commands) == 10
     assert ctx.loop_detected is True
 
 

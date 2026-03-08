@@ -85,6 +85,7 @@ def test_skill_failure_codes_complete():
         "PERCEPTION_LOST",
         "TARGET_MISMATCH",
         "UNSAFE_ABORT",
+        "PLANNER_ABORT",
     }
     assert {c.value for c in SkillFailureCode} == expected
 

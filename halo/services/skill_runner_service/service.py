@@ -201,7 +201,9 @@ class SkillRunnerService:
 
         await self._activate_skill(skill_name, skill_run_id, target_handle, variant, defn, options=options)
 
-    async def abort_skill(self, code: SkillFailureCode = SkillFailureCode.PLANNER_ABORT) -> None:
+    async def abort_skill(
+        self, code: SkillFailureCode = SkillFailureCode.PLANNER_ABORT, *, clear_queue: bool = False
+    ) -> None:
         """Abort the current skill run (idempotent if not active)."""
         if self._active_run is None or not self._active_run.is_active:
             return
@@ -247,8 +249,13 @@ class SkillRunnerService:
         )
         self._active_target_handle = None
 
-        # Auto-activate next from queue
-        await self._activate_next_from_queue()
+        if clear_queue:
+            cleared = self._queue.clear()
+            if cleared:
+                logger.info("abort_skill: cleared %d queued skill(s)", cleared)
+        else:
+            # Auto-activate next from queue
+            await self._activate_next_from_queue()
 
     async def tick(self) -> PhaseId | None:
         """One runner tick. Dispatches to ACT, sim, or track mode."""
@@ -513,10 +520,15 @@ class SkillRunnerService:
                         ),
                     },
                 )
+                # Clear queue on failure — stale follow-up commands are invalid
+                cleared = self._queue.clear()
+                if cleared:
+                    logger.info("skill failed: cleared %d queued skill(s)", cleared)
             self._active_target_handle = None
 
-            # Auto-activate next from queue
-            await self._activate_next_from_queue()
+            if self._active_run and self._active_run.outcome == SkillOutcomeState.SUCCESS:
+                # Auto-activate next from queue only on success
+                await self._activate_next_from_queue()
 
     async def _tick_act(self) -> PhaseId | None:
         if self._active_run is None or not self._active_run.is_active:

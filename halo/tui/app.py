@@ -97,13 +97,6 @@ _DATA = dict(
         ("14:31:50", "Retry the grasp once."),
         ("14:32:05", "Use cube-2 instead, then continue with the bin."),
     ],
-    # Row-major order: [top-left, top-right, bottom-left, bottom-right]
-    suggestions=[
-        "Pause after this step.",
-        "Back off 5 cm and try again.",
-        "Retry the grasp once.",
-        "Stop and describe the scene.",
-    ],
     services=[
         ("TargetPerception", "TRACKING", "bright_green"),
         ("SkillRunner", "RUNNING", "bright_green"),
@@ -156,7 +149,6 @@ _EMPTY_DATA = dict(
         ("J6", "gripper", "NC", None, None),
     ],
     prompt_history=[],
-    suggestions=_DATA["suggestions"],  # keep as useful operator shortcuts
     services=[
         ("TargetPerception", "—", "#9e9e9e"),
         ("SkillRunner", "—", "#9e9e9e"),
@@ -175,6 +167,7 @@ _LEGEND = [
     ("R", "Show full planner reasoning"),
     ("Y", "Yank — copy last reasoning to clipboard instantly"),
     ("F", "Toggle OpenCV camera feed viewer (live mode only)"),
+    ("M", "Toggle microphone mute (live agent only)"),
     ("Ctrl+A", "Emergency abort — blows the safety fuse"),
     ("Ctrl+R", "Reset fuse — re-enable FSM / skill execution"),
     ("Ctrl+Q", "Quit"),
@@ -220,9 +213,18 @@ def _format_event(evt: object) -> str:
     run_id = data.get("skill_run_id", "")
     reason = data.get("reason", "")
     cmd_type = data.get("command_type", "")
-    if name == "SKILL_STARTED" and run_id:
-        return f"{name} {run_id}"
-    if name in ("SKILL_FAILED", "SAFETY_REFLEX_TRIGGERED") and reason:
+    skill_name = data.get("skill_name", "")
+    if name == "SKILL_STARTED":
+        return f"{name} {skill_name or run_id}"
+    if name == "SKILL_SUCCEEDED":
+        return f"{name} {skill_name or run_id}"
+    if name == "SKILL_FAILED":
+        if reason == "abort":
+            return f"SKILL_ABORTED {skill_name} (operator requested stop)"
+        failure_code = data.get("failure_code", "")
+        detail = reason or failure_code
+        return f"SKILL_FAILED {skill_name} reason={detail}" if detail else f"SKILL_FAILED {skill_name}"
+    if name == "SAFETY_REFLEX_TRIGGERED" and reason:
         return f"{name} {reason}"
     if name in ("COMMAND_ACCEPTED", "COMMAND_REJECTED") and cmd_type:
         return f"{name} {cmd_type}"
@@ -621,17 +623,6 @@ class TalkPanel(Container):
                 t.append(msg, style="#b0bcd0")
                 yield Static(t, classes="history-item")
         yield Input(placeholder="Type a command…", id="planner-input")
-        sugg = self._data["suggestions"]
-        yield Horizontal(
-            Button(f"▶ {sugg[0]}", name=sugg[0], classes="suggestion"),
-            Button(f"▶ {sugg[1]}", name=sugg[1], classes="suggestion"),
-            id="sugg-row-1",
-        )
-        yield Horizontal(
-            Button(f"▶ {sugg[2]}", name=sugg[2], classes="suggestion"),
-            Button(f"▶ {sugg[3]}", name=sugg[3], classes="suggestion"),
-            id="sugg-row-2",
-        )
 
 
 class SystemPanel(Container):
@@ -725,15 +716,27 @@ class AudioPanel(Container):
         speaker_status: str,
         transcript_in: str = "",
         transcript_out: str = "",
+        mic_level: float = 0.0,
+        speaker_level: float = 0.0,
     ) -> None:
         mic_text = Text()
         mic_text.append("Mic: ", style="bold white")
         mic_text.append(mic_status, style="bright_green" if "Listening" in mic_status else "#9e9e9e")
+        if mic_status == "Listening":
+            bars = int(mic_level * 20)
+            mic_text.append("  ")
+            mic_text.append("█" * bars, style="bright_green")
+            mic_text.append("░" * (20 - bars), style="#3a4060")
         self.query_one("#audio-mic", Static).update(mic_text)
 
         spk_text = Text()
         spk_text.append("Speaker: ", style="bold white")
         spk_text.append(speaker_status, style="bright_green" if "Speaking" in speaker_status else "#9e9e9e")
+        if speaker_level > 0.001:
+            bars = int(speaker_level * 20)
+            spk_text.append("  ")
+            spk_text.append("█" * bars, style="#66bb6a")
+            spk_text.append("░" * (20 - bars), style="#3a4060")
         self.query_one("#audio-speaker", Static).update(spk_text)
 
         if transcript_in:
@@ -785,6 +788,7 @@ class HintBar(Static):
             ("T", "type"),
             ("Enter", "send"),
             ("Esc", "cancel"),
+            ("M", "mic"),
             ("Ctrl+A", "abort"),
             ("Ctrl+R", "reset"),
             ("Ctrl+Q", "quit"),
@@ -950,26 +954,6 @@ class HALOApp(App):
         border: tall #3a4060;
     }
 
-    #sugg-row-1, #sugg-row-2 {
-        height: 1;
-        margin: 0;
-    }
-
-    .suggestion {
-        width: 1fr;
-        height: 1;
-        min-width: 0;
-        background: transparent;
-        color: #4fc3f7;
-        border: none;
-        text-align: left;
-        padding: 0 1;
-    }
-
-    .suggestion:hover {
-        background: #1e2a40;
-    }
-
     /* ── Panic panel ── */
     #abort-row {
         align: center middle;
@@ -1120,6 +1104,8 @@ class HALOApp(App):
         video_source: object | None = None,
         live_backend: object | None = None,
         cognitive_stack: object | None = None,
+        live_agent: object | None = None,
+        live_agent_audio: object | None = None,
     ) -> None:
         super().__init__()
         self._runtime = runtime
@@ -1131,6 +1117,8 @@ class HALOApp(App):
         self._video_source = video_source
         self._live_backend = live_backend
         self._cognitive_stack = cognitive_stack
+        self._live_agent = live_agent  # LiveAgentClient | None
+        self._live_agent_audio = live_agent_audio  # AudioComponents | None
         self._panel_data = {**_EMPTY_DATA, "arm_id": arm_id} if runtime is not None else _DATA
         # Accept an externally-created logger (shared with the VLM fn) or
         # create one automatically when running live.
@@ -1187,6 +1175,10 @@ class HALOApp(App):
         # Live backend: voice command polling + audio panel updates
         if self._live_backend is not None:
             self.run_worker(self._poll_voice_commands(), name="voice_cmd_poll")
+            self.set_interval(0.5, self._poll_audio_panel)
+        # Live agent: connect WS + start audio capture/playback
+        if self._live_agent is not None:
+            self.run_worker(self._start_live_agent(), name="live_agent_start")
             self.set_interval(0.5, self._poll_audio_panel)
 
     async def _startup_cloud_and_perception(self) -> None:
@@ -1246,6 +1238,8 @@ class HALOApp(App):
                 await self._live_backend.aclose()  # type: ignore[union-attr]
             except Exception:
                 pass
+        if self._live_agent is not None:
+            await self._stop_live_agent()
         if self._run_logger:
             self._run_logger.close()
         if self._runtime and self._event_queue is not None:
@@ -1262,7 +1256,7 @@ class HALOApp(App):
                         yield TargetPerceptionPanel(data=d, tracker_name=self._tracker_name, id="perception-panel")
                     yield TalkPanel(data=d, id="talk-panel")
                     audio_panel = AudioPanel(id="audio-panel")
-                    if self._live_backend is not None:
+                    if self._live_backend is not None or self._live_agent is not None:
                         audio_panel.add_class("visible")
                     yield audio_panel
                 with Vertical(id="right-col"):
@@ -1282,11 +1276,6 @@ class HALOApp(App):
             self.action_emergency_abort()
         elif btn.id == "reset-btn":
             self.action_reset_fuse()
-        elif "suggestion" in btn.classes and btn.name:
-            inp = self.query_one("#planner-input", Input)
-            inp.value = btn.name
-            inp.focus()
-            inp.cursor_position = len(inp.value)
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "planner-input":
@@ -1303,6 +1292,13 @@ class HALOApp(App):
         self._abort_cooldown = now
         self._fuse_blown = True
         self._pending_commands.clear()  # drop any in-flight commands accepted before abort
+        self._last_operator_msg = None
+        if self._agent_queue is not None:
+            while not self._agent_queue.empty():
+                try:
+                    self._agent_queue.get_nowait()
+                except Exception:
+                    break
         self._update_fuse_display()
         self.notify(
             "FUSE BLOWN — all execution halted. Ctrl+R to reset.",
@@ -1419,13 +1415,21 @@ class HALOApp(App):
         self.push_screen(LegendScreen(), callback=lambda _: self.set_focus(None))
 
     def action_toggle_mic(self) -> None:
+        # Live agent audio path
+        if self._live_agent_audio is not None:
+            audio = self._live_agent_audio
+            if audio.available and audio.capture is not None:  # type: ignore[union-attr]
+                audio.capture.muted = not audio.capture.muted  # type: ignore[union-attr]
+                status = "muted" if audio.capture.muted else "listening"  # type: ignore[union-attr]
+                self.notify(f"Mic {status}", timeout=2)
+                return
+        # Legacy live backend audio path
         if self._live_backend is None:
-            self.notify("Mic toggle requires live backend", severity="warning", timeout=3)
+            self.notify("Mic toggle requires live agent or live backend", severity="warning", timeout=3)
             return
         session_state = getattr(self._live_backend, "session_state", None)
         if session_state is None:
             return
-        # Find the audio capture on the session
         session = getattr(self._live_backend, "_session", None)
         if session is None:
             return
@@ -1505,17 +1509,53 @@ class HALOApp(App):
             pass
 
     async def _poll_audio_panel(self) -> None:
-        """Refresh the AudioPanel from live backend session state."""
+        """Refresh the AudioPanel from live agent or live backend session state."""
+        try:
+            panel = self.query_one("#audio-panel", AudioPanel)
+        except Exception:
+            return
+
+        # Live agent path
+        if self._live_agent is not None:
+            client_state = self._live_agent.state  # type: ignore[union-attr]
+            audio = self._live_agent_audio
+            capture = audio.capture if audio and audio.available else None  # type: ignore[union-attr]
+            playback = audio.playback if audio and audio.available else None  # type: ignore[union-attr]
+
+            if not client_state.connected:
+                mic_status = "Disconnected"
+            elif capture is not None:
+                mic_status = "Muted" if capture.muted else "Listening"
+            else:
+                mic_status = "Text-only"
+
+            if not client_state.connected:
+                speaker_status = "Disconnected"
+            elif playback is not None and playback.state.output_level > 0.01:
+                speaker_status = "Speaking"
+            else:
+                speaker_status = "Silent"
+
+            mic_level = capture.state.input_level if capture is not None else 0.0
+            spk_level = playback.state.output_level if playback is not None else 0.0
+
+            panel.refresh_live(
+                mic_status=mic_status,
+                speaker_status=speaker_status,
+                transcript_in=client_state.last_transcription_in,
+                transcript_out=client_state.last_transcription_out,
+                mic_level=mic_level,
+                speaker_level=spk_level,
+            )
+
+            return
+
+        # Legacy live backend path
         if self._live_backend is None:
             return
         session_state = getattr(self._live_backend, "session_state", None)
         if session_state is None:
             return
-        try:
-            panel = self.query_one("#audio-panel", AudioPanel)
-        except Exception:
-            return
-        # Determine mic status
         session = getattr(self._live_backend, "_session", None)
         capture = getattr(session, "_audio_capture", None) if session else None
         if capture is not None and hasattr(capture, "muted"):
@@ -1536,6 +1576,135 @@ class HALOApp(App):
             transcript_out=getattr(session_state, "last_transcription_out", ""),
         )
 
+    async def _handle_live_tool_call(self, call_id: str, name: str, args: dict) -> None:
+        """Execute a proxy tool call from the Live Agent and send the result back."""
+        import logging as _log
+
+        _logger = _log.getLogger(__name__)
+        try:
+            if name == "get_robot_state":
+                if self._runtime is not None:
+                    from halo.contracts.serde import snapshot_to_text
+                    from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
+
+                    snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
+                    result = snapshot_to_text(snapshot_to_dict(snap))
+                else:
+                    result = "Runtime not available."
+
+            elif name == "describe_scene":
+                if self._runtime is not None:
+                    import time as _time
+                    import uuid as _uuid
+
+                    from halo.contracts.commands import CommandEnvelope, DescribeScenePayload
+                    from halo.contracts.enums import CommandType
+
+                    reason = args.get("reason", "")
+                    cmd = CommandEnvelope(
+                        command_id=str(_uuid.uuid4()),
+                        arm_id=self._arm_id,
+                        issued_at_ms=int(_time.time() * 1000),
+                        type=CommandType.DESCRIBE_SCENE,
+                        payload=DescribeScenePayload(reason=reason),
+                        precondition_snapshot_id=None,
+                    )
+                    cmd = self._stamp_lease(cmd)  # type: ignore[assignment]
+                    ack = await self._runtime.submit_command(cmd)
+                    result = f"Scene analysis requested (status={ack.status.value})."
+                else:
+                    result = "Runtime not available."
+
+            elif name == "submit_user_intent":
+                intent = args.get("intent", "")
+                if self._agent_queue is not None and intent:
+                    self._last_operator_msg = intent
+                    if hasattr(self._agent, "reset_loop_state"):
+                        self._agent.reset_loop_state()
+                    self._agent_queue.put_nowait(intent)
+                    result = f"Intent forwarded to planner: {intent}"
+                else:
+                    result = "Planner agent not available."
+
+            elif name == "abort":
+                if self._runtime is not None:
+                    snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
+                    if snap.skill is not None:
+                        import time as _time
+                        import uuid as _uuid
+
+                        from halo.contracts.commands import AbortSkillPayload, CommandEnvelope
+                        from halo.contracts.enums import CommandType
+
+                        cmd = CommandEnvelope(
+                            command_id=str(_uuid.uuid4()),
+                            arm_id=self._arm_id,
+                            issued_at_ms=int(_time.time() * 1000),
+                            type=CommandType.ABORT_SKILL,
+                            payload=AbortSkillPayload(
+                                skill_run_id=snap.skill.skill_run_id,
+                                reason="operator_voice_abort",
+                            ),
+                        )
+                        cmd = self._stamp_lease(cmd)  # type: ignore[assignment]
+                        if self._skill_runner_svc is not None:
+                            self._skill_runner_svc._queue.clear()  # type: ignore[union-attr]
+                        # Clear planner state so it doesn't re-plan the aborted task
+                        self._last_operator_msg = None
+                        if self._agent_queue is not None:
+                            while not self._agent_queue.empty():
+                                try:
+                                    self._agent_queue.get_nowait()
+                                except Exception:
+                                    break
+                        ack = await self._runtime.submit_command(cmd)
+                        result = f"Aborted current skill and cleared queue (status={ack.status.value})."
+                    else:
+                        result = "No active skill to abort."
+                else:
+                    result = "Runtime not available."
+            else:
+                result = f"Unknown tool: {name}"
+
+            _logger.info("Live agent tool %s → %s", name, result[:120])
+        except Exception:
+            _logger.exception("Live agent tool %s failed", name)
+            result = f"Tool {name} failed with an error."
+
+        await self._live_agent.send_tool_result(call_id, result)  # type: ignore[union-attr]
+
+    async def _start_live_agent(self) -> None:
+        """Connect LiveAgentClient and start audio capture/playback."""
+        try:
+            # Wire proxy-tool handler
+            self._live_agent._on_tool_call = self._handle_live_tool_call  # type: ignore[union-attr]
+            await self._live_agent.connect()  # type: ignore[union-attr]
+            audio = self._live_agent_audio
+            if audio and audio.available:  # type: ignore[union-attr]
+                if audio.capture:  # type: ignore[union-attr]
+                    audio.capture.muted = True  # start muted
+                    audio.capture.start()  # type: ignore[union-attr]
+                if audio.playback:  # type: ignore[union-attr]
+                    audio.playback.start()  # type: ignore[union-attr]
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception("Failed to start live agent")
+
+    async def _stop_live_agent(self) -> None:
+        """Stop audio and disconnect LiveAgentClient."""
+        audio = self._live_agent_audio
+        if audio and audio.available:  # type: ignore[union-attr]
+            if audio.capture:  # type: ignore[union-attr]
+                audio.capture.stop()  # type: ignore[union-attr]
+            if audio.playback:  # type: ignore[union-attr]
+                audio.playback.stop()  # type: ignore[union-attr]
+        if self._live_agent is not None:
+            try:
+                await self._live_agent.aclose()  # type: ignore[union-attr]
+            except Exception:
+                pass
+
     def _with_task_context(self, system_msg: str) -> str:
         """Append the last operator instruction so the agent keeps task context."""
         if self._last_operator_msg:
@@ -1549,6 +1718,17 @@ class HALOApp(App):
             "SAFETY_REFLEX_TRIGGERED",
             "PERCEPTION_FAILURE",
             "SCENE_DESCRIBED",
+            "TARGET_ACQUIRED",
+            "COMMAND_REJECTED",
+        }
+    )
+
+    _LIVE_AGENT_NARRATION_EVENTS = frozenset(
+        {
+            "SKILL_STARTED",
+            "SKILL_SUCCEEDED",
+            "SKILL_FAILED",
+            "SAFETY_REFLEX_TRIGGERED",
             "TARGET_ACQUIRED",
             "COMMAND_REJECTED",
         }
@@ -1596,8 +1776,27 @@ class HALOApp(App):
                         await events_panel.append_event(evt)
                     except Exception:
                         pass  # DOM error must not kill the listener
+                # Forward notable events to Live Agent for narration
+                if self._live_agent is not None and evt_type_name in self._LIVE_AGENT_NARRATION_EVENTS:
+                    summary = _format_event(evt)
+                    asyncio.create_task(
+                        self._live_agent.send_event({"type": evt_type_name, "summary": summary})  # type: ignore[union-attr]
+                    )
+                # Forward full scene description to Live Agent
+                if self._live_agent is not None and evt_type_name == "SCENE_DESCRIBED":
+                    evt_data = getattr(evt, "data", {}) or {}
+                    scene_text = evt_data.get("scene", "")
+                    if scene_text:
+                        asyncio.create_task(
+                            self._live_agent.send_text(  # type: ignore[union-attr]
+                                f"[Scene description] {scene_text}"
+                            )
+                        )
                 # Wake the agent — it reads event details from the snapshot
-                if self._agent_queue is not None and evt_type_name in self._AGENT_WAKE_EVENTS:
+                # Skip waking on operator-initiated aborts to prevent replanning
+                evt_data = getattr(evt, "data", {}) or {}
+                is_operator_abort = evt_type_name == "SKILL_FAILED" and evt_data.get("reason") == "abort"
+                if self._agent_queue is not None and evt_type_name in self._AGENT_WAKE_EVENTS and not is_operator_abort:
                     self._agent_queue.put_nowait(self._with_task_context(f"[event: {evt_type_name}]"))
         except asyncio.CancelledError:
             pass
@@ -1714,6 +1913,18 @@ class HALOApp(App):
             thinking_widget.update(result_text)
             history.scroll_end(animate=False)
 
+            # Stream planner output to Live Agent so it can narrate
+            if self._live_agent is not None and (accepted or rejected):
+                parts = []
+                if accepted:
+                    parts.append("Planner issued: " + ", ".join(_format_cmd(c) for c, _ in accepted))
+                if rejected:
+                    parts.append("Rejected: " + ", ".join(f"{_format_cmd(c)} ({a.reason})" for c, a in rejected))
+                if reasoning:
+                    parts.append(f"Reasoning: {reasoning[:200]}")
+                planner_summary = "[Planner decision] " + ". ".join(parts)
+                asyncio.create_task(self._live_agent.send_text(planner_summary))  # type: ignore[union-attr]
+
         except Exception as exc:
             if self._run_logger:
                 self._run_logger.log_interaction(
@@ -1814,6 +2025,9 @@ class HALOApp(App):
             ),
         )
         cmd = self._stamp_lease(cmd)
+        # Clear skill queue directly — emergency abort stops everything
+        if self._skill_runner_svc is not None:
+            self._skill_runner_svc._queue.clear()  # type: ignore[union-attr]
         ack = await self._runtime.submit_command(cmd)  # type: ignore[union-attr]
         self.notify(
             f"ABORT_SKILL → {ack.status.value}",
@@ -1871,6 +2085,8 @@ def _run_live(args: list[str]) -> None:
                 raise SystemExit(msg)
         elif arg == "--cloud-url" and i + 1 < len(args):
             cloud_url = args[i + 1]
+
+    live_agent_enabled = "--live-agent" in args
 
     run_logger = RunLogger(_RUNS_DIR, arm_id)
 
@@ -1978,6 +2194,23 @@ def _run_live(args: list[str]) -> None:
             sim_phase_fn=sim_phase_fn,
         )
 
+    # Live Agent + audio
+    live_agent = None
+    live_agent_audio = None
+    if live_agent_enabled and cloud_url:
+        from halo.cognitive.audio_io import make_audio_components
+        from halo.cognitive.live_agent_client import LiveAgentClient
+
+        live_agent = LiveAgentClient(url=cloud_url, arm_id=arm_id)
+        live_agent_audio = make_audio_components(on_audio=live_agent.send_audio)
+        if live_agent_audio.available and live_agent_audio.playback:
+            live_agent.set_audio_callbacks(
+                on_audio_out=live_agent_audio.playback.enqueue,
+                on_interrupt=live_agent_audio.playback.clear,
+            )
+    elif live_agent_enabled and not cloud_url:
+        print("WARNING: --live-agent requires --cloud-url; live agent disabled")
+
     # Redirect all logging to the run log directory so warnings/errors
     # don't corrupt the Textual TUI display (which owns stdout/stderr).
     import logging as _logging
@@ -2015,6 +2248,8 @@ def _run_live(args: list[str]) -> None:
         video_source=video_source,
         live_backend=live_backend,
         cognitive_stack=cognitive_stack,
+        live_agent=live_agent,
+        live_agent_audio=live_agent_audio,
     ).run()
 
     # After TUI exits, suppress all output — stray log messages from asyncio

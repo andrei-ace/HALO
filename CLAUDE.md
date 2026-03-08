@@ -10,12 +10,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-uv sync --extra dev --extra sim       # install deps + MuJoCo (first time or after pyproject.toml changes)
+uv sync --extra dev                   # install deps + MuJoCo (first time or after pyproject.toml changes)
 uv run python -m pytest               # run all unit tests
 uv run python -m pytest tests/test_contracts.py   # run a single test file
 uv run python -m pytest -k test_snapshot_ids_increment  # run a single test by name
 
-make install           # install deps + MuJoCo (uv sync --extra dev --extra sim)
+make install           # install deps + MuJoCo (uv sync --extra dev)
 make ruff              # lint + format (ruff check --fix + ruff format); run before every commit
 make test-sim          # run mujoco_sim tests (requires make install-sim)
 make tui-mock          # launch TUI in mock mode (no Ollama needed)

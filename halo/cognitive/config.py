@@ -62,6 +62,15 @@ class CompactionConfig:
 
 
 @dataclass(frozen=True)
+class LiveAgentConfig:
+    """Configuration for the Live Agent conversational layer."""
+
+    enabled: bool = False
+    voice_name: str = "Kore"
+    model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+
+
+@dataclass(frozen=True)
 class CognitiveConfig:
     active: BackendType = BackendType.LOCAL
     local: LocalConfig = field(default_factory=LocalConfig)

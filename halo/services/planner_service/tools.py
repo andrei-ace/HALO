@@ -12,7 +12,7 @@ from halo.contracts.commands import (
 )
 from halo.contracts.enums import CommandType, SkillName
 
-MAX_TOOL_CALLS = 5
+MAX_TOOL_CALLS = 10
 
 
 @dataclass
@@ -36,9 +36,9 @@ def build_tools(ctx: AgentContext) -> list:
         different arguments is allowed (e.g. start_skill(TRACK, X) then
         start_skill(PICK, X)).
 
-        A global cap of 5 total tool calls per tick keeps the agent focused
-        on a single task per tick (TRACK + PICK + TRACK + PLACE = 4, plus 1
-        spare for describe_scene).
+        A global cap of 10 total tool calls per tick allows multi-object
+        workflows (2 objects × TRACK+PICK+TRACK+PLACE = 8, plus spare for
+        describe_scene).
         """
         ctx.total_calls += 1
         if ctx.total_calls > MAX_TOOL_CALLS:

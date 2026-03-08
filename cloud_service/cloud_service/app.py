@@ -5,6 +5,7 @@ Endpoints:
     POST /vlm/scene      — VLM scene analysis (JPEG image → VlmScene JSON)
     GET  /state/{arm_id} — session readiness and cursor (debug)
     GET  /health         — health check
+    WS   /ws/live/{arm_id} — Live Agent bidirectional audio+text streaming
 """
 
 from __future__ import annotations
@@ -17,10 +18,12 @@ from fastapi import Depends, FastAPI, File, Form, UploadFile
 from halo.contracts.serde import command_envelope_to_dict, message_record_to_dict, snapshot_from_dict, vlm_scene_to_dict
 
 from cloud_service.deps import get_session_manager, get_vlm_fn, lifespan, verify_api_key
+from cloud_service.ws_handler import router as ws_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="HALO Cloud Cognitive Service", lifespan=lifespan)
+app.include_router(ws_router)
 
 
 @app.get("/health")
@@ -32,7 +35,10 @@ async def health(session_mgr=Depends(get_session_manager)) -> dict:
 
 
 @app.post("/decide", dependencies=[Depends(verify_api_key)])
-async def decide(body: dict, session_mgr=Depends(get_session_manager)) -> dict:
+async def decide(
+    body: dict,
+    session_mgr=Depends(get_session_manager),
+) -> dict:
     snapshot = snapshot_from_dict(body["snapshot"])
     operator_cmd = body.get("operator_cmd")
     epoch = body.get("epoch")

@@ -1,7 +1,7 @@
 .PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-cloud-service sim-server ruff help
 
 install:
-	uv sync --extra dev --extra sim
+	uv sync --extra dev
 
 install-sim: install
 
@@ -45,7 +45,8 @@ tui-live-cloud:
 	uv run python -m halo.tui.app --live \
 		--arm $(ARM_ID) \
 		--cloud-url $(HALO_CLOUD_URL) \
-		--source mujoco
+		--source mujoco \
+		--live-agent
 
 CLOUD_PLANNER_MODEL    ?= gemini-3.1-flash-lite-preview
 CLOUD_VLM_MODEL        ?= gemini-3.1-flash-lite-preview
@@ -56,7 +57,8 @@ tui-live-cloud-local:
 	uv run python -m halo.tui.app --live \
 		--arm $(ARM_ID) \
 		--cloud-url http://localhost:8080 \
-		--source mujoco
+		--source mujoco \
+		--live-agent
 
 test-component:
 	uv run pytest tests/component/ -v
@@ -138,11 +140,11 @@ test-integration:
 		2>&1 | tee $(RUN_DIR)/output.log
 
 help:
-	@echo "install            install deps + MuJoCo (uv sync --extra dev --extra sim)"
+	@echo "install            install deps + MuJoCo (uv sync --extra dev)"
 	@echo "install-sim        alias for install"
 	@echo "generate-episodes        generate teacher episodes w/ VLM tracking (requires Ollama)"
 	@echo "generate-episodes-video  same + save mp4 preview per episode (requires opencv)"
-	@echo "test-sim           run mujoco_sim tests (requires --extra sim)"
+	@echo "test-sim           run mujoco_sim tests"
 	@echo "test               run all unit tests"
 	@echo "test-unit          run unit tests (excluding component/system/e2e)"
 	@echo "test-v             run all tests (verbose)"
@@ -157,7 +159,7 @@ help:
 	@echo "run-headless-mock  run headless HALO (mock mode)"
 	@echo "run-headless-live  run headless HALO (live, requires Ollama)"
 	@echo "tui-mock           launch the HALO terminal dashboard (mock mode)"
-	@echo "sim-server         start the MuJoCo sim ZMQ server (requires --extra sim)"
+	@echo "sim-server         start the MuJoCo sim ZMQ server"
 	@echo "visualize-ik       render IK-solved poses as PNGs (IK_SEED=7 IK_OUT_DIR=data/ik_poses)"
 	@echo "tui-live           launch TUI with local Ollama + MuJoCo sim"
 	@echo "tui-live-cloud     launch TUI via cloud service HTTP (set HALO_CLOUD_URL for remote)"
