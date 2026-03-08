@@ -31,7 +31,7 @@
     },
     "SkillFailureCode": {
       "type": "string",
-      "enum": ["TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "PERCEPTION_LOST", "TARGET_MISMATCH", "UNSAFE_ABORT"]
+      "enum": ["TIMEOUT", "NO_PROGRESS", "NO_GRASP", "DROP_DETECTED", "PLACE_MISS", "PERCEPTION_LOST", "TARGET_MISMATCH", "UNSAFE_ABORT", "PLANNER_ABORT"]
     },
     "SafetyReflexReason": {
       "type": "string",

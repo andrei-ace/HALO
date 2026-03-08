@@ -45,7 +45,7 @@
     </body>
 
     <!-- Overhead scene camera for VLM / observation — opposite robot base, 45° down, avoids arm occlusion -->
-    <camera name="scene_cam" pos="0.50 -0.18 0.66" fovy="45" xyaxes="0.41 0.91 0 -0.57 0.26 0.78" mode="fixed"/>
+    <camera name="scene_cam" pos="0.55 -0.32 0.82" fovy="55" xyaxes="0.41 0.91 0 -0.57 0.26 0.78" mode="fixed"/>
 
     <!-- Pick target: green cube with freejoint, sits on table top (table top at z=0.37) -->
     <!-- Keep cubes farther apart in Y to reduce tracker cross-target interference. -->

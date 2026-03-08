@@ -151,7 +151,7 @@ class SkillRunnerService:
                     "skill_run_id": skill_run_id,
                     "skill_name": skill_name,
                     "reason": "unsupported_skill",
-                    "failure_code": SkillFailureCode.UNSAFE_ABORT.value,
+                    "failure_code": SkillFailureCode.PLANNER_ABORT.value,
                 },
             )
             # If a skill is already active, do not clobber it.
@@ -169,7 +169,7 @@ class SkillRunnerService:
                 self._arm_id,
                 OutcomeInfo(
                     state=SkillOutcomeState.FAILURE,
-                    reason_code=SkillFailureCode.UNSAFE_ABORT,
+                    reason_code=SkillFailureCode.PLANNER_ABORT,
                     needs_verify=False,
                 ),
             )
@@ -194,14 +194,14 @@ class SkillRunnerService:
                         "skill_run_id": skill_run_id,
                         "skill_name": skill_name,
                         "reason": "queue_full",
-                        "failure_code": SkillFailureCode.UNSAFE_ABORT.value,
+                        "failure_code": SkillFailureCode.PLANNER_ABORT.value,
                     },
                 )
             return
 
         await self._activate_skill(skill_name, skill_run_id, target_handle, variant, defn, options=options)
 
-    async def abort_skill(self) -> None:
+    async def abort_skill(self, code: SkillFailureCode = SkillFailureCode.PLANNER_ABORT) -> None:
         """Abort the current skill run (idempotent if not active)."""
         if self._active_run is None or not self._active_run.is_active:
             return
@@ -215,7 +215,7 @@ class SkillRunnerService:
 
         now_ms = int(time.monotonic() * 1000)
         old_phase = self._active_run.phase_id
-        self._engine.abort(self._active_run, now_ms)
+        self._engine.abort(self._active_run, now_ms, code)
 
         await self._publish(EventType.PHASE_EXIT, {"phase_id": int(old_phase)})
 
@@ -242,7 +242,7 @@ class SkillRunnerService:
                 "skill_run_id": self._skill_run_id,
                 "skill_name": self._skill_name,
                 "reason": "abort",
-                "failure_code": "UNSAFE_ABORT",
+                "failure_code": self._active_run.failure_code.value,
             },
         )
         self._active_target_handle = None

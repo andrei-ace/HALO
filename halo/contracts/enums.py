@@ -90,6 +90,7 @@ class SkillFailureCode(StrEnum):
     PERCEPTION_LOST = "PERCEPTION_LOST"
     TARGET_MISMATCH = "TARGET_MISMATCH"
     UNSAFE_ABORT = "UNSAFE_ABORT"
+    PLANNER_ABORT = "PLANNER_ABORT"
 
 
 class SafetyReflexReason(StrEnum):

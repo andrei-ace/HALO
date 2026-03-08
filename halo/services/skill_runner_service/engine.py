@@ -92,12 +92,12 @@ class FsmEngine:
             return None
         return self._transition(run, now_ms, target_node, trigger="sync_phase")
 
-    def abort(self, run: SkillRun, now_ms: int) -> None:
+    def abort(self, run: SkillRun, now_ms: int, code: SkillFailureCode = SkillFailureCode.UNSAFE_ABORT) -> None:
         if run.current_node in self._graph.terminal_nodes and not run.is_active:
             return
         old_phase = run.phase_id
         run.node_statuses[run.current_node] = NodeStatus.FAILED
-        run.failure_code = SkillFailureCode.UNSAFE_ABORT
+        run.failure_code = code
         run.outcome = SkillOutcomeState.FAILURE
         # Move to DONE
         done_node = self._find_node_by_phase(PhaseId.DONE) or "DONE"
