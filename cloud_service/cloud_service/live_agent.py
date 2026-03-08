@@ -145,7 +145,6 @@ class LiveAgentSession:
         self._on_text_out: Callable[[str], None] | None = None
         self._on_transcription_in: Callable[[str], None] | None = None
         self._on_transcription_out: Callable[[str], None] | None = None
-        self._on_interrupted: Callable[[], None] | None = None
         self._on_tool_call: Callable[[str, str, dict], None] | None = None
 
         # Proxy-tool infrastructure
@@ -168,7 +167,6 @@ class LiveAgentSession:
         on_text_out: Callable[[str], None] | None = None,
         on_transcription_in: Callable[[str], None] | None = None,
         on_transcription_out: Callable[[str], None] | None = None,
-        on_interrupted: Callable[[], None] | None = None,
         on_tool_call: Callable[[str, str, dict], None] | None = None,
     ) -> None:
         """Register callbacks for outbound data (used by WS handler)."""
@@ -176,7 +174,6 @@ class LiveAgentSession:
         self._on_text_out = on_text_out
         self._on_transcription_in = on_transcription_in
         self._on_transcription_out = on_transcription_out
-        self._on_interrupted = on_interrupted
         self._on_tool_call = on_tool_call
 
     def resolve_tool_call(self, call_id: str, result: str) -> None:
@@ -386,14 +383,9 @@ class LiveAgentSession:
 
     def _handle_event(self, event) -> None:
         """Process a single ADK Event from the live stream."""
-        # Handle interruption (barge-in: user spoke while model was outputting)
-        # Only fire when model is actively speaking to avoid spurious interrupts
-        # from Gemini's auto-activity-detection (ambient noise, etc.)
+        # Log barge-in (server-side only — no callback to client)
         if event.interrupted:
             logger.info("Barge-in detected — interrupting audio output")
-            self._state.turn_active = False
-            if self._on_interrupted:
-                self._on_interrupted()
 
         # Handle content output (audio + text)
         if event.content and event.content.parts:

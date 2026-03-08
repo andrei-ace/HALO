@@ -214,25 +214,6 @@ class TestLiveAgentSession:
         session = LiveAgentSession(arm_id="arm0")
         session.on_audio_chunk(b"\x00" * 100)
 
-    def test_interrupt_fires_callback(self):
-        """event.interrupted should fire the on_interrupted callback."""
-        from cloud_service.live_agent import LiveAgentSession
-
-        session = LiveAgentSession(arm_id="arm0")
-        interrupted = []
-        session.set_callbacks(on_interrupted=lambda: interrupted.append(True))
-
-        event = MagicMock()
-        event.interrupted = True
-        event.content = None
-        event.input_transcription = None
-        event.output_transcription = None
-        event.turn_complete = False
-
-        session._handle_event(event)
-        assert interrupted == [True]
-        assert session._state.turn_active is False
-
     def test_audio_output_sets_turn_active(self):
         """Receiving audio content should set turn_active to True."""
         from cloud_service.live_agent import LiveAgentSession
