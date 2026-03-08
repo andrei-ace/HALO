@@ -14,9 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import uuid
 import warnings
+from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Callable
 
@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 _APP_NAME = "halo-live_agent"
 _USER_ID = "operator"
 _MAX_RECONNECT_DELAY_S = 30.0
-_STATUS_THROTTLE_S = 2.0
 _TOOL_TIMEOUT_S = 30.0
+_MONITOR_QUEUE_SIZE = 64
 
 
 class LiveAgentState:
@@ -67,11 +67,6 @@ def _load_system_prompt(prompts_dir: Path) -> str:
 # Docstrings are used by Gemini for function-calling schema generation.
 
 
-async def get_robot_state() -> str:
-    """Get the current robot status including mode, skill, phase, target, and safety state."""
-    return ""
-
-
 async def describe_scene(reason: str = "") -> str:
     """Ask the vision system to describe the current scene. Returns a text description of visible objects.
 
@@ -102,7 +97,7 @@ async def abort() -> str:
     return ""
 
 
-_LIVE_AGENT_TOOLS = [get_robot_state, describe_scene, submit_user_intent, abort]
+_LIVE_AGENT_TOOLS = [describe_scene, submit_user_intent, abort]
 
 
 class LiveAgentSession:
@@ -150,8 +145,8 @@ class LiveAgentSession:
         # Proxy-tool infrastructure
         self._tool_results: dict[str, asyncio.Future] = {}
 
-        # Status injection throttle
-        self._last_status_inject_ts: float = 0.0
+        # Monitor queue — streaming tool reads from this
+        self._monitor_queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=_MONITOR_QUEUE_SIZE)
 
     @property
     def state(self) -> LiveAgentState:
@@ -187,6 +182,16 @@ class LiveAgentSession:
         else:
             logger.warning("resolve_tool_call: unknown or already-resolved call_id=%s", call_id)
 
+    def put_monitor_update(self, text: str) -> None:
+        """Enqueue a monitor update for the streaming ``monitor()`` tool.
+
+        Silently drops the update if the queue is full.
+        """
+        try:
+            self._monitor_queue.put_nowait(text)
+        except asyncio.QueueFull:
+            pass
+
     async def start(self) -> None:
         """Create ADK Agent, Runner, session, and start the event loop."""
         if self._started:
@@ -197,11 +202,26 @@ class LiveAgentSession:
 
         system_prompt = _load_system_prompt(self._prompts_dir)
 
+        # Build the monitor streaming tool as a closure over our queue
+        monitor_queue = self._monitor_queue
+
+        async def monitor() -> AsyncGenerator[str, None]:
+            """Stream real-time robot status updates.
+
+            Call this at session start. Yields ``[Event]``, ``[Planner]``,
+            and ``[Scene]`` updates as they happen — no polling needed.
+            """
+            while True:
+                item = await monitor_queue.get()
+                if item is None:  # shutdown sentinel
+                    return
+                yield item
+
         self._agent = Agent(
             name="live_agent",
             model=self._model,
             instruction=system_prompt,
-            tools=_LIVE_AGENT_TOOLS,
+            tools=[*_LIVE_AGENT_TOOLS, monitor],
             before_tool_callback=self._proxy_before_tool_callback,
         )
 
@@ -226,6 +246,12 @@ class LiveAgentSession:
         """Close queue and cancel event loop task."""
         if not self._started:
             return
+
+        # Signal monitor() generator to exit
+        try:
+            self._monitor_queue.put_nowait(None)
+        except asyncio.QueueFull:
+            pass
 
         if self._queue is not None:
             self._queue.close()
@@ -266,29 +292,16 @@ class LiveAgentSession:
             )
             self._queue.send_content(content)
 
-    def inject_status(self, status_text: str) -> None:
-        """Inject a robot status update into the Gemini session.
-
-        Throttled to max 1 injection per STATUS_THROTTLE_S seconds.
-        """
-        now = time.monotonic()
-        if now - self._last_status_inject_ts < _STATUS_THROTTLE_S:
-            return
-        self._last_status_inject_ts = now
-
-        if self._queue is not None and self._state.connected:
-            content = types.Content(
-                role="user",
-                parts=[types.Part(text=f"[Robot status] {status_text}")],
-            )
-            self._queue.send_content(content)
-
     async def _proxy_before_tool_callback(self, tool, args, tool_context):
         """ADK before_tool_callback: proxy tool calls to the TUI via WebSocket.
 
         Returns a dict so ADK skips the actual tool function and uses
-        the dict as the tool response.
+        the dict as the tool response. Returns None for ``monitor`` so ADK
+        executes the real async generator.
         """
+        if tool.name == "monitor":
+            return None
+
         call_id = str(uuid.uuid4())
         loop = asyncio.get_running_loop()
         future: asyncio.Future = loop.create_future()
@@ -370,6 +383,14 @@ class LiveAgentSession:
 
         run_config = self._build_run_config()
         self._state.connected = True
+
+        # Kick the model to invoke monitor() immediately
+        self._queue.send_content(
+            types.Content(
+                role="user",
+                parts=[types.Part(text="Session started. Call monitor() now to receive robot updates.")],
+            )
+        )
 
         async for event in self._runner.run_live(
             user_id=_USER_ID,

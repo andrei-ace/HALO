@@ -1592,17 +1592,7 @@ class HALOApp(App):
 
         _logger = _log.getLogger(__name__)
         try:
-            if name == "get_robot_state":
-                if self._runtime is not None:
-                    from halo.contracts.serde import snapshot_to_text
-                    from halo.services.planner_service.snapshot_serializer import snapshot_to_dict
-
-                    snap = await self._runtime.get_latest_runtime_snapshot(self._arm_id)
-                    result = snapshot_to_text(snapshot_to_dict(snap))
-                else:
-                    result = "Runtime not available."
-
-            elif name == "describe_scene":
+            if name == "describe_scene":
                 if self._runtime is not None:
                     import time as _time
                     import uuid as _uuid
@@ -1789,7 +1779,7 @@ class HALOApp(App):
                 if self._live_agent is not None and evt_type_name in self._LIVE_AGENT_NARRATION_EVENTS:
                     summary = _format_event(evt)
                     asyncio.create_task(
-                        self._live_agent.send_event({"type": evt_type_name, "summary": summary})  # type: ignore[union-attr]
+                        self._live_agent.send_monitor_update("event", summary)  # type: ignore[union-attr]
                     )
                 # Forward full scene description to Live Agent
                 if self._live_agent is not None and evt_type_name == "SCENE_DESCRIBED":
@@ -1797,9 +1787,7 @@ class HALOApp(App):
                     scene_text = evt_data.get("scene", "")
                     if scene_text:
                         asyncio.create_task(
-                            self._live_agent.send_text(  # type: ignore[union-attr]
-                                f"[Scene description] {scene_text}"
-                            )
+                            self._live_agent.send_monitor_update("scene_description", scene_text)  # type: ignore[union-attr]
                         )
                 # Wake the agent — it reads event details from the snapshot
                 # Skip waking on operator-initiated aborts to prevent replanning
@@ -1952,8 +1940,8 @@ class HALOApp(App):
                     parts.append("Rejected: " + ", ".join(f"{_format_cmd(c)} ({a.reason})" for c, a in rejected))
                 if reasoning:
                     parts.append(f"Reasoning: {reasoning[:200]}")
-                planner_summary = "[Planner decision] " + ". ".join(parts)
-                asyncio.create_task(self._live_agent.send_text(planner_summary))  # type: ignore[union-attr]
+                planner_summary = ". ".join(parts)
+                asyncio.create_task(self._live_agent.send_monitor_update("planner_decision", planner_summary))  # type: ignore[union-attr]
 
         except Exception as exc:
             if self._run_logger:

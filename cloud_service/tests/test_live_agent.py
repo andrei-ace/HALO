@@ -24,20 +24,20 @@ class TestProxyToolCallback:
         def on_tool_call(call_id, name, args):
             tool_calls.append((call_id, name, args))
             # Simulate TUI responding immediately
-            session.resolve_tool_call(call_id, "robot is idle")
+            session.resolve_tool_call(call_id, "scene described")
 
         session.set_callbacks(on_tool_call=on_tool_call)
 
         # Simulate ADK calling before_tool_callback
         mock_tool = MagicMock()
-        mock_tool.name = "get_robot_state"
+        mock_tool.name = "describe_scene"
         mock_context = MagicMock()
 
-        result = await session._proxy_before_tool_callback(mock_tool, {}, mock_context)
+        result = await session._proxy_before_tool_callback(mock_tool, {"reason": "test"}, mock_context)
 
-        assert result == {"result": "robot is idle"}
+        assert result == {"result": "scene described"}
         assert len(tool_calls) == 1
-        assert tool_calls[0][1] == "get_robot_state"
+        assert tool_calls[0][1] == "describe_scene"
 
     @pytest.mark.asyncio
     async def test_proxy_callback_with_args(self):
@@ -66,7 +66,7 @@ class TestProxyToolCallback:
         # No on_tool_call callback — nobody resolves the future
 
         mock_tool = MagicMock()
-        mock_tool.name = "get_robot_state"
+        mock_tool.name = "describe_scene"
         mock_context = MagicMock()
 
         # Patch timeout to be very short
@@ -118,15 +118,15 @@ class TestProxyToolCallback:
 
         # Launch two tool calls concurrently
         tool1 = MagicMock()
-        tool1.name = "get_robot_state"
+        tool1.name = "describe_scene"
         tool2 = MagicMock()
-        tool2.name = "describe_scene"
+        tool2.name = "submit_user_intent"
 
         async def call1():
-            return await session._proxy_before_tool_callback(tool1, {}, mock_context)
+            return await session._proxy_before_tool_callback(tool1, {"reason": "test"}, mock_context)
 
         async def call2():
-            return await session._proxy_before_tool_callback(tool2, {"reason": "test"}, mock_context)
+            return await session._proxy_before_tool_callback(tool2, {"intent": "pick"}, mock_context)
 
         task1 = asyncio.create_task(call1())
         task2 = asyncio.create_task(call2())
@@ -141,8 +141,64 @@ class TestProxyToolCallback:
         r1 = await task1
         r2 = await task2
 
-        assert r1 == {"result": "get_robot_state result"}
-        assert r2 == {"result": "describe_scene result"}
+        assert r1 == {"result": "describe_scene result"}
+        assert r2 == {"result": "submit_user_intent result"}
+
+    @pytest.mark.asyncio
+    async def test_monitor_bypass_proxy(self):
+        """Proxy callback returns None for monitor tool so ADK runs the real generator."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+
+        mock_tool = MagicMock()
+        mock_tool.name = "monitor"
+        mock_context = MagicMock()
+
+        result = await session._proxy_before_tool_callback(mock_tool, {}, mock_context)
+        assert result is None
+
+
+# ── Monitor queue ──
+
+
+class TestMonitorQueue:
+    def test_put_monitor_update(self):
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session.put_monitor_update("[Event] SKILL_STARTED pick")
+        session.put_monitor_update("[Planner] issued START_SKILL")
+
+        assert session._monitor_queue.qsize() == 2
+        assert session._monitor_queue.get_nowait() == "[Event] SKILL_STARTED pick"
+        assert session._monitor_queue.get_nowait() == "[Planner] issued START_SKILL"
+
+    def test_put_monitor_update_full_queue(self):
+        """No exception raised when queue is full — updates are silently dropped."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        # Fill the queue
+        for i in range(64):
+            session.put_monitor_update(f"msg-{i}")
+
+        assert session._monitor_queue.full()
+        # Should not raise
+        session.put_monitor_update("overflow")
+        assert session._monitor_queue.qsize() == 64
+
+    @pytest.mark.asyncio
+    async def test_stop_sends_sentinel(self):
+        """stop() puts None sentinel into monitor queue."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session._started = True
+        await session.stop()
+
+        # Sentinel should be in queue
+        assert session._monitor_queue.get_nowait() is None
 
 
 # ── LiveAgentSession ──
@@ -165,20 +221,6 @@ class TestLiveAgentSession:
         session.set_callbacks(on_text_out=cb, on_tool_call=tool_cb)
         assert session._on_text_out is cb
         assert session._on_tool_call is tool_cb
-
-    def test_inject_status_throttle(self):
-        from cloud_service.live_agent import LiveAgentSession
-
-        session = LiveAgentSession(arm_id="arm0")
-        session._queue = MagicMock()
-        session._state.connected = True
-        session.inject_status("first")
-        first_ts = session._last_status_inject_ts
-        assert first_ts > 0
-
-        # Second call within throttle window should be skipped
-        session.inject_status("second")
-        assert session._last_status_inject_ts == first_ts
 
     def test_send_text_when_not_connected(self):
         from cloud_service.live_agent import LiveAgentSession
@@ -369,6 +411,17 @@ class TestWSHandler:
 
         assert future.result() == "the result"
 
+    def test_ws_monitor_update_routes_to_queue(self):
+        """Verify monitor_update WS messages route through put_monitor_update."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session.put_monitor_update("[Event] SKILL_STARTED")
+
+        assert session._monitor_queue.qsize() == 1
+        item = session._monitor_queue.get_nowait()
+        assert item == "[Event] SKILL_STARTED"
+
 
 # ── LiveAgentClient ──
 
@@ -473,10 +526,10 @@ class TestLiveAgentClient:
         )
         client._handle_message(
             "tool_call",
-            {"type": "tool_call", "call_id": "abc-123", "name": "get_robot_state", "args": {}},
+            {"type": "tool_call", "call_id": "abc-123", "name": "describe_scene", "args": {}},
         )
         assert len(tool_calls) == 1
-        assert tool_calls[0] == ("abc-123", "get_robot_state", {})
+        assert tool_calls[0] == ("abc-123", "describe_scene", {})
 
     def test_handle_tool_call_with_args(self):
         from halo.cognitive.live_agent_client import LiveAgentClient
@@ -506,7 +559,7 @@ class TestLiveAgentClient:
         # Should not raise
         client._handle_message(
             "tool_call",
-            {"type": "tool_call", "call_id": "xyz", "name": "get_robot_state", "args": {}},
+            {"type": "tool_call", "call_id": "xyz", "name": "describe_scene", "args": {}},
         )
 
     def test_set_audio_callbacks(self):

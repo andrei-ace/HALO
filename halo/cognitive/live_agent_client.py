@@ -3,7 +3,7 @@
 Connects to the cloud service's ``/ws/live/{arm_id}`` endpoint and provides:
 - ``send_audio(pcm_bytes)`` — forward mic PCM to the Live Agent
 - ``send_text(msg)`` — send text input to the Live Agent
-- ``send_event(event_dict)`` — forward robot events for narration
+- ``send_monitor_update(category, text)`` — push updates to the monitor stream
 - Receives audio, text, transcriptions, status, interrupt, and commands
 """
 
@@ -125,11 +125,14 @@ class LiveAgentClient:
         msg = json.dumps({"type": "text_in", "text": text})
         await self._ws_send(msg)
 
-    async def send_event(self, event_dict: dict) -> None:
-        """Send a robot event to the Live Agent for narration."""
+    async def send_monitor_update(self, category: str, text: str) -> None:
+        """Send a monitor update to the Live Agent's streaming tool.
+
+        Categories: ``event``, ``planner_decision``, ``scene_description``.
+        """
         if self._ws is None or not self._state.connected:
             return
-        msg = json.dumps({"type": "event", "data": event_dict})
+        msg = json.dumps({"type": "monitor_update", "category": category, "text": text})
         await self._ws_send(msg)
 
     async def send_tool_result(self, call_id: str, result: str) -> None:

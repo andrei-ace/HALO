@@ -4,7 +4,7 @@ Message framing (JSON):
     TUI → Cloud:
         {"type": "audio_in", "data": "<base64 PCM>"}
         {"type": "text_in", "text": "..."}
-        {"type": "event", "data": {...}}   — robot events for narration
+        {"type": "monitor_update", "category": "...", "text": "..."}
         {"type": "tool_result", "call_id": "...", "result": "..."}
 
     Cloud → TUI:
@@ -31,17 +31,6 @@ from cloud_service.live_agent_manager import LiveAgentManager
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-# Notable robot events worth narrating
-_NARRATION_EVENTS = frozenset(
-    {
-        "SKILL_STARTED",
-        "SKILL_SUCCEEDED",
-        "SKILL_FAILED",
-        "SAFETY_REFLEX_TRIGGERED",
-        "PERCEPTION_FAILURE",
-    }
-)
 
 
 @router.websocket("/ws/live/{arm_id}")
@@ -121,14 +110,18 @@ async def live_agent_ws(websocket: WebSocket, arm_id: str) -> None:
                 if text:
                     session.send_text(text)
 
-            elif msg_type == "event":
-                # Robot event for narration
-                event_data = msg.get("data", {})
-                event_type = event_data.get("type", "")
-                if event_type in _NARRATION_EVENTS:
-                    # Build a brief status line for the agent
-                    summary = event_data.get("summary", event_type)
-                    session.inject_status(summary)
+            elif msg_type == "monitor_update":
+                # Generic monitor update (event, planner_decision, scene_description)
+                category = msg.get("category", "info")
+                text = msg.get("text", "")
+                if text:
+                    prefix_map = {
+                        "event": "Event",
+                        "planner_decision": "Planner",
+                        "scene_description": "Scene",
+                    }
+                    prefix = prefix_map.get(category, category.title())
+                    session.put_monitor_update(f"[{prefix}] {text}")
 
             elif msg_type == "tool_result":
                 # TUI responding to a proxy tool call
