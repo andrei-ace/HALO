@@ -18,7 +18,7 @@ from pathlib import Path
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate PICK demo episodes with scripted teacher")
+    parser = argparse.ArgumentParser(description="Generate PICK (or PICK+PLACE) demo episodes with scripted teacher")
     parser.add_argument("--num-episodes", type=int, default=10, help="Number of episodes to generate")
     parser.add_argument("--output-dir", type=str, default="data/episodes", help="Output directory for HDF5 files")
     parser.add_argument("--seed-base", type=int, default=0, help="Base seed (episode i uses seed_base + i)")
@@ -34,6 +34,7 @@ def main() -> None:
     )
     parser.add_argument("--command-url", type=str, default=None, help="CommandRPC URL (standalone mode)")
     parser.add_argument("--telemetry-url", type=str, default=None, help="TelemetryStream URL (standalone mode)")
+    parser.add_argument("--pick-and-place", action="store_true", help="Follow each pick with a place-in-tray step")
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
     args = parser.parse_args()
 
@@ -73,6 +74,7 @@ def main() -> None:
         managed=not args.standalone,
         command_url=args.command_url,
         telemetry_url=args.telemetry_url,
+        pick_and_place=args.pick_and_place,
     )
 
     _print_summary(results, output_dir, args.save_video)

@@ -25,6 +25,7 @@ from mujoco_sim.scene_info import TCP_PINCH_OFFSET_LOCAL, SceneInfo
 from mujoco_sim.teacher.grasp_planner import GraspPose, evaluate_grasps
 from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
+from mujoco_sim.teacher.trajectory_validator import get_gripper_collision_geom_ids, validate_waypoint_gripper_clearance
 from mujoco_sim.teacher.waypoint_generator import JointWaypoint, generate_joint_waypoints
 
 # ---------------------------------------------------------------------------
@@ -535,3 +536,62 @@ class TestPlaceTrayCandidate:
         place_kf = candidates[0][2]
         assert abs(place_kf.position[0] - scene_info.tray_pos[0]) < 1e-6
         assert abs(place_kf.position[1] - scene_info.tray_pos[1]) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Waypoint gripper clearance tests
+# ---------------------------------------------------------------------------
+
+
+class TestWaypointGripperClearance:
+    def test_get_gripper_collision_geom_ids(self, mj_model):
+        """get_gripper_collision_geom_ids returns non-empty list of valid IDs."""
+        geom_ids = get_gripper_collision_geom_ids(mj_model)
+        assert len(geom_ids) > 0
+        for gid in geom_ids:
+            assert 0 <= gid < mj_model.ngeom
+
+    def test_waypoint_gripper_clearance_above_table(self, mj_model, mj_data, ee_site_id, arm_joint_ids, scene_info):
+        """Home-like waypoints well above table should pass clearance."""
+        home_joints = mj_data.qpos[:5].copy()
+        gripper_geom_ids = get_gripper_collision_geom_ids(mj_model)
+
+        waypoints = [
+            JointWaypoint(home_joints, GRIPPER_OPEN, PHASE_IDLE, "home"),
+            JointWaypoint(home_joints.copy(), GRIPPER_CLOSE, PHASE_MOVE_PREGRASP, "home_closed"),
+        ]
+
+        result = validate_waypoint_gripper_clearance(
+            waypoints,
+            mj_model,
+            mj_data,
+            arm_joint_ids,
+            gripper_geom_ids,
+            ee_site_id,
+            scene_info.table_z,
+            margin=0.01,
+        )
+        assert result is True
+
+    def test_waypoint_gripper_clearance_below_table(self, mj_model, mj_data, ee_site_id, arm_joint_ids, scene_info):
+        """Waypoints with arm forced below table Z should fail clearance."""
+        gripper_geom_ids = get_gripper_collision_geom_ids(mj_model)
+
+        # Joint config that puts EE ~0.349 and gripper geoms ~0.361, both below threshold 0.38.
+        bad_joints = np.array([0.0, 0.5, 1.0, 1.0, 0.0])
+
+        waypoints = [
+            JointWaypoint(bad_joints, GRIPPER_OPEN, PHASE_EXECUTE_APPROACH, "below_table"),
+        ]
+
+        result = validate_waypoint_gripper_clearance(
+            waypoints,
+            mj_model,
+            mj_data,
+            arm_joint_ids,
+            gripper_geom_ids,
+            ee_site_id,
+            scene_info.table_z,
+            margin=0.01,
+        )
+        assert result is False

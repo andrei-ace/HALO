@@ -11,7 +11,7 @@ import mujoco
 import numpy as np
 import pytest
 
-from mujoco_sim.scene_info import SceneInfo
+from mujoco_sim.scene_info import DEFAULT_GRASP_N_CANDIDATES, SceneInfo
 from mujoco_sim.teacher.grasp_planner import (
     GraspPlanningFailure,
     GraspPose,
@@ -76,7 +76,7 @@ class TestEnumerateFaceGrasps:
         candidates = enumerate_face_grasps(
             scene_info.green_cube_default_pos, _DEFAULT_CUBE_QUAT, scene_info.green_cube_half_sizes
         )
-        assert len(candidates) == 16  # 4 faces × 4 per face
+        assert len(candidates) == DEFAULT_GRASP_N_CANDIDATES
 
     def test_enumerate_custom_count(self, scene_info):
         candidates = enumerate_face_grasps(
@@ -90,7 +90,7 @@ class TestEnumerateFaceGrasps:
         )
         labels = [c.face_label for c in candidates]
         for face in ["+X", "-X", "+Y", "-Y"]:
-            assert labels.count(face) == 4  # 16 / 4
+            assert labels.count(face) == DEFAULT_GRASP_N_CANDIDATES // 4
 
     def test_enumerate_rotated_cube(self, scene_info):
         """Non-identity quaternion should shift face normals."""
@@ -105,7 +105,7 @@ class TestEnumerateFaceGrasps:
             scene_info.green_cube_default_pos, rotated_quat, scene_info.green_cube_half_sizes, seed=0
         )
 
-        assert len(rotated_candidates) == 16
+        assert len(rotated_candidates) == DEFAULT_GRASP_N_CANDIDATES
         # Contact points should differ between identity and rotated
         id_contacts = np.array([c.contact_point for c in identity_candidates])
         rot_contacts = np.array([c.contact_point for c in rotated_candidates])

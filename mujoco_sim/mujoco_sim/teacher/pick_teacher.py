@@ -44,7 +44,11 @@ from mujoco_sim.scene_info import (
 from mujoco_sim.teacher.grasp_planner import evaluate_all_grasps
 from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
 from mujoco_sim.teacher.trajectory import JointLimits, TrajectoryPlan, plan_trajectory
-from mujoco_sim.teacher.trajectory_validator import validate_trajectory_clearance
+from mujoco_sim.teacher.trajectory_validator import (
+    get_gripper_collision_geom_ids,
+    validate_trajectory_clearance,
+    validate_waypoint_gripper_clearance,
+)
 from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
 
 logger = logging.getLogger(__name__)
@@ -107,6 +111,7 @@ class PickTeacher:
         # Cache IDs + scene info on first step (need model)
         self._ee_site_id: int | None = None
         self._arm_joint_ids: list[int] | None = None
+        self._gripper_geom_ids: list[int] | None = None
         self._scene_info: SceneInfo | None = None
 
     def reset(self) -> None:
@@ -134,6 +139,7 @@ class PickTeacher:
                 mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
                 for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
             ]
+            self._gripper_geom_ids = get_gripper_collision_geom_ids(model)
             self._scene_info = SceneInfo.from_model(model)
 
     def step(
@@ -263,6 +269,19 @@ class PickTeacher:
                 )
             except IKFailure as exc:
                 logger.info("Candidate %d IK failed: %s", rank + 1, exc)
+                continue
+
+            if not validate_waypoint_gripper_clearance(
+                waypoints,
+                model,
+                data,
+                self._arm_joint_ids,
+                self._gripper_geom_ids,
+                self._ee_site_id,
+                self._scene_info.table_z,
+                margin=DEFAULT_CLEARANCE_MARGIN,
+            ):
+                logger.info("Candidate %d failed gripper clearance", rank + 1)
                 continue
 
             plan = plan_trajectory(waypoints, limits)

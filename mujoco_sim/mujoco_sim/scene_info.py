@@ -42,13 +42,13 @@ TCP_PINCH_OFFSET_LOCAL = np.array([0.0, 0.0, 0.0])
 # ---------------------------------------------------------------------------
 
 # Number of random grasp candidates to sample (split evenly across 4 side faces).
-DEFAULT_GRASP_N_CANDIDATES = 16
+DEFAULT_GRASP_N_CANDIDATES = 64
 
 # Maximum angular deviation from face normal for approach direction (degrees).
-DEFAULT_GRASP_MAX_CONE_DEG = 5.0
+DEFAULT_GRASP_MAX_CONE_DEG = 2.0
 
 # Tangential contact span on cube side faces (0.0 = center only, 1.0 = full face).
-DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.10
+DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.25
 
 # Distance (metres) to offset the grasp contact point outward along the face
 # normal.  Compensates for the jaw midpoint being ahead of the gripperframe
@@ -72,7 +72,7 @@ DEFAULT_PREGRASP_STANDOFF = 0.02
 DEFAULT_LIFT_HEIGHT = 0.08
 
 # Maximum IK orientation error allowed (degrees). 5-DOF arm has ~17-34° typical.
-DEFAULT_ORI_TOL_DEG = 55.0
+DEFAULT_ORI_TOL_DEG = 15.0
 
 # Trajectory validation: minimum EE clearance above table (metres)
 DEFAULT_CLEARANCE_MARGIN = 0.01  # 1 cm

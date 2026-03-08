@@ -20,7 +20,7 @@ import msgpack
 import numpy as np
 import zmq
 
-from mujoco_sim.constants import PHASE_LIFT, PHASE_RETREAT, PHASE_VERIFY_GRASP
+from mujoco_sim.constants import PHASE_DONE, PHASE_LIFT, PHASE_RETREAT, PHASE_VERIFY_GRASP
 from mujoco_sim.server.config import SimServerConfig
 from mujoco_sim.server.handlers import ServerState, dispatch_command, execute_pending_pick, execute_pending_place
 from mujoco_sim.server.protocol import pack_telemetry
@@ -198,6 +198,7 @@ class SimServer:
                             state.pending_return_gripper = float(home[5])
                             return
                         logger.info("VERIFY_GRASP passed: object Z delta=%.4f m", dz)
+                        phase_id = PHASE_DONE
 
                 state.phase_id = phase_id
                 state.done = True

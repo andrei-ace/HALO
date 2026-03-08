@@ -57,6 +57,7 @@ class SO101Env:
         self._ee_site_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_SITE, "gripperframe")
         self._green_cube_body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "green_cube")
         self._red_cube_body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "red_cube")
+        self._tray_body_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_BODY, "yellow_tray")
         self._gripper_joint_id = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, "gripper")
 
         # Physics substeps: model.opt.timestep vs control_freq
@@ -139,22 +140,36 @@ class SO101Env:
 
         if seed is not None:
             rng = np.random.RandomState(seed)
+
+            # Minimum XY separation: cube-cube and cube-tray
+            cube_sep = 0.06  # cubes are ~20mm, 60mm gap is plenty
+            tray_sep = 0.10  # tray is ~54mm across, need more clearance
+
+            # Green cube
             cx = rng.uniform(*self._config.green_cube_x_range)
             cy = rng.uniform(*self._config.green_cube_y_range)
             self._data.qpos[self._GREEN_CUBE_QPOS_X] = cx
             self._data.qpos[self._GREEN_CUBE_QPOS_Y] = cy
             # Z stays at default (from MJCF), quat stays identity
 
-            # Randomize red cube with larger minimum separation from green cube.
-            # This keeps detections/trackers from hopping between cubes.
-            min_sep = 0.08
-            for _ in range(100):
+            # Red cube — must not overlap green cube
+            for _ in range(200):
                 rx = rng.uniform(*self._config.red_cube_x_range)
                 ry = rng.uniform(*self._config.red_cube_y_range)
-                if np.hypot(rx - cx, ry - cy) >= min_sep:
+                if np.hypot(rx - cx, ry - cy) >= cube_sep:
                     break
             self._data.qpos[self._RED_CUBE_QPOS_X] = rx
             self._data.qpos[self._RED_CUBE_QPOS_Y] = ry
+
+            # Tray (static body — modify model.body_pos directly)
+            # Must not overlap either cube
+            for _ in range(200):
+                tx = rng.uniform(*self._config.tray_x_range)
+                ty = rng.uniform(*self._config.tray_y_range)
+                if np.hypot(tx - cx, ty - cy) >= tray_sep and np.hypot(tx - rx, ty - ry) >= tray_sep:
+                    break
+            self._model.body_pos[self._tray_body_id][0] = tx
+            self._model.body_pos[self._tray_body_id][1] = ty
 
         mujoco.mj_forward(self._model, self._data)
         self._step_count = 0

@@ -1,4 +1,4 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-cloud-service sim-server ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video generate-episodes-place visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-cloud-service sim-server ruff help
 
 install:
 	uv sync --extra dev
@@ -103,7 +103,7 @@ ruff:
 	uv run ruff check --fix .
 	uv run ruff format .
 
-EPISODES     ?= 1
+EPISODES     ?= 16
 EPISODE_DIR  ?= data/episodes
 SEED_BASE    ?= 0
 
@@ -120,6 +120,15 @@ generate-episodes-video:
 		--output-dir $(EPISODE_DIR) \
 		--seed-base $(SEED_BASE) \
 		--save-video \
+		$(GENERATE_ARGS)
+
+generate-episodes-place:
+	uv run python -m mujoco_sim.scripts.generate_episodes \
+		--num-episodes $(EPISODES) \
+		--output-dir $(EPISODE_DIR) \
+		--seed-base $(SEED_BASE) \
+		--save-video \
+		--pick-and-place \
 		$(GENERATE_ARGS)
 
 IK_SEED    ?= 7
@@ -144,6 +153,7 @@ help:
 	@echo "install-sim        alias for install"
 	@echo "generate-episodes        generate teacher episodes w/ VLM tracking (requires Ollama)"
 	@echo "generate-episodes-video  same + save mp4 preview per episode (requires opencv)"
+	@echo "generate-episodes-place  pick-and-place episodes + video + VLM tracking"
 	@echo "test-sim           run mujoco_sim tests"
 	@echo "test               run all unit tests"
 	@echo "test-unit          run unit tests (excluding component/system/e2e)"

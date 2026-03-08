@@ -176,6 +176,7 @@ class ServerState:
         self._arm_joint_ids: list[int] | None = None
         self._green_cube_body_id: int | None = None
         self._red_cube_body_id: int | None = None
+        self._gripper_geom_ids: list[int] | None = None
         self._scene_info = None
 
     def reset_trajectory(self) -> None:
@@ -211,6 +212,8 @@ def _handle_reset(msg: dict, env: SO101Env, server_state: ServerState | None) ->
     if server_state is not None:
         server_state.reset_trajectory()
         server_state.hold_target = env.home_qpos.copy()
+        # Invalidate cached SceneInfo — tray position may have changed
+        server_state._scene_info = None
     return {
         "type": RESP_RESET_OK,
         "seed": seed,
@@ -321,7 +324,11 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
         from mujoco_sim.teacher.keyframe_planner import plan_pick_keyframes
         from mujoco_sim.teacher.pick_teacher import TeacherConfig
         from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
-        from mujoco_sim.teacher.trajectory_validator import validate_trajectory_clearance
+        from mujoco_sim.teacher.trajectory_validator import (
+            get_gripper_collision_geom_ids,
+            validate_trajectory_clearance,
+            validate_waypoint_gripper_clearance,
+        )
         from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
 
         model = env.mujoco_model
@@ -336,6 +343,7 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
                 mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, name)
                 for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
             ]
+            server_state._gripper_geom_ids = get_gripper_collision_geom_ids(model)
 
         scene_info = server_state._scene_info
 
@@ -424,6 +432,19 @@ def execute_pending_pick(env: SO101Env, server_state: ServerState) -> None:
                 )
             except IKFailure as exc:
                 logger.info("start_pick: candidate %d IK failed: %s", rank + 1, exc)
+                continue
+
+            if not validate_waypoint_gripper_clearance(
+                waypoints,
+                model,
+                data,
+                server_state._arm_joint_ids,
+                server_state._gripper_geom_ids,
+                server_state._ee_site_id,
+                scene_info.table_z,
+                margin=DEFAULT_CLEARANCE_MARGIN,
+            ):
+                logger.info("start_pick: candidate %d failed gripper clearance", rank + 1)
                 continue
 
             candidate_traj = plan_trajectory(waypoints, limits)
@@ -568,7 +589,11 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
         )
         from mujoco_sim.teacher.place_keyframe_planner import PlaceConfig, plan_place_candidates, plan_place_keyframes
         from mujoco_sim.teacher.trajectory import JointLimits, plan_trajectory
-        from mujoco_sim.teacher.trajectory_validator import validate_trajectory_clearance
+        from mujoco_sim.teacher.trajectory_validator import (
+            get_gripper_collision_geom_ids,
+            validate_trajectory_clearance,
+            validate_waypoint_gripper_clearance,
+        )
         from mujoco_sim.teacher.waypoint_generator import IKFailure, generate_joint_waypoints
 
         model = env.mujoco_model
@@ -582,6 +607,7 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
                 mj.mj_name2id(model, mj.mjtObj.mjOBJ_JOINT, name)
                 for name in ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
             ]
+            server_state._gripper_geom_ids = get_gripper_collision_geom_ids(model)
 
         scene_info = server_state._scene_info
 
@@ -661,6 +687,19 @@ def execute_pending_place(env: SO101Env, server_state: ServerState) -> None:
                 )
             except IKFailure as exc:
                 logger.info("Place candidate %d IK failed: %s", i + 1, exc)
+                continue
+
+            if not validate_waypoint_gripper_clearance(
+                waypoints,
+                model,
+                data,
+                server_state._arm_joint_ids,
+                server_state._gripper_geom_ids,
+                server_state._ee_site_id,
+                scene_info.table_z,
+                margin=DEFAULT_CLEARANCE_MARGIN,
+            ):
+                logger.info("Place candidate %d failed gripper clearance", i + 1)
                 continue
 
             candidate_traj = plan_trajectory(waypoints, limits)
