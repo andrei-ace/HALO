@@ -1683,6 +1683,11 @@ class HALOApp(App):
                     token_usage=getattr(self._agent, "last_token_usage", None) or {},
                 )
 
+            # Clear stale operator task when agent is idle with no commands —
+            # prevents old task text from being re-injected into subsequent ticks.
+            if not commands and snap.skill is None:
+                self._last_operator_msg = None
+
             # Update thinking widget
             from halo.contracts.enums import CommandAckStatus
 

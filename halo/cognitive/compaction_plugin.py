@@ -46,10 +46,11 @@ _SNAPSHOT_BLOCK_RE = re.compile(
 )
 
 _SUMMARIZATION_PROMPT = (
-    "The following is a conversation history between a user and an AI agent.\n"
-    "Please summarize the conversation, focusing on key information and decisions\n"
-    "made, as well as any unresolved questions or tasks. The summary should be\n"
-    "concise and capture the essence of the interaction.\n\n"
+    "Summarize this robot planner conversation history.\n"
+    "Focus on: key decisions, actions taken, and current state.\n"
+    "Mark completed tasks as DONE — do NOT list them as unresolved or pending.\n"
+    "Only list tasks as pending if they are genuinely still in progress.\n"
+    "If a newer operator task arrived, it supersedes any prior unfinished tasks.\n\n"
     "{conversation_history}"
 )
 

@@ -386,7 +386,6 @@ class PlannerAgent:
         self._ctx.epoch = epoch
         self._ctx.commands.clear()
         self._ctx.used_tools.clear()
-        self._ctx.call_counts.clear()
         self._ctx.loop_detected = False
         self._ctx.total_calls = 0
 
@@ -404,7 +403,7 @@ class PlannerAgent:
             text_parts.insert(0, self._pending_handoff)
             self._pending_handoff = None
         if operator_cmd:
-            text_parts.append(f"Operator: {operator_cmd}")
+            text_parts.append(f"--- NEW OPERATOR TASK (supersedes any prior task) ---\nOperator: {operator_cmd}")
 
         parts: list = [types.Part.from_text(text="\n\n".join(text_parts))]
 

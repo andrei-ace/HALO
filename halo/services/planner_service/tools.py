@@ -12,6 +12,8 @@ from halo.contracts.commands import (
 )
 from halo.contracts.enums import CommandType, SkillName
 
+MAX_TOOL_CALLS = 5
+
 
 @dataclass
 class AgentContext:
@@ -20,7 +22,6 @@ class AgentContext:
     commands: list[CommandEnvelope] = field(default_factory=list)
     used_tools: set[tuple] = field(default_factory=set)
     epoch: int | None = None
-    call_counts: dict[str, int] = field(default_factory=dict)
     loop_detected: bool = False
     total_calls: int = 0
 
@@ -33,21 +34,17 @@ def build_tools(ctx: AgentContext) -> list:
 
         Deduplicates on the full (name, *args) tuple so the same tool with
         different arguments is allowed (e.g. start_skill(TRACK, X) then
-        start_skill(PICK, X)).  Loop detection (call_counts) stays keyed on
-        name only — catches any tool being hammered regardless of args.
+        start_skill(PICK, X)).
 
-        A global cap of 8 total tool calls per tick prevents the agent from
-        burning through the LLM call budget even with varied args.
+        A global cap of 5 total tool calls per tick keeps the agent focused
+        on a single task per tick (TRACK + PICK + TRACK + PLACE = 4, plus 1
+        spare for describe_scene).
         """
         ctx.total_calls += 1
-        if ctx.total_calls > 8:
-            ctx.loop_detected = True
-            return "HARD STOP: 8 tool calls reached this tick. Stop calling tools and respond with your reasoning."
-        ctx.call_counts[name] = ctx.call_counts.get(name, 0) + 1
-        if ctx.call_counts[name] >= 5:
+        if ctx.total_calls > MAX_TOOL_CALLS:
             ctx.loop_detected = True
             return (
-                f"LOOP DETECTED: {name} called {ctx.call_counts[name]} times. "
+                f"HARD STOP: {MAX_TOOL_CALLS} tool calls reached this tick. "
                 "Stop calling tools and respond with your reasoning."
             )
         key = (name, *args)
