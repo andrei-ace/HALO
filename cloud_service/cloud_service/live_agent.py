@@ -138,8 +138,8 @@ class LiveAgentSession:
         # Callbacks registered by the WS handler
         self._on_audio_out: Callable[[bytes], None] | None = None
         self._on_text_out: Callable[[str], None] | None = None
-        self._on_transcription_in: Callable[[str], None] | None = None
-        self._on_transcription_out: Callable[[str], None] | None = None
+        self._on_transcription_in: Callable[[str, bool], None] | None = None
+        self._on_transcription_out: Callable[[str, bool], None] | None = None
         self._on_tool_call: Callable[[str, str, dict], None] | None = None
 
         # Proxy-tool infrastructure
@@ -160,8 +160,8 @@ class LiveAgentSession:
         self,
         on_audio_out: Callable[[bytes], None] | None = None,
         on_text_out: Callable[[str], None] | None = None,
-        on_transcription_in: Callable[[str], None] | None = None,
-        on_transcription_out: Callable[[str], None] | None = None,
+        on_transcription_in: Callable[[str, bool], None] | None = None,
+        on_transcription_out: Callable[[str, bool], None] | None = None,
         on_tool_call: Callable[[str, str, dict], None] | None = None,
     ) -> None:
         """Register callbacks for outbound data (used by WS handler)."""
@@ -423,15 +423,17 @@ class LiveAgentSession:
                     if self._on_text_out:
                         self._on_text_out(part.text)
 
-        # Transcriptions
+        # Transcriptions — forward raw chunks to WS; client accumulates
         if event.input_transcription and event.input_transcription.text:
+            finished = bool(getattr(event.input_transcription, "finished", False))
             self._state.last_transcription_in = event.input_transcription.text
             if self._on_transcription_in:
-                self._on_transcription_in(event.input_transcription.text)
+                self._on_transcription_in(event.input_transcription.text, finished)
         if event.output_transcription and event.output_transcription.text:
+            finished = bool(getattr(event.output_transcription, "finished", False))
             self._state.last_transcription_out = event.output_transcription.text
             if self._on_transcription_out:
-                self._on_transcription_out(event.output_transcription.text)
+                self._on_transcription_out(event.output_transcription.text, finished)
 
         # Turn complete
         if event.turn_complete:

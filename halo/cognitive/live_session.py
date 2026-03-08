@@ -45,6 +45,8 @@ class LiveSessionState:
     connected: bool = False
     last_transcription_in: str = ""
     last_transcription_out: str = ""
+    transcription_in_finished: bool = True
+    transcription_out_finished: bool = True
     last_text_out: str = ""
     turn_active: bool = False
     reconnect_count: int = 0
@@ -101,6 +103,8 @@ class LivePlannerSession:
         self._audio_playback = audio_playback
 
         self._state = LiveSessionState()
+        self._accum_transcription_in: str = ""
+        self._accum_transcription_out: str = ""
         self._ctx = AgentContext(arm_id="", snapshot_id=None)
         self._tools = build_tools(self._ctx)
 
@@ -413,11 +417,32 @@ class LivePlannerSession:
                     self._last_reasoning = part.text
                     self._state.last_text_out = part.text
 
-        # Transcriptions
+        # Transcriptions — accumulate incremental chunks, replace on finished
         if event.input_transcription and event.input_transcription.text:
-            self._state.last_transcription_in = event.input_transcription.text
+            finished = bool(getattr(event.input_transcription, "finished", False))
+            if finished:
+                self._accum_transcription_in = event.input_transcription.text
+                self._state.last_transcription_in = event.input_transcription.text
+            else:
+                # New partial after finished → reset; otherwise accumulate
+                if self._state.transcription_in_finished:
+                    self._accum_transcription_in = event.input_transcription.text
+                else:
+                    self._accum_transcription_in += event.input_transcription.text
+                self._state.last_transcription_in = self._accum_transcription_in
+            self._state.transcription_in_finished = finished
         if event.output_transcription and event.output_transcription.text:
-            self._state.last_transcription_out = event.output_transcription.text
+            finished = bool(getattr(event.output_transcription, "finished", False))
+            if finished:
+                self._accum_transcription_out = event.output_transcription.text
+                self._state.last_transcription_out = event.output_transcription.text
+            else:
+                if self._state.transcription_out_finished:
+                    self._accum_transcription_out = event.output_transcription.text
+                else:
+                    self._accum_transcription_out += event.output_transcription.text
+                self._state.last_transcription_out = self._accum_transcription_out
+            self._state.transcription_out_finished = finished
 
         # Turn complete — drain tool-call commands and signal decide()
         if event.turn_complete:

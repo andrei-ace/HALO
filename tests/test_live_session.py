@@ -260,21 +260,74 @@ def test_handle_event_interrupted_clears_playback():
 
 
 def test_handle_event_transcriptions():
-    """Transcription events should update session state."""
+    """Partial chunks accumulate; finished chunk replaces (carries full sentence)."""
     session = LivePlannerSession(config=CloudConfig(audio_enabled=False))
 
-    event = MagicMock()
-    event.interrupted = False
-    event.content = None
-    event.turn_complete = False
-    event.input_transcription = MagicMock()
-    event.input_transcription.text = "pick up the cube"
-    event.output_transcription = MagicMock()
-    event.output_transcription.text = "Starting pick skill"
+    # Chunk 1 (partial)
+    event1 = MagicMock()
+    event1.interrupted = False
+    event1.content = None
+    event1.turn_complete = False
+    event1.input_transcription = MagicMock()
+    event1.input_transcription.text = "pick up "
+    event1.input_transcription.finished = False
+    event1.output_transcription = MagicMock()
+    event1.output_transcription.text = "Starting "
+    event1.output_transcription.finished = False
 
-    session._handle_event(event)
+    session._handle_event(event1)
+    assert session.state.last_transcription_in == "pick up "
+    assert session.state.transcription_in_finished is False
+    assert session.state.last_transcription_out == "Starting "
+    assert session.state.transcription_out_finished is False
+
+    # Chunk 2 (partial — accumulates)
+    event2 = MagicMock()
+    event2.interrupted = False
+    event2.content = None
+    event2.turn_complete = False
+    event2.input_transcription = MagicMock()
+    event2.input_transcription.text = "the "
+    event2.input_transcription.finished = False
+    event2.output_transcription = MagicMock()
+    event2.output_transcription.text = "pick "
+    event2.output_transcription.finished = False
+
+    session._handle_event(event2)
+    assert session.state.last_transcription_in == "pick up the "
+    assert session.state.last_transcription_out == "Starting pick "
+
+    # Chunk 3 (finished — ADK sends full sentence, replaces accumulator)
+    event3 = MagicMock()
+    event3.interrupted = False
+    event3.content = None
+    event3.turn_complete = False
+    event3.input_transcription = MagicMock()
+    event3.input_transcription.text = "pick up the cube"
+    event3.input_transcription.finished = True
+    event3.output_transcription = MagicMock()
+    event3.output_transcription.text = "Starting pick skill"
+    event3.output_transcription.finished = True
+
+    session._handle_event(event3)
     assert session.state.last_transcription_in == "pick up the cube"
+    assert session.state.transcription_in_finished is True
     assert session.state.last_transcription_out == "Starting pick skill"
+    assert session.state.transcription_out_finished is True
+
+    # Next partial starts fresh accumulator
+    event4 = MagicMock()
+    event4.interrupted = False
+    event4.content = None
+    event4.turn_complete = False
+    event4.input_transcription = MagicMock()
+    event4.input_transcription.text = "now place"
+    event4.input_transcription.finished = False
+    event4.output_transcription = None
+
+    session._handle_event(event4)
+    assert session.state.last_transcription_in == "now place"
+    assert session.state.transcription_in_finished is False
 
 
 def test_handle_event_turn_complete_drains_commands():

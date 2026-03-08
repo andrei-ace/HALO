@@ -37,6 +37,7 @@ def _happy_cfg() -> SkillRunnerConfig:
         place_distance_threshold_m=0.02,
         open_gripper_duration_ms=0,
         retreat_duration_ms=0,
+        returning_timeout_ms=0,
         no_target_tolerance_ms=99999,
         recover_wait_ms=0,
         max_reacquire_attempts=3,
@@ -136,7 +137,11 @@ async def test_place_happy_path(rt: HALORuntime):
     result = await svc.tick()
     assert result == PhaseId.RETREAT
 
-    # RETREAT → DONE (timer elapsed, duration=0)
+    # RETREAT → RETURNING (timer elapsed, duration=0)
+    result = await svc.tick()
+    assert result == PhaseId.RETURNING
+
+    # RETURNING → DONE (timer elapsed, duration=0)
     result = await svc.tick()
     assert result == PhaseId.DONE
 
@@ -163,6 +168,7 @@ async def test_place_success_clears_held_object_handle(rt: HALORuntime):
     await _seed_store(rt, distance_m=0.01)
     await svc.tick()  # → OPEN
     await svc.tick()  # → RETREAT
+    await svc.tick()  # → RETURNING
     await svc.tick()  # → DONE
 
     snap = await rt.get_latest_runtime_snapshot(ARM)
@@ -294,6 +300,7 @@ async def test_place_emits_correct_events(rt: HALORuntime):
     await _seed_store(rt, distance_m=0.01)
     await svc.tick()  # → OPEN
     await svc.tick()  # → RETREAT
+    await svc.tick()  # → RETURNING
     await svc.tick()  # → DONE
 
     all_events = []
@@ -302,8 +309,8 @@ async def test_place_emits_correct_events(rt: HALORuntime):
     types = [e.type for e in all_events]
     assert EventType.SKILL_STARTED in types
     assert EventType.SKILL_SUCCEEDED in types
-    assert types.count(EventType.PHASE_ENTER) >= 6  # initial + 5 transitions
-    assert types.count(EventType.PHASE_EXIT) >= 5
+    assert types.count(EventType.PHASE_ENTER) >= 7  # initial + 6 transitions
+    assert types.count(EventType.PHASE_EXIT) >= 6
     rt.bus.unsubscribe(ARM, q)
 
 

@@ -429,10 +429,10 @@ def test_open_stays_before_timer():
 # --- RetreatHandler ---
 
 
-def test_retreat_succeeds_after_timer():
+def test_retreat_transitions_to_returning_after_timer():
     h = RetreatHandler()
     result = h.evaluate(_ctx(elapsed_ms=2000, config=_cfg(retreat_duration_ms=2000)))
-    assert result.succeed is True
+    assert result.transition_to == "RETURNING"
 
 
 def test_retreat_stays_before_timer():

@@ -719,6 +719,8 @@ class AudioPanel(Container):
         transcript_out: str = "",
         mic_level: float = 0.0,
         speaker_level: float = 0.0,
+        transcript_in_finished: bool = True,
+        transcript_out_finished: bool = True,
     ) -> None:
         mic_text = Text()
         mic_text.append("Mic: ", style="bold white")
@@ -748,13 +750,15 @@ class AudioPanel(Container):
         if transcript_in:
             tin = Text()
             tin.append("You: ", style="bold #4fc3f7")
-            tin.append(transcript_in[-80:], style="#b0bcd0")
+            display_in = transcript_in[-80:] if transcript_in_finished else transcript_in[-77:] + "..."
+            tin.append(display_in, style="#b0bcd0")
             self.query_one("#audio-transcript-in", Static).update(tin)
 
         if transcript_out:
             tout = Text()
             tout.append("AI: ", style="bold #66bb6a")
-            tout.append(transcript_out[-80:], style="#b0bcd0")
+            display_out = transcript_out[-80:] if transcript_out_finished else transcript_out[-77:] + "..."
+            tout.append(display_out, style="#b0bcd0")
             self.query_one("#audio-transcript-out", Static).update(tout)
 
 
@@ -1556,6 +1560,8 @@ class HALOApp(App):
                 transcript_out=client_state.last_transcription_out,
                 mic_level=mic_level,
                 speaker_level=spk_level,
+                transcript_in_finished=client_state.transcription_in_finished,
+                transcript_out_finished=client_state.transcription_out_finished,
             )
 
             return
@@ -1584,6 +1590,8 @@ class HALOApp(App):
             speaker_status=speaker_status,
             transcript_in=getattr(session_state, "last_transcription_in", ""),
             transcript_out=getattr(session_state, "last_transcription_out", ""),
+            transcript_in_finished=getattr(session_state, "transcription_in_finished", True),
+            transcript_out_finished=getattr(session_state, "transcription_out_finished", True),
         )
 
     async def _handle_live_tool_call(self, call_id: str, name: str, args: dict) -> None:

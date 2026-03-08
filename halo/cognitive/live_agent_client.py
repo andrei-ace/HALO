@@ -28,6 +28,8 @@ class LiveAgentClientState:
     connected: bool = False
     last_transcription_in: str = ""
     last_transcription_out: str = ""
+    transcription_in_finished: bool = True
+    transcription_out_finished: bool = True
     last_text_out: str = ""
     last_status: str = ""
     last_interrupted_ts: float = 0.0
@@ -58,6 +60,8 @@ class LiveAgentClient:
         self._on_tool_call = on_tool_call  # Callable[[str, str, dict], Awaitable[None] | None]
 
         self._state = LiveAgentClientState()
+        self._accum_transcription_in: str = ""
+        self._accum_transcription_out: str = ""
         self._ws = None
         self._recv_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -238,10 +242,33 @@ class LiveAgentClient:
             self._state.last_text_out = text
 
         elif msg_type == "transcription_in":
-            self._state.last_transcription_in = msg.get("text", "")
+            chunk = msg.get("text", "")
+            finished = msg.get("finished", False)
+            if finished:
+                self._state.last_transcription_in = chunk
+                self._accum_transcription_in = chunk
+            else:
+                # New partial after a finished → reset; otherwise accumulate
+                if self._state.transcription_in_finished:
+                    self._accum_transcription_in = chunk
+                else:
+                    self._accum_transcription_in += chunk
+                self._state.last_transcription_in = self._accum_transcription_in
+            self._state.transcription_in_finished = finished
 
         elif msg_type == "transcription_out":
-            self._state.last_transcription_out = msg.get("text", "")
+            chunk = msg.get("text", "")
+            finished = msg.get("finished", False)
+            if finished:
+                self._state.last_transcription_out = chunk
+                self._accum_transcription_out = chunk
+            else:
+                if self._state.transcription_out_finished:
+                    self._accum_transcription_out = chunk
+                else:
+                    self._accum_transcription_out += chunk
+                self._state.last_transcription_out = self._accum_transcription_out
+            self._state.transcription_out_finished = finished
 
         elif msg_type == "status":
             self._state.last_status = msg.get("text", "")

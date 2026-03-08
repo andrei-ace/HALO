@@ -300,6 +300,54 @@ class TestLiveAgentSession:
         assert future.cancelled()
         assert len(session._tool_results) == 0
 
+    def test_handle_event_transcription_forwards_raw_chunks(self):
+        """Server forwards raw chunks + finished flag; no accumulation."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        transcription_calls_in = []
+        transcription_calls_out = []
+        session.set_callbacks(
+            on_transcription_in=lambda text, finished: transcription_calls_in.append((text, finished)),
+            on_transcription_out=lambda text, finished: transcription_calls_out.append((text, finished)),
+        )
+
+        # Chunk 1 (partial)
+        event1 = MagicMock()
+        event1.interrupted = False
+        event1.content = None
+        event1.turn_complete = False
+        event1.input_transcription = MagicMock()
+        event1.input_transcription.text = "pick "
+        event1.input_transcription.finished = False
+        event1.output_transcription = MagicMock()
+        event1.output_transcription.text = "Starting "
+        event1.output_transcription.finished = False
+
+        session._handle_event(event1)
+        assert session.state.last_transcription_in == "pick "
+        assert transcription_calls_in[-1] == ("pick ", False)
+        assert transcription_calls_out[-1] == ("Starting ", False)
+
+        # Chunk 2 (finished — full sentence from ADK)
+        event2 = MagicMock()
+        event2.interrupted = False
+        event2.content = None
+        event2.turn_complete = False
+        event2.input_transcription = MagicMock()
+        event2.input_transcription.text = "pick the cube"
+        event2.input_transcription.finished = True
+        event2.output_transcription = MagicMock()
+        event2.output_transcription.text = "Starting pick skill"
+        event2.output_transcription.finished = True
+
+        session._handle_event(event2)
+        # Server state just stores the raw chunk text
+        assert session.state.last_transcription_in == "pick the cube"
+        assert session.state.last_transcription_out == "Starting pick skill"
+        assert transcription_calls_in[-1] == ("pick the cube", True)
+        assert transcription_calls_out[-1] == ("Starting pick skill", True)
+
 
 # ── LiveAgentManager ──
 
@@ -472,11 +520,43 @@ class TestLiveAgentClient:
         from halo.cognitive.live_agent_client import LiveAgentClient
 
         client = LiveAgentClient(url="http://localhost:8000", arm_id="arm0")
-        client._handle_message("transcription_in", {"type": "transcription_in", "text": "pick the cube"})
+        client._handle_message(
+            "transcription_in", {"type": "transcription_in", "text": "pick the cube", "finished": True}
+        )
         assert client.state.last_transcription_in == "pick the cube"
+        assert client.state.transcription_in_finished is True
 
-        client._handle_message("transcription_out", {"type": "transcription_out", "text": "Starting pick"})
+        client._handle_message(
+            "transcription_out", {"type": "transcription_out", "text": "Starting pick", "finished": False}
+        )
         assert client.state.last_transcription_out == "Starting pick"
+        assert client.state.transcription_out_finished is False
+
+    def test_handle_transcription_accumulates_and_replaces(self):
+        from halo.cognitive.live_agent_client import LiveAgentClient
+
+        client = LiveAgentClient(url="http://localhost:8000", arm_id="arm0")
+
+        # Partial chunk 1
+        client._handle_message("transcription_in", {"type": "transcription_in", "text": "pick ", "finished": False})
+        assert client.state.last_transcription_in == "pick "
+        assert client.state.transcription_in_finished is False
+
+        # Partial chunk 2 — accumulates
+        client._handle_message("transcription_in", {"type": "transcription_in", "text": "the ", "finished": False})
+        assert client.state.last_transcription_in == "pick the "
+
+        # Finished — replaces with full sentence from ADK
+        client._handle_message(
+            "transcription_in", {"type": "transcription_in", "text": "pick the cube", "finished": True}
+        )
+        assert client.state.last_transcription_in == "pick the cube"
+        assert client.state.transcription_in_finished is True
+
+        # New partial starts fresh
+        client._handle_message("transcription_in", {"type": "transcription_in", "text": "now ", "finished": False})
+        assert client.state.last_transcription_in == "now "
+        assert client.state.transcription_in_finished is False
 
     def test_handle_status(self):
         from halo.cognitive.live_agent_client import LiveAgentClient

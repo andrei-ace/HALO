@@ -66,11 +66,15 @@ async def live_agent_ws(websocket: WebSocket, arm_id: str) -> None:
     def on_text_out(text: str) -> None:
         asyncio.run_coroutine_threadsafe(_ws_send({"type": "text_out", "text": text}), loop)
 
-    def on_transcription_in(text: str) -> None:
-        asyncio.run_coroutine_threadsafe(_ws_send({"type": "transcription_in", "text": text}), loop)
+    def on_transcription_in(text: str, finished: bool = False) -> None:
+        asyncio.run_coroutine_threadsafe(
+            _ws_send({"type": "transcription_in", "text": text, "finished": finished}), loop
+        )
 
-    def on_transcription_out(text: str) -> None:
-        asyncio.run_coroutine_threadsafe(_ws_send({"type": "transcription_out", "text": text}), loop)
+    def on_transcription_out(text: str, finished: bool = False) -> None:
+        asyncio.run_coroutine_threadsafe(
+            _ws_send({"type": "transcription_out", "text": text, "finished": finished}), loop
+        )
 
     def on_tool_call(call_id: str, name: str, args: dict) -> None:
         asyncio.run_coroutine_threadsafe(

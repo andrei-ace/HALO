@@ -33,7 +33,7 @@ def test_view_model_basic():
     assert vm.current_node == "SELECT_GRASP"
     assert vm.outcome == "IN_PROGRESS"
     assert vm.failure_code is None
-    assert len(vm.nodes) == 10
+    assert len(vm.nodes) == 11
     # Active node should have elapsed_ms
     active_nodes = [n for n in vm.nodes if n.name == "SELECT_GRASP"]
     assert active_nodes[0].elapsed_ms == 100
