@@ -19,11 +19,12 @@ logger = logging.getLogger(__name__)
 # Singleton state populated during lifespan
 _session_mgr = None
 _config: ServiceConfig | None = None
+_live_agent_mgr = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
-    global _session_mgr, _config  # noqa: PLW0603
+    global _session_mgr, _config, _live_agent_mgr  # noqa: PLW0603
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 
@@ -69,9 +70,26 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         firestore_store=firestore_store,
     )
 
+    # Live Agent manager
+    if _config.live_agent_enabled:
+        from cloud_service.live_agent_manager import LiveAgentManager
+
+        _live_agent_mgr = LiveAgentManager(
+            model=_config.live_agent_model,
+            voice=_config.live_agent_voice,
+            prompts_dir=_config.live_agent_prompts_dir,
+        )
+        app.state.live_agent_manager = _live_agent_mgr
+        logger.info("Live Agent enabled (model=%s, voice=%s)", _config.live_agent_model, _config.live_agent_voice)
+    else:
+        logger.info("Live Agent disabled")
+
     logger.info("Cognitive service ready")
     yield
 
+    if _live_agent_mgr is not None:
+        await _live_agent_mgr.remove_all()
+        _live_agent_mgr = None
     _session_mgr = None
     _config = None
 
@@ -92,6 +110,12 @@ def get_config() -> ServiceConfig:
     if _config is None:
         raise HTTPException(status_code=503, detail="Service not ready")
     return _config
+
+
+def get_live_agent_manager():
+    if _live_agent_mgr is None:
+        raise HTTPException(status_code=503, detail="Live agent not enabled")
+    return _live_agent_mgr
 
 
 async def verify_api_key(

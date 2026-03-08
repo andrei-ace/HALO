@@ -174,7 +174,7 @@ async def test_start_skill_rejects_unsupported_skill(rt: HALORuntime):
     assert snap.skill is not None
     assert snap.skill.phase == PhaseId.DONE
     assert snap.outcome.state == SkillOutcomeState.FAILURE
-    assert snap.outcome.reason_code == SkillFailureCode.UNSAFE_ABORT
+    assert snap.outcome.reason_code == SkillFailureCode.PLANNER_ABORT
 
     events = rt.bus.get_recent_events(ARM)
     failed = [e for e in events if e.type == EventType.SKILL_FAILED]

@@ -123,18 +123,19 @@ async def test_abort_activates_next(rt: HALORuntime):
     assert svc._active_run.skill_name == SkillName.TRACK
 
 
-async def test_failure_activates_next(rt: HALORuntime):
+async def test_failure_clears_queue(rt: HALORuntime):
     cfg = SkillRunnerConfig(select_grasp_timeout_ms=0)
     svc = _make_svc(rt, cfg)
     await _seed(rt)
     await svc.start_skill(SkillName.PICK, "run-1", "obj-1")
     await svc.start_skill(SkillName.TRACK, "run-2", "obj-1")
 
-    # First tick: timeout -> failure -> auto-activate queue
+    # First tick: timeout -> failure -> queue cleared (stale follow-ups invalid)
     await svc.tick()
 
+    assert svc._queue.size == 0
     assert svc._active_run is not None
-    assert svc._active_run.skill_name == SkillName.TRACK
+    assert svc._active_run.skill_name == SkillName.PICK  # completed (failed), not replaced
 
 
 async def test_empty_queue_no_activation(rt: HALORuntime):

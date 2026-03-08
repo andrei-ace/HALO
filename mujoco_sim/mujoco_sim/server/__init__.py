@@ -20,7 +20,7 @@ import msgpack
 import numpy as np
 import zmq
 
-from mujoco_sim.constants import PHASE_LIFT, PHASE_VERIFY_GRASP
+from mujoco_sim.constants import PHASE_LIFT, PHASE_RETREAT, PHASE_VERIFY_GRASP
 from mujoco_sim.server.config import SimServerConfig
 from mujoco_sim.server.handlers import ServerState, dispatch_command, execute_pending_pick, execute_pending_place
 from mujoco_sim.server.protocol import pack_telemetry
@@ -189,12 +189,23 @@ class SimServer:
                             state.phase_id = PHASE_LIFT  # below success threshold
                             state.error = "NO_GRASP"
                             state.done = True
+                            # Return to home after failed pick (open gripper)
+                            state.hold_target = env.home_qpos.copy()
                             return
                         logger.info("VERIFY_GRASP passed: object Z delta=%.4f m", dz)
 
                 state.phase_id = phase_id
                 state.done = True
-                logger.info("Trajectory complete (phase_id=%d)", phase_id)
+
+                # After PLACE RETREAT, return arm to home pose.
+                # Preserve gripper state (don't open if holding an object).
+                if phase_id == PHASE_RETREAT:
+                    home = env.home_qpos.copy()
+                    home[5] = action[5]  # preserve gripper
+                    state.hold_target = home
+                    logger.info("Trajectory complete (phase_id=%d), returning to home", phase_id)
+                else:
+                    logger.info("Trajectory complete (phase_id=%d)", phase_id)
             else:
                 arm_joints, gripper, phase_id = state.trajectory.sample(t)
                 action = np.concatenate([arm_joints, [gripper]])

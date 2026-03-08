@@ -13,6 +13,10 @@ class SkillQueue:
     def enqueue(self, item: QueuedSkill) -> bool:
         if len(self._items) >= self._max_size:
             return False
+        # Skip duplicates: same (skill_name, target_handle) already queued
+        for existing in self._items:
+            if existing.skill_name == item.skill_name and existing.target_handle == item.target_handle:
+                return True  # silently skip, not an error
         self._items.append(item)
         return True
 

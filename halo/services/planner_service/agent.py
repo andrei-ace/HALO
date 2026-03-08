@@ -106,7 +106,7 @@ def _command_key(cmd: CommandEnvelope) -> str:
 class PlannerAgent:
     """ADK ReAct agent that implements the DecideFn protocol."""
 
-    MAX_LOOP_RETRIES = 4
+    MAX_LOOP_RETRIES = 6
 
     def __init__(
         self,

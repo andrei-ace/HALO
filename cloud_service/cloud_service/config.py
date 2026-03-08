@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _DEFAULT_PROMPTS_DIR = Path(__file__).parents[2] / "configs" / "planner"
+_DEFAULT_LIVE_AGENT_PROMPTS_DIR = Path(__file__).parents[2] / "configs" / "live_agent"
 
 
 def _resolve_firestore_enabled() -> bool:
@@ -36,6 +37,11 @@ class ServiceConfig:
     firestore_enabled: bool = False  # HALO_FIRESTORE_ENABLED — auto-enabled when FIRESTORE_EMULATOR_HOST is set
     firestore_collection: str = "halo_sessions"  # HALO_FIRESTORE_COLLECTION
     firestore_ttl_hours: float = 1.0  # HALO_FIRESTORE_TTL_HOURS
+    # Live Agent settings
+    live_agent_enabled: bool = True  # HALO_LIVE_AGENT_ENABLED
+    live_agent_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"  # HALO_LIVE_AGENT_MODEL
+    live_agent_voice: str = "Kore"  # HALO_LIVE_AGENT_VOICE
+    live_agent_prompts_dir: Path = _DEFAULT_LIVE_AGENT_PROMPTS_DIR
 
     @classmethod
     def from_env(cls) -> ServiceConfig:
@@ -50,4 +56,10 @@ class ServiceConfig:
             firestore_enabled=_resolve_firestore_enabled(),
             firestore_collection=os.environ.get("HALO_FIRESTORE_COLLECTION", "halo_sessions"),
             firestore_ttl_hours=float(os.environ.get("HALO_FIRESTORE_TTL_HOURS", "1.0")),
+            live_agent_enabled=os.environ.get("HALO_LIVE_AGENT_ENABLED", "true").lower() in ("true", "1", "yes"),
+            live_agent_model=os.environ.get("HALO_LIVE_AGENT_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"),
+            live_agent_voice=os.environ.get("HALO_LIVE_AGENT_VOICE", "Kore"),
+            live_agent_prompts_dir=Path(
+                os.environ.get("HALO_LIVE_AGENT_PROMPTS_DIR", str(_DEFAULT_LIVE_AGENT_PROMPTS_DIR))
+            ),
         )

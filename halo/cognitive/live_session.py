@@ -86,7 +86,7 @@ class LivePlannerSession:
        during the turn, accumulating commands in the AgentContext.
     """
 
-    MAX_LOOP_RETRIES = 4
+    MAX_LOOP_RETRIES = 6
 
     def __init__(
         self,

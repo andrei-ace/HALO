@@ -569,12 +569,18 @@ def score_grasp(
     manip_scale = 0.005  # empirical: good configs around 0.002-0.005
     manipulability = min(1.0, manip_raw / manip_scale)
 
+    # Tilt penalty: penalize grasps with steep approach angles (>10° from horizontal).
+    # Tilted grasps reduce jaw-cube contact area, causing slippage during lift.
+    abs_tilt = abs(grasp.tilt_deg)
+    tilt_penalty = max(0.0, (abs_tilt - 10.0) / 20.0)  # 0 at <=10°, 0.5 at 20°, 1.0 at 30°
+
     # Combined score
     score = (
-        0.30 * (1.0 - ik_pos_err / pos_tol)
+        0.25 * (1.0 - ik_pos_err / pos_tol)
         + 0.25 * max(0.0, joint_margin)
-        + 0.25 * (1.0 - ori_err_deg / ori_tol_deg)
-        + 0.20 * manipulability
+        + 0.20 * (1.0 - ori_err_deg / ori_tol_deg)
+        + 0.15 * manipulability
+        + 0.15 * (1.0 - tilt_penalty)
     )
 
     return ScoredGrasp(

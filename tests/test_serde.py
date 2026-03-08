@@ -209,6 +209,41 @@ def test_snapshot_roundtrip_failure():
 
 
 # ---------------------------------------------------------------------------
+# snapshot_to_text
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_to_text_idle():
+    from halo.contracts.serde import snapshot_to_text
+
+    d = snapshot_to_dict(_idle_snapshot())
+    text = snapshot_to_text(d)
+    assert "Idle" in text
+    assert "Safety: OK" in text
+    assert "No target" in text
+
+
+def test_snapshot_to_text_active_skill():
+    from halo.contracts.serde import snapshot_to_text
+
+    d = snapshot_to_dict(_full_snapshot())
+    text = snapshot_to_text(d)
+    assert "PICK" in text
+    assert "red_cube_01" in text
+    assert "EXECUTE_APPROACH" in text
+    assert "Safety: OK" in text
+
+
+def test_snapshot_to_text_with_held_object():
+    from halo.contracts.serde import snapshot_to_text
+
+    d = snapshot_to_dict(_failed_snapshot())
+    text = snapshot_to_text(d)
+    assert "Holding: green_cube_01" in text
+    assert "OVERCURRENT" in text or "Reflex active" in text
+
+
+# ---------------------------------------------------------------------------
 # CommandEnvelope round-trip
 # ---------------------------------------------------------------------------
 

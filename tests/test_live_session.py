@@ -207,7 +207,7 @@ async def test_loop_detection_clears_after_threshold():
         if i < LivePlannerSession.MAX_LOOP_RETRIES - 1:
             assert len(result) >= 1
         else:
-            # On the 4th identical command, loop detection should kick in
+            # On the 6th identical command, loop detection should kick in
             assert result == []
             assert "Loop detected" in session.last_reasoning
 

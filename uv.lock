@@ -1253,33 +1253,30 @@ source = { editable = "." }
 dependencies = [
     { name = "google-adk" },
     { name = "google-cloud-firestore" },
+    { name = "halo-mujoco-sim", extra = ["sim"] },
     { name = "httpx" },
     { name = "litellm" },
     { name = "msgpack" },
     { name = "opencv-python" },
     { name = "pillow" },
     { name = "pyzmq" },
+    { name = "sounddevice" },
     { name = "textual" },
+    { name = "websockets" },
 ]
 
 [package.optional-dependencies]
-audio = [
-    { name = "sounddevice" },
-]
 dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
-]
-sim = [
-    { name = "halo-mujoco-sim", extra = ["sim"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "google-adk", specifier = ">=1.0" },
     { name = "google-cloud-firestore", specifier = ">=2.16" },
-    { name = "halo-mujoco-sim", extras = ["sim"], marker = "extra == 'sim'", editable = "mujoco_sim" },
+    { name = "halo-mujoco-sim", extras = ["sim"], editable = "mujoco_sim" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "litellm", specifier = ">=1.0" },
     { name = "msgpack", specifier = ">=1.0" },
@@ -1289,10 +1286,11 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24" },
     { name = "pyzmq", specifier = ">=25" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8" },
-    { name = "sounddevice", marker = "extra == 'audio'", specifier = ">=0.5" },
+    { name = "sounddevice", specifier = ">=0.5" },
     { name = "textual", specifier = ">=0.70" },
+    { name = "websockets", specifier = ">=13" },
 ]
-provides-extras = ["dev", "sim", "audio"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "halo-cloud-service"

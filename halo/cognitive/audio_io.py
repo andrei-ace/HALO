@@ -34,9 +34,7 @@ def _lazy_import_sounddevice():
         return sounddevice
     except ImportError:
         msg = (
-            "sounddevice is required for audio I/O. "
-            "Install it with: uv sync --extra audio  "
-            "(or: pip install sounddevice)"
+            "sounddevice is required for audio I/O. Install it with: uv sync --extra dev  (or: pip install sounddevice)"
         )
         raise ImportError(msg) from None
 

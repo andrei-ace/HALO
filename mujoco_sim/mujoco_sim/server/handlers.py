@@ -272,10 +272,10 @@ def _handle_abort_pick(server_state: ServerState | None, env: SO101Env) -> dict:
     if was_active:
         # Cancel deferred pick before it gets executed by the main loop
         server_state.pending_pick_target = None
-        # Latch actual measured joint positions (not ctrl targets) so the arm freezes in place
-        server_state.hold_target = np.array(env.mujoco_data.qpos[:6], copy=True)
+        # Return to home position after abort (open gripper)
+        server_state.hold_target = env.home_qpos.copy()
         server_state.reset_trajectory()
-        logger.info("abort_pick: trajectory aborted, holding current position")
+        logger.info("abort_pick: trajectory aborted, returning to home")
     else:
         logger.info("abort_pick: no active trajectory to abort")
 
