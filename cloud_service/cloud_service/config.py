@@ -30,7 +30,6 @@ class ServiceConfig:
     planner_model: str = "gemini-3.1-flash-lite-preview"
     vlm_model: str = "gemini-3.1-flash-lite-preview"
     google_api_key: str = ""
-    cloud_api_key: str = ""  # key clients must present in Authorization header
     prompts_dir: Path = _DEFAULT_PROMPTS_DIR
     compaction_interval: int = 20  # invocations between compaction runs
     compaction_overlap: int = 4  # recent invocations kept uncompacted
@@ -49,7 +48,6 @@ class ServiceConfig:
             planner_model=os.environ.get("HALO_PLANNER_MODEL", "gemini-3.1-flash-lite-preview"),
             vlm_model=os.environ.get("HALO_VLM_MODEL", "gemini-3.1-flash-lite-preview"),
             google_api_key=os.environ.get("GOOGLE_API_KEY", ""),
-            cloud_api_key=os.environ.get("HALO_CLOUD_API_KEY", ""),
             prompts_dir=Path(os.environ.get("HALO_PROMPTS_DIR", str(_DEFAULT_PROMPTS_DIR))),
             compaction_interval=int(os.environ.get("HALO_COMPACTION_INTERVAL", "20")),
             compaction_overlap=int(os.environ.get("HALO_COMPACTION_OVERLAP", "4")),

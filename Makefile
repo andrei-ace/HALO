@@ -1,7 +1,7 @@
-.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video generate-episodes-place visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-cloud-service sim-server ruff help
+.PHONY: install install-sim test test-sim test-unit test-v test-file test-k test-component test-system test-e2e test-e2e-all test-integration test-cloud-service smoke-cloud-service test-cloud-service-integration generate-episodes generate-episodes-video generate-episodes-place visualize-ik tui-mock tui-live tui-live-cloud tui-live-cloud-local run-headless-mock run-headless-live run-cloud-service sim-server ruff tf-init tf-plan tf-apply tf-bootstrap docker-push deploy-cloud help
 
 install:
-	uv sync --extra dev
+	uv sync --extra dev --extra sim
 
 install-sim: install
 
@@ -41,10 +41,13 @@ tui-live:
 
 HALO_CLOUD_URL ?= http://localhost:8080
 
+SA_EMAIL ?=
+
 tui-live-cloud:
 	uv run python -m halo.tui.app --live \
 		--arm $(ARM_ID) \
 		--cloud-url $(HALO_CLOUD_URL) \
+		$(if $(SA_EMAIL),--sa-email $(SA_EMAIL)) \
 		--source mujoco \
 		--live-agent
 
@@ -139,6 +142,46 @@ visualize-ik:
 		--seed $(IK_SEED) \
 		--output-dir $(IK_OUT_DIR) \
 		$(VIZ_ARGS)
+
+# ---------------------------------------------------------------------------
+# Terraform
+# ---------------------------------------------------------------------------
+
+tf-init:
+	cd infra && terraform init
+
+tf-plan:
+	cd infra && terraform plan
+
+tf-apply:
+	cd infra && terraform apply
+
+# Build + push Docker image to Artifact Registry.
+# Falls back to constructing the path from GCP_PROJECT_ID / GCP_REGION env vars
+# when terraform output is not yet available (e.g. registry created but no full apply).
+GCP_PROJECT_ID ?=
+GCP_REGION     ?=
+
+docker-push:
+	$(eval REPO := $(or \
+		$(shell cd infra && terraform output -raw artifact_registry 2>/dev/null), \
+		$(if $(GCP_PROJECT_ID),$(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/halo)))
+	@test -n "$(REPO)" || { echo "ERROR: Set GCP_PROJECT_ID or run 'make tf-apply' first"; exit 1; }
+	docker build --platform linux/amd64 -t $(REPO)/halo-cognitive:latest -f cloud_service/Dockerfile .
+	docker push $(REPO)/halo-cognitive:latest
+
+# Bootstrap (first-time only): create registry, secrets, SAs, Firestore — no Cloud Run yet.
+# After this, push the image and add the API key secret, then run deploy-cloud.
+tf-bootstrap:
+	cd infra && terraform apply -var deploy_service=false
+
+# Full deploy: push image then create/update the Cloud Run service.
+# Requires: tf-bootstrap done, image pushable, API key secret populated.
+deploy-cloud:
+	$(MAKE) docker-push
+	cd infra && terraform apply -var deploy_service=true
+
+# ---------------------------------------------------------------------------
 
 test-integration:
 	$(eval RUN_DIR := integration/runs/$(shell date +%Y%m%d_%H%M%S))

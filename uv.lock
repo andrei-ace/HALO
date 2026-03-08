@@ -1253,7 +1253,6 @@ source = { editable = "." }
 dependencies = [
     { name = "google-adk" },
     { name = "google-cloud-firestore" },
-    { name = "halo-mujoco-sim", extra = ["sim"] },
     { name = "httpx" },
     { name = "litellm" },
     { name = "msgpack" },
@@ -1267,16 +1266,21 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "halo-mujoco-sim", extra = ["sim"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
+]
+sim = [
+    { name = "halo-mujoco-sim", extra = ["sim"] },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "google-adk", specifier = ">=1.0" },
     { name = "google-cloud-firestore", specifier = ">=2.16" },
-    { name = "halo-mujoco-sim", extras = ["sim"], editable = "mujoco_sim" },
+    { name = "halo-mujoco-sim", extras = ["sim"], marker = "extra == 'dev'", editable = "mujoco_sim" },
+    { name = "halo-mujoco-sim", extras = ["sim"], marker = "extra == 'sim'", editable = "mujoco_sim" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "litellm", specifier = ">=1.0" },
     { name = "msgpack", specifier = ">=1.0" },
@@ -1290,7 +1294,7 @@ requires-dist = [
     { name = "textual", specifier = ">=0.70" },
     { name = "websockets", specifier = ">=13" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["sim", "dev"]
 
 [[package]]
 name = "halo-cloud-service"

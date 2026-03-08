@@ -17,7 +17,7 @@ import numpy as np
 from fastapi import Depends, FastAPI, File, Form, UploadFile
 from halo.contracts.serde import command_envelope_to_dict, message_record_to_dict, snapshot_from_dict, vlm_scene_to_dict
 
-from cloud_service.deps import get_session_manager, get_vlm_fn, lifespan, verify_api_key
+from cloud_service.deps import get_session_manager, get_vlm_fn, lifespan
 from cloud_service.ws_handler import router as ws_router
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ async def health(session_mgr=Depends(get_session_manager)) -> dict:
     }
 
 
-@app.post("/decide", dependencies=[Depends(verify_api_key)])
+@app.post("/decide")
 async def decide(
     body: dict,
     session_mgr=Depends(get_session_manager),
@@ -117,7 +117,7 @@ async def decide(
     return result
 
 
-@app.post("/vlm/scene", dependencies=[Depends(verify_api_key)])
+@app.post("/vlm/scene")
 async def vlm_scene(
     image: UploadFile = File(...),
     metadata: str = Form("{}"),
@@ -143,7 +143,7 @@ async def vlm_scene(
     return result
 
 
-@app.get("/state/{arm_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/state/{arm_id}")
 async def get_state(arm_id: str, session_mgr=Depends(get_session_manager)) -> dict:
     """Return session readiness and cursor for a specific arm."""
     session = session_mgr.get_session(arm_id)

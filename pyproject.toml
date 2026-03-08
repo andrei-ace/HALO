@@ -18,11 +18,11 @@ dependencies = [
     "google-cloud-firestore>=2.16",
     "sounddevice>=0.5",
     "websockets>=13",
-    "halo-mujoco-sim[sim]",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8"]
+sim = ["halo-mujoco-sim[sim]"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.8", "halo-mujoco-sim[sim]"]
 
 [tool.uv.workspace]
 members = ["mujoco_sim", "cloud_service"]

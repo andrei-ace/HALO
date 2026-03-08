@@ -1,0 +1,7 @@
+project_id = "my-gcp-project"
+region     = "us-central1"
+
+# invoker_impersonators = ["user:you@example.com"]  # users allowed to impersonate the invoker SA
+# planner_model    = "gemini-3.1-flash-lite-preview"
+# vlm_model        = "gemini-3.1-flash-lite-preview"
+# live_agent_model = "gemini-2.5-flash-native-audio-preview-12-2025"

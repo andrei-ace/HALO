@@ -46,7 +46,9 @@ class RemoteCloudConfig:
     """Config for remote HTTP client to Cloud Run cognitive service."""
 
     service_url: str = ""  # e.g. "https://halo-cognitive-xxx-uc.a.run.app"
-    api_key: str | None = None  # reads HALO_CLOUD_API_KEY env if None
+    use_iam_auth: bool = True  # when True, auto-fetch GCP identity tokens
+    sa_key_file: str | None = None  # optional path to service account key JSON
+    sa_email: str | None = None  # optional SA email for impersonation (user ADC → SA → ID token)
     request_timeout_s: float = 30.0
     planner_model: str = "gemini-3.1-flash-lite-preview"
     vlm_model: str = "gemini-3.1-flash-lite-preview"
@@ -78,4 +80,4 @@ class CognitiveConfig:
     compaction: CompactionConfig = field(default_factory=CompactionConfig)
     enable_failover: bool = False
     health_check_interval_s: float = 5.0
-    startup_cloud_wait_s: float = 10.0  # max seconds to wait for cloud at startup
+    startup_cloud_wait_s: float = 30.0  # max seconds to wait for cloud at startup (Cloud Run cold start)

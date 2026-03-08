@@ -2093,6 +2093,8 @@ def _run_live(args: list[str]) -> None:
     base_url = "http://localhost:11434"
     source_type = "videoloop"
     cloud_url = ""
+    sa_key_file: str | None = None
+    sa_email: str | None = None
 
     for i, arg in enumerate(args):
         if arg == "--arm" and i + 1 < len(args):
@@ -2111,6 +2113,10 @@ def _run_live(args: list[str]) -> None:
                 raise SystemExit(msg)
         elif arg == "--cloud-url" and i + 1 < len(args):
             cloud_url = args[i + 1]
+        elif arg == "--sa-key-file" and i + 1 < len(args):
+            sa_key_file = args[i + 1]
+        elif arg == "--sa-email" and i + 1 < len(args):
+            sa_email = args[i + 1]
 
     live_agent_enabled = "--live-agent" in args
 
@@ -2136,7 +2142,11 @@ def _run_live(args: list[str]) -> None:
         from halo.cognitive.config import RemoteCloudConfig
         from halo.cognitive.remote_backend import RemoteCognitiveBackend
 
-        remote = RemoteCognitiveBackend(RemoteCloudConfig(service_url=cloud_url), arm_id=arm_id, run_logger=run_logger)
+        remote = RemoteCognitiveBackend(
+            RemoteCloudConfig(service_url=cloud_url, sa_key_file=sa_key_file, sa_email=sa_email),
+            arm_id=arm_id,
+            run_logger=run_logger,
+        )
         lease_mgr = LeaseManager()
         runtime = HALORuntime(lease_manager=lease_mgr)
         runtime.register_arm(arm_id)
@@ -2227,7 +2237,14 @@ def _run_live(args: list[str]) -> None:
         from halo.cognitive.audio_io import make_audio_components
         from halo.cognitive.live_agent_client import LiveAgentClient
 
-        live_agent = LiveAgentClient(url=cloud_url, arm_id=arm_id)
+        # Use IAM auth for https:// Cloud Run URLs, skip for local http://
+        _la_auth_fn = None
+        if cloud_url.startswith("https://"):
+            from halo.cognitive.remote_backend import make_id_token_fn
+
+            _la_auth_fn = make_id_token_fn(audience=cloud_url, sa_key_file=sa_key_file, sa_email=sa_email)
+
+        live_agent = LiveAgentClient(url=cloud_url, arm_id=arm_id, auth_token_fn=_la_auth_fn)
         live_agent_audio = make_audio_components(on_audio=live_agent.send_audio)
         if live_agent_audio.available and live_agent_audio.playback:
             live_agent.set_audio_callbacks(
@@ -2247,6 +2264,11 @@ def _run_live(args: list[str]) -> None:
     _file_handler.setFormatter(_logging.Formatter("%(asctime)s %(name)s %(levelname)s %(message)s"))
     _logging.root.handlers = [_file_handler]
     _logging.root.setLevel(_logging.DEBUG)
+
+    # Silence noisy third-party DEBUG loggers that flood the log with
+    # per-frame audio chunks, HTTP connection details, etc.
+    for _noisy in ("websockets", "httpcore", "httpx", "LiteLLM"):
+        _logging.getLogger(_noisy).setLevel(_logging.WARNING)
 
     # Strip StreamHandlers that libraries (litellm, httpx, google.*) attach
     # directly to their own loggers — those bypass root and write to the

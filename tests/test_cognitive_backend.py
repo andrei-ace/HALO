@@ -119,9 +119,9 @@ def test_cloud_config_defaults():
 
 
 def test_remote_cloud_config_defaults():
-    cfg = RemoteCloudConfig(service_url="https://example.com", api_key="test-key")
+    cfg = RemoteCloudConfig(service_url="https://example.com", use_iam_auth=True)
     assert cfg.service_url == "https://example.com"
-    assert cfg.api_key == "test-key"
+    assert cfg.use_iam_auth is True
     assert cfg.request_timeout_s == 30.0
 
 

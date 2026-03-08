@@ -101,7 +101,7 @@ def client(mock_agent, mock_vlm_fn):
     session_mgr = _FakeSessionManager(mock_agent, mock_vlm_fn)
     with (
         patch("cloud_service.deps._session_mgr", session_mgr),
-        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+        patch("cloud_service.deps._config", MagicMock()),
     ):
         from cloud_service.app import app
 
@@ -192,7 +192,7 @@ def test_decide_handoff_context_sets_pending_handoff(mock_agent, mock_vlm_fn):
 
     with (
         patch("cloud_service.deps._session_mgr", session_mgr),
-        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+        patch("cloud_service.deps._config", MagicMock()),
     ):
         from cloud_service.app import app
 
@@ -253,41 +253,6 @@ def test_state_endpoint_nonexistent(client):
     assert data["readiness"] == "cold"
 
 
-def test_auth_required():
-    """When cloud_api_key is set, requests without auth are rejected."""
-    mock_agent = MagicMock()
-    mock_agent.decide = AsyncMock(return_value=[])
-    mock_agent.last_reasoning = ""
-    mock_agent.last_compaction = None
-    mock_agent.last_token_usage = {}
-    mock_agent.reset_loop_state = MagicMock()
-    mock_agent.msg_history = MessageHistory()
-
-    session_mgr = _FakeSessionManager(mock_agent, AsyncMock())
-
-    with (
-        patch("cloud_service.deps._session_mgr", session_mgr),
-        patch("cloud_service.deps._config", MagicMock(cloud_api_key="secret-key")),
-    ):
-        from cloud_service.app import app
-
-        c = TestClient(app, raise_server_exceptions=False)
-
-        # No auth header
-        resp = c.post("/decide", json={"snapshot": {}, "operator_cmd": None})
-        assert resp.status_code == 401
-
-        # Wrong key
-        resp = c.post("/decide", json={"snapshot": {}, "operator_cmd": None}, headers={"Authorization": "Bearer wrong"})
-        assert resp.status_code == 403
-
-        # Correct key
-        snap = idle_snapshot()
-        body = {"snapshot": snapshot_to_dict(snap)}
-        resp = c.post("/decide", json=body, headers={"Authorization": "Bearer secret-key"})
-        assert resp.status_code == 200
-
-
 def test_decide_need_history_response(mock_agent, mock_vlm_fn):
     """When sync returns need_history, /decide returns status=need_history."""
     session_mgr = _FakeSessionManager(mock_agent, mock_vlm_fn)
@@ -302,7 +267,7 @@ def test_decide_need_history_response(mock_agent, mock_vlm_fn):
 
     with (
         patch("cloud_service.deps._session_mgr", session_mgr),
-        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+        patch("cloud_service.deps._config", MagicMock()),
     ):
         from cloud_service.app import app
 
@@ -341,7 +306,7 @@ def test_decide_restores_handoff_on_agent_failure(mock_agent, mock_vlm_fn):
 
     with (
         patch("cloud_service.deps._session_mgr", session_mgr),
-        patch("cloud_service.deps._config", MagicMock(cloud_api_key="")),
+        patch("cloud_service.deps._config", MagicMock()),
     ):
         from cloud_service.app import app
 

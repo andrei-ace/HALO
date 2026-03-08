@@ -62,18 +62,145 @@ uv run --project cloud_service pytest cloud_service/tests/ -v
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GOOGLE_API_KEY` | Yes | Gemini API key |
-| `HALO_CLOUD_API_KEY` | No | Bearer token clients must present (skip auth if unset) |
 | `HALO_PLANNER_MODEL` | No | Planner model (default: `gemini-3.1-flash-lite-preview`) |
 | `HALO_VLM_MODEL` | No | VLM model (default: `gemini-3.1-flash-lite-preview`) |
 
 ## Cloud Run deployment
 
+Auth is handled at the Cloud Run IAM layer (not app-level Bearer tokens).
+All GCP resources are managed via Terraform in `infra/`.
+
+### Prerequisites
+
+Terraform needs a GCP account with sufficient permissions. **Owner** covers
+everything; otherwise you need at least:
+
+- `roles/serviceusage.serviceUsageAdmin` (enable APIs)
+- `roles/iam.serviceAccountAdmin` (create service accounts)
+- `roles/artifactregistry.admin`
+- `roles/secretmanager.admin`
+- `roles/run.admin`
+- `roles/datastore.owner` (Firestore)
+
+Authenticate so Terraform can use your credentials:
+
 ```bash
-gcloud run deploy halo-cognitive \
-    --source . \
-    --memory 2Gi --cpu 2 \
-    --min-instances 1 --max-instances 4 \
-    --concurrency 1 \
-    --timeout 60 \
-    --set-secrets "GOOGLE_API_KEY=halo-google-api-key:latest,HALO_CLOUD_API_KEY=halo-cloud-api-key:latest"
+gcloud auth application-default login
+```
+
+The project must have a billing account linked — APIs and Cloud Run won't work
+without it:
+
+```bash
+# List available billing accounts
+gcloud billing accounts list
+
+# Link one to your project
+gcloud billing projects link $PROJECT_ID --billing-account=XXXXXX-XXXXXX-XXXXXX
+```
+
+Terraform manages API enablement automatically, but the **Service Usage API**
+itself must be enabled first (bootstrap dependency). Enable it along with the
+other required APIs manually before the first apply:
+
+```bash
+PROJECT_ID=your-project-id
+
+gcloud services enable serviceusage.googleapis.com    --project=$PROJECT_ID
+gcloud services enable artifactregistry.googleapis.com --project=$PROJECT_ID
+gcloud services enable run.googleapis.com              --project=$PROJECT_ID
+gcloud services enable secretmanager.googleapis.com    --project=$PROJECT_ID
+gcloud services enable firestore.googleapis.com        --project=$PROJECT_ID
+gcloud services enable iam.googleapis.com              --project=$PROJECT_ID
+```
+
+### Steps
+
+```bash
+# 1. Initialise Terraform (one-time)
+make tf-init
+
+# 2. Create infrastructure (registry, secrets, SAs, Firestore — no Cloud Run yet)
+make tf-bootstrap
+
+# 3. Configure Docker to authenticate with Artifact Registry (one-time)
+gcloud auth configure-docker $(cd infra && terraform output -raw artifact_registry | cut -d/ -f1)
+
+# 4. Add your Gemini API key to Secret Manager (one-time)
+echo -n "YOUR_GEMINI_KEY" | gcloud secrets versions add google-api-key \
+  --project=$(cd infra && terraform output -raw project_id) --data-file=-
+
+# 5. Build + push the image, then create the Cloud Run service
+make deploy-cloud
+```
+
+Subsequent deploys only need `make deploy-cloud`.
+
+> **Why is the API key manual?** Terraform creates the Secret Manager secret
+> and IAM bindings, but the actual key value is added via `gcloud` to avoid
+> storing it in Terraform state (which keeps secrets in plaintext). To rotate
+> the key, run the `gcloud secrets versions add` command again.
+
+## TUI authentication
+
+The TUI authenticates to Cloud Run using GCP identity tokens.
+It impersonates the invoker service account to mint tokens:
+
+```bash
+CLOUD_URL=$(cd infra && terraform output -raw service_url)
+SA_EMAIL=$(cd infra && terraform output -raw invoker_sa_email)
+
+gcloud auth application-default login
+make tui-live-cloud HALO_CLOUD_URL=$CLOUD_URL SA_EMAIL=$SA_EMAIL
+```
+
+The `--sa-email` flag tells the TUI to impersonate the invoker SA using your
+user ADC credentials.
+
+### Granting impersonation rights
+
+**All users** (including project Owners) must be listed in
+`invoker_impersonators` to impersonate the invoker SA. Project-level Owner
+grants broad permissions, but SA-level IAM bindings are managed as separate
+Terraform resources (`google_service_account_iam_member`) and are not
+inherited from project-level roles.
+
+Add your email to `invoker_impersonators` in `infra/terraform.tfvars`:
+
+```hcl
+invoker_impersonators = ["user:you@example.com"]
+```
+
+Then apply:
+
+```bash
+cd infra && terraform apply
+```
+
+Without this, you will get a `Permission 'iam.serviceAccounts.getOpenIdToken'
+denied` error when launching the TUI.
+
+Alternatively, create a service account key file:
+
+```bash
+PROJECT=$(cd infra && terraform output -raw project_id)
+SA_EMAIL=$(cd infra && terraform output -raw invoker_sa_email)
+gcloud iam service-accounts keys create invoker-key.json \
+  --iam-account="$SA_EMAIL" --project="$PROJECT"
+
+uv run python -m halo.tui.app --live \
+  --cloud-url $CLOUD_URL \
+  --sa-key-file invoker-key.json \
+  --source mujoco --live-agent
+```
+
+> **Note:** Key files (`*-key.json`, `*-credentials.json`) are gitignored. Never commit them.
+
+### Local development (no auth)
+
+When connecting to `http://localhost:8080`, IAM auth is automatically skipped:
+
+```bash
+make run-cloud-service    # terminal 1
+make tui-live-cloud-local # terminal 2
 ```

@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
-from fastapi import Depends, Header, HTTPException
+from fastapi import HTTPException
 
 from cloud_service.config import ServiceConfig
 
@@ -116,17 +116,3 @@ def get_live_agent_manager():
     if _live_agent_mgr is None:
         raise HTTPException(status_code=503, detail="Live agent not enabled")
     return _live_agent_mgr
-
-
-async def verify_api_key(
-    authorization: str | None = Header(None),
-    config: ServiceConfig = Depends(get_config),
-) -> None:
-    """Validate the Authorization: Bearer <key> header."""
-    if not config.cloud_api_key:
-        return  # no key configured — allow all requests
-    if not authorization:
-        raise HTTPException(status_code=401, detail="Missing Authorization header")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or token != config.cloud_api_key:
-        raise HTTPException(status_code=403, detail="Invalid API key")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
-import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -29,6 +28,126 @@ if TYPE_CHECKING:
     from halo.tui.run_logger import RunLogger
 
 logger = logging.getLogger(__name__)
+
+
+def _build_id_token_credentials(audience: str, sa_key_file: str | None = None, sa_email: str | None = None):
+    """Build google-auth ID-token credentials for *audience*.
+
+    Supports three credential sources (tried in order):
+
+    1. **Explicit SA key file** — ``sa_key_file`` path to a JSON key.
+    2. **SA / metadata server** — ``fetch_id_token_credentials`` (works for
+       ``GOOGLE_APPLICATION_CREDENTIALS`` pointing at a SA key, or on GCE/Cloud Run).
+    3. **User ADC + SA impersonation** — ``sa_email`` is required so user
+       credentials can impersonate the invoker SA to mint ID tokens.
+       Pass ``--sa-email`` on the CLI or set it in ``RemoteCloudConfig``.
+
+    The returned object supports ``refresh()`` and exposes ``.token``.
+    """
+    import google.auth
+    from google.auth.transport.requests import Request as AuthRequest
+
+    creds = None
+
+    # 1. Explicit key file
+    if sa_key_file:
+        from google.oauth2 import service_account
+
+        creds = service_account.IDTokenCredentials.from_service_account_file(sa_key_file, target_audience=audience)
+
+    # 2. SA key via env / metadata server
+    if creds is None:
+        try:
+            from google.oauth2 import id_token
+
+            creds = id_token.fetch_id_token_credentials(audience, request=AuthRequest())
+            creds.refresh(AuthRequest())
+        except (google.auth.exceptions.DefaultCredentialsError, ValueError):
+            creds = None
+
+    # 3. User ADC → impersonate SA → mint ID token
+    if creds is None:
+        source_creds, _ = google.auth.default()
+        from google.auth import impersonated_credentials
+
+        # If ADC is already a SA (e.g. impersonated via gcloud), use it directly
+        source_sa = getattr(source_creds, "service_account_email", None)
+        if source_sa:
+            creds = impersonated_credentials.IDTokenCredentials(
+                target_credentials=source_creds,
+                target_audience=audience,
+            )
+        elif sa_email:
+            # User credentials — impersonate the invoker SA to get an ID token
+            source_creds.refresh(AuthRequest())
+            impersonated = impersonated_credentials.Credentials(
+                source_credentials=source_creds,
+                target_principal=sa_email,
+                target_scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+            creds = impersonated_credentials.IDTokenCredentials(
+                target_credentials=impersonated,
+                target_audience=audience,
+                include_email=True,
+            )
+        else:
+            msg = (
+                "User ADC cannot mint ID tokens directly. Provide one of:\n"
+                "  --sa-email <invoker-sa@project.iam.gserviceaccount.com>  (impersonate invoker SA)\n"
+                "  --sa-key-file <path>  (service account key JSON)\n"
+                "  gcloud auth application-default login --impersonate-service-account=<SA_EMAIL>"
+            )
+            raise google.auth.exceptions.DefaultCredentialsError(msg)
+
+    # Pre-refresh so the first request doesn't block
+    try:
+        creds.refresh(AuthRequest())
+    except google.auth.exceptions.DefaultCredentialsError:
+        logger.warning("Could not refresh ID token credentials — requests may fail")
+    return creds
+
+
+def make_id_token_fn(audience: str, sa_key_file: str | None = None, sa_email: str | None = None) -> Callable[[], str]:
+    """Return a ``() -> str`` callable that yields a fresh GCP identity token.
+
+    Tokens are cached by the underlying google-auth library and transparently
+    refreshed when expired.  Suitable for passing as *auth_token_fn* to
+    ``LiveAgentClient``.
+    """
+    creds = _build_id_token_credentials(audience, sa_key_file, sa_email=sa_email)
+
+    def _get_token() -> str:
+        from google.auth.transport.requests import Request as AuthRequest
+
+        if not creds.valid:
+            creds.refresh(AuthRequest())
+        return creds.token
+
+    return _get_token
+
+
+class _CloudRunAuth(httpx.Auth):
+    """Attach GCP identity tokens for Cloud Run IAM auth.
+
+    Uses ``google.oauth2.id_token`` to fetch tokens scoped to the Cloud Run
+    service URL.  Tokens are cached and auto-refreshed by the underlying
+    google-auth library.  When *sa_key_file* is provided, explicit service
+    account credentials are used; otherwise Application Default Credentials
+    (ADC) are used.
+    """
+
+    def __init__(self, audience: str, sa_key_file: str | None = None, sa_email: str | None = None) -> None:
+        self._audience = audience
+        self._credentials = _build_id_token_credentials(audience, sa_key_file, sa_email=sa_email)
+
+    def auth_flow(self, request):
+        from google.auth.transport.requests import Request as AuthRequest
+
+        if not self._credentials.valid:
+            self._credentials.refresh(AuthRequest())
+
+        request.headers["Authorization"] = f"Bearer {self._credentials.token}"
+        yield request
 
 
 def _encode_jpeg(image: object, quality: int = 85) -> bytes:
@@ -66,14 +185,17 @@ class RemoteCognitiveBackend:
         self._config = cfg
         self._arm_id = arm_id
         self._run_logger = run_logger
-        api_key = cfg.api_key or os.environ.get("HALO_CLOUD_API_KEY", "")
-        headers = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
+        # Only use IAM auth for https:// URLs (Cloud Run); skip for local dev (http://)
+        _needs_iam = cfg.use_iam_auth and cfg.service_url.startswith("https://")
+        auth = (
+            _CloudRunAuth(audience=cfg.service_url, sa_key_file=cfg.sa_key_file, sa_email=cfg.sa_email)
+            if _needs_iam
+            else None
+        )
         self._client = httpx.AsyncClient(
             base_url=cfg.service_url,
             timeout=httpx.Timeout(cfg.request_timeout_s),
-            headers=headers,
+            auth=auth,
         )
         self._last_reasoning = ""
         self._last_token_usage: dict[str, int] = {}
@@ -193,7 +315,7 @@ class RemoteCognitiveBackend:
 
     async def health_check(self) -> bool:
         try:
-            resp = await self._client.get("/health", timeout=5.0)
+            resp = await self._client.get("/health", timeout=10.0)
             return resp.status_code == 200
         except Exception:
             return False

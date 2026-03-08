@@ -51,6 +51,7 @@ class LiveAgentClient:
         on_audio_out: object | None = None,
         on_interrupt: object | None = None,
         on_tool_call: object | None = None,
+        auth_token_fn: object | None = None,
     ) -> None:
         self._url = url.rstrip("/")
         self._arm_id = arm_id
@@ -58,6 +59,7 @@ class LiveAgentClient:
         self._on_audio_out = on_audio_out  # Callable[[bytes], None]
         self._on_interrupt = on_interrupt  # Callable[[], None]
         self._on_tool_call = on_tool_call  # Callable[[str, str, dict], Awaitable[None] | None]
+        self._auth_token_fn = auth_token_fn  # Callable[[], str] | None
 
         self._state = LiveAgentClientState()
         self._accum_transcription_in: str = ""
@@ -208,7 +210,12 @@ class LiveAgentClient:
         elif ws_url.startswith("https://"):
             ws_url = "wss://" + ws_url[8:]
 
-        async with websockets.connect(ws_url) as ws:
+        extra_headers = {}
+        if self._auth_token_fn is not None:
+            token = self._auth_token_fn()
+            extra_headers["Authorization"] = f"Bearer {token}"
+
+        async with websockets.connect(ws_url, additional_headers=extra_headers) as ws:
             self._ws = ws
             self._state.connected = True
             logger.info("Live agent WS connected to %s", ws_url)

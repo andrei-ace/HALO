@@ -42,3 +42,15 @@ datasets/
 models/*.onnx
 models/*.pt
 models/*.bin
+
+# GCP service account keys
+*-key.json
+*-credentials.json
+
+# Terraform
+infra/.terraform/
+infra/*.tfstate
+infra/*.tfstate.backup
+infra/.terraform.lock.hcl
+*.tfvars
+!*.tfvars.example
