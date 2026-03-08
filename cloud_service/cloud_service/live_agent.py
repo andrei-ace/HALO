@@ -389,7 +389,7 @@ class LiveAgentSession:
         # Handle interruption (barge-in: user spoke while model was outputting)
         # Only fire when model is actively speaking to avoid spurious interrupts
         # from Gemini's auto-activity-detection (ambient noise, etc.)
-        if event.interrupted and self._state.turn_active:
+        if event.interrupted:
             logger.info("Barge-in detected — interrupting audio output")
             self._state.turn_active = False
             if self._on_interrupted:
