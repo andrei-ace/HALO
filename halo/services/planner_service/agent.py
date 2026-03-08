@@ -388,6 +388,8 @@ class PlannerAgent:
         self._ctx.used_tools.clear()
         self._ctx.loop_detected = False
         self._ctx.total_calls = 0
+        self._ctx.active_skill_run_id = snap.skill.skill_run_id if snap.skill else None
+        self._ctx.skill_outcome_state = snap.outcome.state.value if snap.outcome else None
 
         # New operator instruction always resets loop detection so the
         # agent gets a clean slate to act on the command.

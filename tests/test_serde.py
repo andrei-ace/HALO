@@ -219,8 +219,8 @@ def test_snapshot_to_text_idle():
     d = snapshot_to_dict(_idle_snapshot())
     text = snapshot_to_text(d)
     assert "Idle" in text
-    assert "Safety: OK" in text
-    assert "No target" in text
+    # Safety OK is omitted when everything is fine
+    assert "Safety" not in text
 
 
 def test_snapshot_to_text_active_skill():
@@ -231,7 +231,8 @@ def test_snapshot_to_text_active_skill():
     assert "PICK" in text
     assert "red_cube_01" in text
     assert "EXECUTE_APPROACH" in text
-    assert "Safety: OK" in text
+    # Safety OK is omitted — only problems are surfaced
+    assert "Safety" not in text
 
 
 def test_snapshot_to_text_with_held_object():
@@ -240,7 +241,8 @@ def test_snapshot_to_text_with_held_object():
     d = snapshot_to_dict(_failed_snapshot())
     text = snapshot_to_text(d)
     assert "Holding: green_cube_01" in text
-    assert "OVERCURRENT" in text or "Reflex active" in text
+    assert "FAULT" in text
+    assert "JOINT_LIMIT" in text
 
 
 # ---------------------------------------------------------------------------

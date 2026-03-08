@@ -48,6 +48,8 @@ def test_start_skill_tool_appends_command() -> None:
 
 def test_abort_skill_tool_appends_command() -> None:
     ctx = _make_ctx()
+    ctx.active_skill_run_id = "run-42"
+    ctx.skill_outcome_state = "IN_PROGRESS"
     tools = _tools_by_name(ctx)
     tools["abort_skill"](skill_run_id="run-42", reason="timeout")
 
@@ -56,6 +58,43 @@ def test_abort_skill_tool_appends_command() -> None:
     assert cmd.type == CommandType.ABORT_SKILL
     assert cmd.payload.skill_run_id == "run-42"
     assert cmd.payload.reason == "timeout"
+
+
+def test_abort_skill_rejected_when_not_in_progress() -> None:
+    """abort_skill is rejected when outcome is not IN_PROGRESS."""
+    ctx = _make_ctx()
+    ctx.active_skill_run_id = "run-42"
+    ctx.skill_outcome_state = "SUCCESS"
+    tools = _tools_by_name(ctx)
+    result = tools["abort_skill"](skill_run_id="run-42", reason="stale")
+
+    assert "REJECTED" in result
+    assert "SUCCESS" in result
+    assert len(ctx.commands) == 0
+
+
+def test_abort_skill_rejected_when_idle() -> None:
+    """abort_skill is rejected when no skill is running."""
+    ctx = _make_ctx()
+    tools = _tools_by_name(ctx)
+    result = tools["abort_skill"](skill_run_id="run-42", reason="stale")
+
+    assert "REJECTED" in result
+    assert "idle" in result
+    assert len(ctx.commands) == 0
+
+
+def test_abort_skill_rejected_on_run_id_mismatch() -> None:
+    """abort_skill is rejected when skill_run_id doesn't match the snapshot."""
+    ctx = _make_ctx()
+    ctx.active_skill_run_id = "run-42"
+    ctx.skill_outcome_state = "IN_PROGRESS"
+    tools = _tools_by_name(ctx)
+    result = tools["abort_skill"](skill_run_id="run-WRONG", reason="mismatch")
+
+    assert "REJECTED" in result
+    assert "mismatch" in result
+    assert len(ctx.commands) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +120,8 @@ def test_describe_scene_tool_appends_command() -> None:
 
 def test_tool_commands_have_correct_arm_id() -> None:
     ctx = _make_ctx(arm_id="arm0")
+    ctx.active_skill_run_id = "run-1"
+    ctx.skill_outcome_state = "IN_PROGRESS"
     tools = _tools_by_name(ctx)
     tools["start_skill"](skill_name="PICK", target_handle="cube-1")
     tools["abort_skill"](skill_run_id="run-1", reason="test")

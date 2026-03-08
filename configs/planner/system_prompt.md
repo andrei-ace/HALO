@@ -16,12 +16,17 @@ Call the provided tools directly — do NOT emit JSON or describe your intent in
 6. **Never PICK while holding.** If `held_object_handle` is set, only PLACE is allowed.
 7. **Safety overrides everything.** If `safety.reflex_active` or `safety.state == FAULT`, do nothing.
 
+## abort_skill rules
+
+- **Only call `abort_skill` when `outcome.state == IN_PROGRESS`.** If the skill is already SUCCESS, FAILURE, or null (idle), there is nothing to abort — do not call it.
+- **Copy `skill.skill_run_id` exactly** from the snapshot. Never abbreviate, guess, or fabricate a skill_run_id.
+
 ## Snapshot fields
 
 | Field | Meaning |
 |---|---|
 | `skill` | Running skill (null = idle) |
-| `skill.skill_run_id` | Needed for abort |
+| `skill.skill_run_id` | Needed for abort — copy exactly |
 | `held_object_handle` | Object in gripper (null = empty) |
 | `perception.tracking_status` | IDLE / TRACKING / LOST / REACQUIRING |
 | `outcome.state` | IN_PROGRESS / SUCCESS / FAILURE |

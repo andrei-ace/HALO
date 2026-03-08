@@ -140,10 +140,11 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
 
 
 def snapshot_to_text(d: dict) -> str:
-    """Format a snapshot dict as human-readable text summary.
+    """Format a snapshot dict as operator-friendly text summary.
 
     Accepts the output of ``snapshot_to_dict()`` and returns a compact
     multi-line description suitable for conversational agents.
+    Omits planner-internal details (run IDs, hint validity, confidence, distances).
     """
     lines: list[str] = []
 
@@ -152,48 +153,38 @@ def snapshot_to_text(d: dict) -> str:
     if skill:
         skill_name = skill.get("name") or skill.get("skill_name", "unknown")
         phase = skill.get("phase", "unknown")
-        run_id = skill.get("skill_run_id", "")
-        lines.append(f"Active skill: {skill_name} (phase: {phase}, run: {run_id})")
+        lines.append(f"Skill: {skill_name}, phase: {phase}")
     else:
-        lines.append("Idle — no skill running.")
+        lines.append("Idle.")
 
     # Target
     target = d.get("target") or {}
     handle = target.get("handle")
     if handle:
-        conf = target.get("confidence", 0)
-        dist = target.get("distance_m", 0)
-        valid = target.get("hint_valid", False)
-        lines.append(f"Target: {handle} (confidence: {conf:.0%}, distance: {dist:.3f}m, valid: {valid})")
-    else:
-        lines.append("No target selected.")
-
-    # Outcome
-    outcome = d.get("outcome") or {}
-    state = outcome.get("state")
-    reason = outcome.get("reason_code")
-    if state:
-        line = f"Outcome: {state}"
-        if reason:
-            line += f" ({reason})"
-        lines.append(line)
-
-    # Safety
-    safety = d.get("safety") or {}
-    safety_state = safety.get("state", "OK")
-    if safety_state != "OK":
-        lines.append(f"Safety: {safety_state}")
-        reflex = safety.get("reflex_active", False)
-        if reflex:
-            reasons = safety.get("reason_codes", [])
-            lines.append(f"Reflex active: {', '.join(reasons) if reasons else 'unknown'}")
-    else:
-        lines.append("Safety: OK")
+        lines.append(f"Target: {handle}")
 
     # Held object
     held = d.get("held_object_handle")
     if held:
         lines.append(f"Holding: {held}")
+
+    # Outcome
+    outcome = d.get("outcome") or {}
+    state = outcome.get("state")
+    reason = outcome.get("reason_code")
+    if state and state != "IN_PROGRESS":
+        line = f"Outcome: {state}"
+        if reason:
+            line += f" ({reason})"
+        lines.append(line)
+
+    # Safety — only surface problems
+    safety = d.get("safety") or {}
+    safety_state = safety.get("state", "OK")
+    if safety_state != "OK":
+        reasons = safety.get("reason_codes", [])
+        detail = f": {', '.join(reasons)}" if reasons else ""
+        lines.append(f"Safety: {safety_state}{detail}")
 
     return "\n".join(lines)
 

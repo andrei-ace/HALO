@@ -24,6 +24,9 @@ class AgentContext:
     epoch: int | None = None
     loop_detected: bool = False
     total_calls: int = 0
+    # Populated from snapshot each tick for tool-level validation.
+    active_skill_run_id: str | None = None
+    skill_outcome_state: str | None = None  # IN_PROGRESS / SUCCESS / FAILURE
 
 
 def build_tools(ctx: AgentContext) -> list:
@@ -104,10 +107,21 @@ def build_tools(ctx: AgentContext) -> list:
 
         Args:
             skill_run_id: ID of the skill run to abort (from snapshot.skill.skill_run_id).
+                Must be copied exactly from the snapshot. Do not guess or fabricate.
             reason: Human-readable reason for aborting.
         """
         if err := _once("abort_skill", skill_run_id):
             return err
+        # Validate: only abort a skill that is actually in progress.
+        if ctx.skill_outcome_state != "IN_PROGRESS":
+            state = ctx.skill_outcome_state or "idle (no skill running)"
+            return f"REJECTED: cannot abort — skill outcome is {state}, not IN_PROGRESS."
+        if ctx.active_skill_run_id and skill_run_id != ctx.active_skill_run_id:
+            return (
+                f"REJECTED: skill_run_id mismatch — snapshot has "
+                f"{ctx.active_skill_run_id!r}, you passed {skill_run_id!r}. "
+                f"Copy skill.skill_run_id exactly from the snapshot."
+            )
         cmd = CommandEnvelope(
             command_id=str(uuid.uuid4()),
             arm_id=ctx.arm_id,
