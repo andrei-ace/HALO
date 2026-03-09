@@ -23,42 +23,26 @@ Operators interact with the robot through **natural voice and text conversation*
 ## System Overview
 
 ```mermaid
-graph TB
-    Operator["Operator<br/>(voice / text)"]
-
-    subgraph Cloud["Cloud Service (Cloud Run)"]
-        LA["Live Agent<br/>(Gemini Live API)"]
+graph LR
+    subgraph Interaction
+        Op["Operator"] <-.->|voice / text| LA["Live Agent<br/>(Gemini Live API)"]
     end
 
-    subgraph Edge["Edge (TUI)"]
-        subgraph Runtime["HALORuntime"]
-            SS["RuntimeStateStore"]
-            EB["EventBus"]
-            CR["CommandRouter"]
-        end
-
-        SB["Switchboard<br/>(failover / failback)"]
-        PS["PlannerService<br/>(LLM)"]
-        TPS["TargetPerceptionService<br/>(VLM)"]
-        SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
-        CS["ControlService<br/>(50-100 Hz)"]
-        SG["SafetyGuard<br/>(Reflex Layer)"]
+    subgraph Planning
+        LA -->|intents| PS["PlannerService<br/>(LLM)"]
+        PS <-->|commands / events| RT["HALORuntime<br/>(StateStore + EventBus<br/>+ CommandRouter)"]
     end
 
-    Operator <-->|"audio / text"| LA
-    LA <-->|"WebSocket<br/>(proxy tools)"| SB
-    SB -->|"decide / vlm_scene"| PS
-    PS -->|commands| CR
-    PS -->|read snapshot| SS
-    EB -->|urgent events| PS
+    subgraph Perception
+        TPS["TargetPerceptionService<br/>(VLM + Tracker)"] -->|target_hint_vec| RT
+    end
 
-    TPS -->|target_hint_vec| SS
-    SRS -->|read hints| SS
-    SRS -->|action_chunks| CS
-    CS -->|clamped actions| Robot["Robot / Sim"]
-    SG -->|reflex override| CS
-    SG -->|reflex events| EB
-    CR -->|acks + events| EB
+    subgraph Execution
+        RT -->|read hints| SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
+        SRS -->|action_chunks| CS["ControlService<br/>(50-100 Hz)"]
+        SG["SafetyGuard"] -->|reflex override| CS
+        CS -->|clamped actions| Robot["Robot / Sim"]
+    end
 ```
 
 ## Quickstart

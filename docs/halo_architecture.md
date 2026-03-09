@@ -33,35 +33,30 @@ Five services with strict role separation, coordinated through a shared runtime:
 The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It exposes two APIs: `get_latest_runtime_snapshot(arm_id)` for the planner to read state, and `submit_command(cmd)` for the planner to issue actions.
 
 ```mermaid
-graph TB
-    subgraph Runtime["HALORuntime"]
-        SS["RuntimeStateStore"]
-        EB["EventBus"]
-        CR["CommandRouter"]
+graph LR
+    subgraph Interaction["Operator Interaction"]
+        Op["Operator"] <-.->|voice / text| LA["Live Agent<br/>(Gemini Live API)"]
     end
 
-    PS["PlannerService<br/>(LLM)"]
-    TPS["TargetPerceptionService<br/>(VLM + Tracker)"]
-    SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
-    CS["ControlService<br/>(50-100 Hz)"]
-    SG["SafetyGuard<br/>(Reflex Layer)"]
-    LA["Live Agent<br/>(Gemini Live API)"]
+    subgraph Decision["Decision Layer"]
+        LA -->|intents| PS["PlannerService<br/>(LLM)"]
+        PS <-->|"commands / snapshots"| CR["CommandRouter"]
+        CR <-->|"route / ack"| SS["RuntimeStateStore"]
+        SS -->|urgent events| EB["EventBus"]
+        EB -->|wake| PS
+    end
 
-    PS -->|commands| CR
-    CR -->|acks + events| EB
-    PS -->|read snapshot| SS
-    EB -->|urgent events| PS
+    subgraph Perception["Perception Layer"]
+        TPS["TargetPerceptionService<br/>(VLM + Tracker)"] -->|target_hint_vec| SS
+    end
 
-    TPS -->|target_hint_vec| SS
-    SRS -->|read hints| SS
-    SRS -->|action_chunks| CS
-    CS -->|clamped actions| Robot["Robot / Sim"]
-    SG -->|reflex override| CS
-    SG -->|reflex events| EB
-
-    LA -->|operator intents| PS
-    LA -->|monitor updates| EB
-    LA -.->|"voice/text<br/>(Gemini Live API)"| Operator["Operator"]
+    subgraph Execution["Execution Layer"]
+        SS -->|read hints| SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
+        SRS -->|action_chunks| CS["ControlService<br/>(50-100 Hz)"]
+        SG["SafetyGuard<br/>(Reflex Layer)"] -->|reflex override| CS
+        SG -->|reflex events| EB
+        CS -->|clamped actions| Robot["Robot / Sim"]
+    end
 ```
 
 ## Dataflows
