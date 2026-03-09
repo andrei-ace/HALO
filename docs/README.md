@@ -293,7 +293,9 @@ make tui-live-cloud-local       # cloud service on localhost
 
 ![Pick-place sequence completion with event log](imgs/tui-live-place-complete.png)
 
-![Planner reasoning overlay — multilingual output (LLM responds in the operator's language)](imgs/tui-planner-reasoning.png)
+![Planner reasoning overlay — the LLM responds in Spanish, matching the operator's language](imgs/tui-planner-reasoning.png)
+
+The planner automatically responds in the operator's language. Here the operator issued instructions in Spanish, so the task completion summary is in Spanish.
 
 ### Sim
 
