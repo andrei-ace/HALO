@@ -62,7 +62,7 @@ graph LR
     end
 ```
 
-![TUI showing all runtime panels — services, perception, joints, planner, events](imgs/tui-idle-cloud.png)
+![TUI showing all runtime panels during a pick-place sequence — services, perception, joints, planner, events](imgs/tui-live-place-complete.png)
 
 Five services with strict role separation, coordinated through a shared runtime:
 
