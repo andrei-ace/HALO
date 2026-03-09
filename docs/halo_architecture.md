@@ -1,650 +1,439 @@
-# HALO Architecture Specification (Planner + Perception + ACT Skill Runner)
+# HALO Architecture
 
-Date: 2026-03-05
-Scope: HALO — three-phase sim strategy: (1) MuJoCo + SO-101 (current), (2) Isaac Lab (future), (3) real SO-ARM101 hardware (later). Single-arm pick/place, local models via Ollama, ACT for continuous control.
+HALO is a robotic manipulation system for the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) that separates continuous motor control from LLM-based task planning. The core challenge it addresses: how to combine the flexibility of language model reasoning with the strict timing requirements of real-time robot control, without sacrificing either.
 
-This document is the **architecture reference** that complements the plan summary. It focuses on **module boundaries, runtime contracts, dataflows, timing**, and **code-facing interfaces**.
+The system uses an LLM agent to decide *what* to do (which object to pick, where to place it, when to retry) while deterministic services handle *how* to do it (motion planning, visual tracking, safety enforcement). These two paths run independently — the robot maintains smooth motion even when the LLM is mid-inference.
 
----
+An operator can interact with the system through voice and text via a **Live Agent** built on the Gemini Live API — a conversational layer that narrates robot actions, answers questions about the scene, and forwards operator intents to the planner.
 
-## 0) Design principles (non-negotiables)
+## Design Philosophy
 
-1) **No stop-and-go motion**
-- Continuous control runs independently of LLM reasoning.
-- Planning is low-frequency and **never blocks** control.
+**No stop-and-go motion.** Continuous control runs independently of LLM reasoning. The ControlService streams actions at 50-100 Hz regardless of whether the planner is thinking. Planning is low-frequency and never blocks the motion loop.
 
-2) **Deterministic safety**
-- Safety-critical decisions live outside the LLM loop (hard guards + reflex layer).
+**Deterministic safety.** Safety-critical decisions live outside the LLM loop. The SafetyGuard enforces per-timestep delta limits and hint freshness gating as hard interlocks. Reflexes (stop, retract, open gripper) trigger immediately on unsafe conditions. The LLM cannot bypass these guards — it can only request recovery *after* the reflex has stabilized the robot.
 
-3) **Keep numeric control hints out of LLM context**
-- Target vectors, transforms, and controller tuning are passed machine-to-machine.
-- Planner consumes **compact snapshots**, not raw telemetry.
+**Numeric control hints stay out of LLM context.** Target vectors, transforms, and controller tuning flow machine-to-machine between perception and control services. The planner consumes compact, human-readable snapshots — not raw telemetry. This prevents the LLM from inventing temporal logic over numeric streams it cannot reason about reliably.
 
-4) **Fresh perception over long memory**
-- State is summarized into a *latest snapshot* plus a small event ring.
-- Old snapshots are deprecated/overwritten in planner context.
+**Fresh perception over long memory.** The planner sees exactly one snapshot: the latest. Old snapshots are replaced, never appended. A small ring of recent events provides context, but the system trusts current state over accumulated history.
 
----
+## System Architecture
 
-## 1) System overview
+Five services with strict role separation, coordinated through a shared runtime:
 
-### 1.1 Major services
+| Service | Rate | Owns |
+|---|---|---|
+| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM via Ollama or Gemini. |
+| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence, failure codes. |
+| **SkillRunnerService** | 10-20 Hz | Skill FSMs, phase transitions, ACT chunk buffering, dual-mode (ACT + sim). |
+| **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping. |
+| **SafetyGuard / ReflexLayer** | Hard real-time | Delta limits, hint freshness gating, immediate overrides. |
 
-**PlannerService (LLM agent; stateful, low-rate)**
-- Chooses next high-level action: start skill, abort, retry, retarget, request refresh.
-- Reads the latest runtime snapshot; writes commands.
-- Does *not* time micro-actions like “close gripper now”.
+The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It exposes two APIs: `get_latest_runtime_snapshot(arm_id)` for the planner to read state, and `submit_command(cmd)` for the planner to issue actions.
 
-**TargetPerceptionService (unified perception; medium-rate)**
-- Maintains a track on the active target and publishes fused **target hints**.
-- Internals (not exposed to planner): VLM grounding, segmentation, tracking, depth fusion, plausibility gates.
+```mermaid
+graph TB
+    subgraph Runtime["HALORuntime"]
+        SS["RuntimeStateStore"]
+        EB["EventBus"]
+        CR["CommandRouter"]
+    end
 
-**SkillRunnerService (deterministic executor; medium-rate)**
-- Runs a **fixed FSM** per skill (Pick, Place, etc.).
-- Calls ACT to generate action chunks.
-- Uses fast success checks to transition phases (approach → align → grasp → lift).
+    PS["PlannerService\n(LLM)"]
+    TPS["TargetPerceptionService\n(VLM + Tracker)"]
+    SRS["SkillRunnerService\n(FSM + ACT/Sim)"]
+    CS["ControlService\n(50-100 Hz)"]
+    SG["SafetyGuard\n(Reflex Layer)"]
+    LA["Live Agent\n(Gemini Live API)"]
 
-**ControlService (real-time loop; high-rate)**
-- Streams actions at 50–100Hz (or as required).
-- Applies smoothing + clamps + safety interlocks.
-- Never waits on LLM, VLM
+    PS -->|commands| CR
+    CR -->|acks + events| EB
+    PS -->|read snapshot| SS
+    EB -->|urgent events| PS
 
-**Safety/Reflex (hard real-time-ish)**
-- Immediate stop/retract/open-gripper on unsafe conditions.
-- Publishes reflex events; returns to safe-hold mode.
+    TPS -->|target_hint_vec| SS
+    SRS -->|read hints| SS
+    SRS -->|action_chunks| CS
+    CS -->|clamped actions| Robot["Robot / Sim"]
+    SG -->|reflex override| CS
+    SG -->|reflex events| EB
 
-**RuntimeStateStore + EventBus**
-- Single source of truth for:
-  - current skill/phase
-  - target hint + validity
-  - ACT buffer status
-  - safety state
-  - command acknowledgements
-  - recent events
-- Transport can be ROS2 topics, ZeroMQ, shared memory, Redis, etc. (choose later; contracts stay stable).
-
----
-
-## 2) Deployment topology (processes/threads)
-
-### 2.1 Suggested processes
-- `planner_service` (LLM + tool adapter)
-- `target_perception_service` (VLM + SAM/Tracker + depth fusion)
-- `skill_runner_service` (FSM + ACT inference + chunk planner)
-- `control_service` (realtime executor + safety + reflex)
-- `mujoco_sim.server` (sim-only: ZMQ server owning SO101Env + PickTeacher; single-threaded for macOS OpenGL)
-- (optional) `logger_service` (episode capture + dataset writer)
-
-### 2.2 Threading expectations
-- Control loop thread has the highest priority; avoid allocations.
-- Perception runs separate capture + inference threads (ZED capture + tracking + VLM reacquire jobs).
-- SkillRunner runs FSM tick + ACT inference thread(s).
-- Planner is single-threaded from an orchestration standpoint.
-
----
-
-## 3) Dataflows
-
-### 3.1 Control path (machine-to-machine, low latency)
-```
-Cameras + RobotState
-   -> TargetPerceptionService
-       -> target_hint_vec (robot frame + EE-relative deltas, validity, confidence)
-           -> RuntimeStateStore
-               -> SkillRunnerService
-                   -> ACT (chunk inference)
-                       -> action_chunks
-                           -> ControlService (50–100Hz streaming + clamps)
-                               -> Robot
+    LA -->|operator intents| PS
+    LA -->|monitor updates| EB
+    LA -.->|"voice/text\n(Gemini Live API)"| Operator["Operator"]
 ```
 
-**Rule:** SkillRunner reads `target_hint_vec` directly from runtime state — it does not go through the Planner.
+## Dataflows
 
-### 3.2 Decision path (LLM; low frequency)
-```
-RuntimeStateStore -> get_latest_runtime_snapshot() -> PlannerService -> async commands -> RuntimeStateStore
-```
+The system has two independent paths that never block each other.
 
-Planner issues commands **asynchronously**. Results appear in:
-- command ack fields in snapshots
-- event stream (accepted/rejected/stale/already_applied)
-- skill outcome events
+### Control Path (machine-to-machine, no LLM)
 
----
+Numeric control hints flow directly between services. The SkillRunner reads target hints from the RuntimeStateStore — they never pass through the planner.
 
-## 4) Timing, rates, and budgets
-
-### 4.1 Typical rates (v0 defaults)
-- ControlService: **50–100 Hz** (target); **20 Hz** in v0 MuJoCo sim
-- ACT inference: **10–20 Hz** (producing short action chunks)
-- Wrist camera for ACT: as needed, ideally aligned to ACT rate
-- TargetPerceptionService fusion publish: **10–30 Hz** (tracking; fast loop budget ≤80–120ms, excludes VLM reacquire)
-- VLM reacquire: event-driven, low duty cycle
-- PlannerService: **event-driven** (tick on SKILL_SUCCEEDED/FAILED, SAFETY_REFLEX_TRIGGERED, PERCEPTION_FAILURE, SCENE_DESCRIBED, TARGET_ACQUIRED, COMMAND_REJECTED) + **30 s watchdog** fallback. No fixed polling rate — decide_fn (LLM) is awaited before the next event is processed, so ticks are always serialized.
-
-### 4.2 Action chunk buffering (receding horizon)
-- Predict horizon: ~200–500ms for moving targets
-- Maintain buffer fill: ~150–300ms
-- On phase transition: trim buffer to ~50–100ms to avoid “old-phase tail actions”.
-
-### 4.3 Latency budgets (fast loop vs. semantic fallback)
-
-- **Fast perception loop (steady-state):** tracker + depth fusion + plausibility gates + hint publish should target **≤80–120ms** end-to-end (camera frame timestamp → `target_hint_vec` published). This is the budget that supports moving targets.
-- **Semantic reacquire loop (VLM):** runs **asynchronously** and is allowed to take **hundreds of ms to several seconds**. It must **never** sit on the critical path of the steady-state 10–30Hz hint publish loop.
-  - Triggered only on startup acquisition, repeated validity failures (`hint_valid=false`), `OUT_OF_VIEW`, repeated `TRACK_JUMP_REJECTED`, or explicit refresh requests.
-  - Output is a coarse **seed** (bbox/point/ROI + optional label) used to initialize SAM/Tracker, which then resumes the fast loop.
-
----
-
-## 5) Frames, calibration, and timestamp discipline
-
-### 5.1 Required transforms (calibrated)
-- `T_base<-scene_cam` (ZED)
-- `T_ee<-wrist_cam` (UVC)
-- `T_base<-ee` (kinematics)
-- (optional) object/world frames as needed
-
-### 5.2 Timestamp fields (must be present in every hint)
-- `hint_ts`
-- `robot_state_ts` (EE pose source)
-- `time_skew_ms = hint_ts - robot_state_ts`
-- `obs_age_ms = now - hint_ts`
-
-### 5.3 Freshness gating (safety interlock)
-If `obs_age_ms` or `time_skew_ms` exceeds thresholds:
-- `hint_valid = false`
-- SkillRunner switches to REACQUIRE / HOLD state
-- ControlService may hold position or execute a safe retreat depending on policy
-
----
-
-## 6) TargetPerceptionService internals (black-box to planner)
-
-### 6.1 Pipeline stages
-1) **Target acquisition / reacquisition** (rare, async)
-   - VLM runs as an **asynchronous job** to find candidate objects/regions in the scene camera.
-   - Output is a coarse seed (bbox/point/ROI + optional label) to initialize segmentation/tracking; it is **not** part of the steady-state tracking loop.
-2) **Segmentation** (init/refine)
-   - SAM/SAM2 produces a mask for the selected candidate.
-3) **Tracking** (continuous)
-   - Fast tracker updates mask / keypoints at frame rate.
-4) **Depth fusion**
-   - Mask + ZED depth -> 3D estimate.
-5) **Plausibility gates**
-   - Reject impossible motion, low depth-valid ratio, track jumps, etc.
-6) **Hint publication**
-   - Publish both base-frame pose and EE-relative deltas + confidence.
-
-### 6.2 Implemented modules
-
-**`vlm_parser.py`** — Parse VLM JSON responses into typed dataclasses:
-- `VlmDetection` (frozen): `handle`, `label`, `bbox` (x1, y1, x2, y2), `centroid` (computed midpoint), `is_graspable`
-- `VlmScene` (frozen): `scene` (description string), `detections` (list)
-- `parse_vlm_response(response: dict) -> VlmScene`
-
-**`ollama_vlm_fn.py`** — Ollama VLM integration (async, scene camera only):
-- `make_ollama_vlm_fn(base_url, model, prompt_path, ...) -> VlmFn` — factory returning async fn
-- Input images resized to `_VLM_INPUT_WIDTH = 1024` for stable bbox coords
-- Prompt loaded from `configs/perception/scene_analysis.md`
-- `VlmFn = Callable[[str, object], Awaitable[VlmScene]]` — (arm_id, image) → scene analysis result
-- Image provided per-call by the service (captured from camera via `capture_fn`)
-
-**`video_capture_fn.py`** — Video file camera simulation:
-- `make_video_capture_fn(video_path) -> CaptureFn` — factory returning async fn backed by a looping video file (OpenCV)
-
-**`mock_fns.py`** — Test factories:
-- `make_mock_capture_fn() -> CaptureFn` — synthetic frames with counter
-- `make_mock_tracker_factory_fn(init_hint, update_hint) -> TrackerFactoryFn` — predictable tracker
-
-**`service.py`** — TargetPerceptionService orchestrates the fast loop + async VLM:
-- Type aliases: `ObserveFn = Callable[[str, str], Awaitable[TargetInfo | None]]`, `VlmFn = Callable[[str, object], Awaitable[VlmScene]]`
-- VLM is optional (`vlm_fn=None` disables async reacquisition)
-- At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`
-- VLM result publishes `SCENE_DESCRIBED` event and is logged via `RunLogger.log_vlm_result()`
-
-### 6.3 VLM prompt (`configs/perception/scene_analysis.md`)
-Structured prompt for Qwen2.5-VL:
-- Detect cubes, boxes, containers, balls, bottles, cups on the table surface
-- JSON output: `{"scene":"...","detections":[{"handle":"...","label":"...","bounding_box":[x1,y1,x2,y2],"is_graspable":bool}]}`
-- `handle` format: `<type>-<N>` (e.g., `cube-1`, `box-2`)
-
-### 6.4 Health/failure codes (stable enums)
-- `OCCLUDED`
-- `OUT_OF_VIEW`
-- `DEPTH_INVALID`
-- `MULTIPLE_CANDIDATES`
-- `CALIB_INVALID`
-- `TRACK_JUMP_REJECTED`
-- `REACQUIRE_FAILED`
-- `OK`
-
-### 6.5 What the planner can request
-- `set_tracking_target(...)` — also available as `track_object(target_handle)` planner tool
-- `describe_scene(reason)` — triggers async VLM scene analysis; result delivered via `SCENE_DESCRIBED` event
-
----
-
-## 7) SkillRunner architecture (FSM + ACT)
-
-### 7.1 What SkillRunner owns
-- Skill FSM and phase transitions
-- Phase-conditioned policy inputs (`phase_id`)
-- Fast success checks and retry logic
-- Buffer trimming and chunk scheduling
-- Optional verification hooks (e.g., VLM verify after grasp)
-
-### 7.2 Pick skill FSM (implemented states)
-- `IDLE` (0) — initial state
-- `SELECT_GRASP` (1) — v0 pass-through (immediate transition)
-- `PLAN_APPROACH` (2) — v0 pass-through (immediate transition)
-- `MOVE_PREGRASP` (3) — move to pregrasp pose
-- `VISUAL_ALIGN` (4) — fine alignment (wrist camera active)
-- `EXECUTE_APPROACH` (5) — descend to grasp pose; grasp persistence timer starts when distance < threshold (wrist camera active)
-- `CLOSE_GRIPPER` (6) — gripper close + dwell (wrist camera active)
-- `VERIFY_GRASP` (7) — optional (configurable via `skip_verify_grasp`) (wrist camera active)
-- `LIFT` (8) — lift after grasp (wrist camera active)
-- `DONE` (9) — terminal state (outcome: SUCCESS or FAILURE with reason code)
-- Place reserved: `PLACE_*` (30–33)
-- Recovery: `RECOVER_RETRY_APPROACH` (50), `RECOVER_REGRASP` (51), `RECOVER_ABORT` (52)
-
-**Critical:** `CLOSE_GRIPPER` is triggered deterministically when distance < `grasp_distance_threshold_m` held for `grasp_persistence_ms`, not by the planner.
-
-Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP`, `LIFT` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
-
-### 7.3 Outcome monitoring
-A `SkillOutcomeMonitor` computes:
-- `in_progress | success | failure | uncertain`
-- `reason_code`
-- `needs_verify`
-
-Signals:
-- target following EE, height change, in-bin containment
-- gripper width/effort/current (if available)
-- progress watchdog (`delta_distance`, `no_progress_ms`)
-- safety/reflex events
-
----
-
-## 8) ACT integration contract
-
-### 8.1 Inputs to ACT
-- Wrist RGB (primary)
-- Robot proprio (joints, gripper)
-- Low-dimensional target hints (prefer EE-relative)
-- `phase_id` token
-
-### 8.2 Outputs from ACT
-- Action chunks in a fixed action space (define explicitly; v0 example):
-  - **HALO core (runtime/bridge):** `Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd` — 7D EE-frame deltas
-  - **MuJoCo sim (`mujoco_sim/`):** `shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper` — 6D joint-position targets written to `data.ctrl[:]`
-- Chunk timestamps + ids for traceability.
-- Action space is **intentionally different** between core and sim (EE-delta vs joint-position); conversion is the responsibility of the `apply_fn` factory.
-
-**Delta semantics (v0 default, to avoid drift):**
-- Each `Δ*` is a **per-timestep incremental command in the EE frame**, applied relative to the **current measured** EE pose (receding-horizon servo), with the low-level controller closing the loop.
-- Do **not** integrate and “play back” a full chunk open-loop; always treat chunks as a short rolling buffer that is continuously refreshed.
-- If using temporal ensembling, ensemble **in action space per timestep** (i.e., overlapping predicted deltas are blended into a *single* commanded delta sequence) before mapping to IK/OSC.
-
-**Alternative encodings (if drift shows up):**
-- Predict **absolute EE poses relative to the chunk start** (or joint targets) and treat ACT output as setpoints; this often transfers better to real hardware when controllers have latency.
-
-### 8.3 Execution mapping
-- SkillRunner generates desired deltas.
-- ControlService maps deltas to your low-level controller (IK / resolved-rate / operational space) with:
-  - clamps (vel/acc/jerk)
-  - interpolation / sample-and-hold
-  - collision/workspace limits
-
----
-
-## 9) SafetyGuard + Reflex layer
-
-### 9.1 Hard guards (pre-execution)
-v0 implements:
-- per-timestep linear/angular delta magnitude limits (`max_linear_delta_m`, `max_angular_delta_rad`)
-- stale-hint / invalid-calibration interlocks (hint freshness gating in ControlService)
-
-Planned (not yet implemented):
-- absolute workspace AABB limits
-- velocity/acceleration/jerk rate limits
-- coarse collision checks
-
-### 9.2 Reflexes (immediate overrides)
-- stop
-- retract-to-safe pose
-- open gripper
-- disable torque / estop integration as appropriate
-
-### 9.3 Contract with planner
-- Planner may request recovery actions only after robot is stabilized.
-- Reflex events are surfaced in snapshot + event stream.
-
----
-
-## 10) Runtime contracts (commands, snapshots, events)
-
-### 10.1 Command protocol (async + idempotent)
-
-**Command envelope**
-```json
-{
-  "command_id": "uuid",
-  "arm_id": "arm0",
-  "issued_at_ms": 0,
-  "type": "start_skill | abort_skill | override_target | describe_scene | track_object",
-  "precondition_snapshot_id": "snap-123 | null",
-  "payload": {}
-}
+```mermaid
+flowchart LR
+    CAM["Cameras\n+ RobotState"] --> TPS["TargetPerception\nService"]
+    TPS -->|"target_hint_vec\n(robot frame + EE deltas)"| SS["RuntimeState\nStore"]
+    SS -->|"read hints\ndirectly"| SRS["SkillRunner\nService"]
+    SRS -->|"ACT inference\n(10-20 Hz)"| CS["ControlService\n(50-100 Hz)"]
+    CS -->|"clamped deltas\n→ IK/OSC"| R["Robot"]
 ```
 
-**Idempotency rules**
-- duplicate `command_id` => `ALREADY_APPLIED`
-- stale precondition => `REJECTED_STALE`
-- wrong skill_run => `REJECTED_WRONG_SKILL_RUN`
-- `precondition_snapshot_id = null` (used by `describe_scene`, `track_object`) => accepted without precondition check
+### Decision Path (LLM, low frequency)
 
-### 10.2 Planner snapshot (compact, planner-grade)
+The planner reads the latest compact snapshot, reasons about it, and issues async commands. Results appear in subsequent snapshots and events.
 
-```json
-{
-  "snapshot_id": "snap-123",
-  "ts_ms": 0,
-  "arm_id": "arm0",
-
-  "skill": {"name": "pick", "skill_run_id": "run-9", "phase": "PREGRASP_ALIGN"},
-  "target": {
-    "handle": "cube-1",
-    "hint_valid": true,
-    "confidence": 0.84,
-    "obs_age_ms": 23,
-    "time_skew_ms": -5,
-    "delta_xyz_ee": [0.03, -0.01, 0.08],
-    "distance_m": 0.09
-  },
-
-  "perception": {"tracking_status": "tracking", "failure_code": "OK", "reacquire_fail_count": 0},
-  "act": {"status": "running", "buffer_fill_ms": 220, "buffer_low": false},
-
-  "progress": {"elapsed_ms": 4300, "no_progress_ms": 0, "delta_distance": -0.01},
-  "outcome": {"state": "in_progress", "reason_code": null, "needs_verify": false},
-
-  "safety": {"state": "OK", "reflex_active": false, "reason_codes": []},
-
-  "command_acks": [{"command_id": "uuid", "status": "ACCEPTED"}],
-  "recent_events": [{"event_id": "evt-77", "type": "PHASE_ENTER", "data": {"phase": "PREGRASP_ALIGN"}}]
-}
+```mermaid
+flowchart LR
+    SS["RuntimeState\nStore"] -->|"get_latest_runtime_snapshot()"| PS["PlannerService\n(LLM)"]
+    PS -->|"async commands\n(start_skill, abort, etc.)"| CR["Command\nRouter"]
+    CR -->|"acks + state updates"| SS
+    CR -->|"events"| EB["EventBus"]
+    EB -->|"urgent events"| PS
 ```
 
-**Planner context rule (implementation-critical):**
-- The planner must see **exactly one** `get_latest_runtime_snapshot()` payload: the *latest* one.
-- When a new snapshot arrives, middleware must **replace** the prior snapshot tool output in the LLM context (do not append multiple snapshots).
-- Keep only a small `recent_events` ring; never stream raw telemetry into the planner prompt.
-- Every mutating command must include `precondition_snapshot_id`; the command router must reject stale preconditions even if the LLM repeats calls. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = null` to avoid premature rejection.
+## Skills and FSM Engine
 
+Skills are defined as **Mermaid stateDiagram-v2** files in `configs/skills/`. A generic FSM engine parses these diagrams into executable state machines with handler-based execution. This means skill topology is authored visually and the runtime engine is skill-agnostic.
 
-### 10.3 Event stream (small, canonical)
-Event types:
-- `COMMAND_ACCEPTED / COMMAND_REJECTED`
-- `SKILL_STARTED / SKILL_SUCCEEDED / SKILL_FAILED`
-- `PHASE_ENTER / PHASE_EXIT`
-- `PERCEPTION_FAILURE / PERCEPTION_RECOVERED`
-- `SCENE_DESCRIBED`
-- `TARGET_ACQUIRED`
-- `SAFETY_REFLEX_TRIGGERED / SAFETY_RECOVERED`
+Three skills are implemented: **PICK**, **PLACE**, and **TRACK**. The SkillRunnerService operates in two modes:
+- **ACT mode**: uses chunk inference + ControlService for end-effector delta control
+- **Sim mode**: triggers autonomous trajectories on the MuJoCo SimServer and monitors progress via telemetry
 
----
+The planner has three tools: `start_skill`, `abort_skill`, and `describe_scene`. It starts and monitors skills but never times micro-actions like "close gripper now".
 
-## 11) Logging, tracing, and dataset capture
+### Pick Skill FSM
 
-### 11.1 What to log (minimum)
-- `snapshot_id`, `skill_run_id`, `phase`, `chunk_id`
-- `target_hint_version` (monotonic counter)
-- `command_id` + ack status
-- state transitions with reason codes
-- safety events + reflex reasons
-- per-episode success/failure labels
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> SELECT_GRASP
+    SELECT_GRASP --> PLAN_APPROACH
+    PLAN_APPROACH --> MOVE_PREGRASP
 
-### 11.2 Dataset episode schema (teleop-aligned)
-Record at ACT timestep:
-- wrist RGB
-- robot state
-- executed action
-- `phase_id`
-- target hints (EE-relative)
-- success/failure per episode
+    MOVE_PREGRASP --> VISUAL_ALIGN : position reached
+    MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : timeout
 
-Add QA filters:
-- dropped frames / timestamp gaps
-- saturation/clipping frequency
-- replay mismatch > threshold
-- corrupted images
+    VISUAL_ALIGN --> EXECUTE_APPROACH : aligned
+    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance < threshold\nheld for persistence_ms
+    CLOSE_GRIPPER --> VERIFY_GRASP : dwell complete
+    VERIFY_GRASP --> LIFT : grasp confirmed
+    VERIFY_GRASP --> RECOVER_REGRASP : grasp failed
+    LIFT --> DONE : lift complete
 
----
-
-## 12) Extensibility notes
-
-### 12.1 Multi-arm
-Namespace everything by `arm_id` from day one:
-- runtime state partitions
-- command routing
-- calibration sets
-- logs and dataset episodes
-
-### 12.2 Adding skills
-Each skill should provide:
-- FSM definition (states, transitions, predicates)
-- ACT phase ids (stable enums)
-- per-phase thresholds + timing profile
-- outcome monitor rules
-- failure taxonomy mapping
-
-### 12.3 Debug / inspection mode
-Expose a separate debug snapshot tool that can include:
-- full joint arrays
-- raw transforms
-- detailed tracker stats
-- last N images metadata
-Keep it **off** the steady-state planner loop.
-
----
-
-## 13) Repo structure
-
-See the **Repository Structure** section in the top-level `CLAUDE.md` for the authoritative directory listing. Each service directory also contains its own `CLAUDE.md` with detailed internal docs (tick order, config tables, integration points, testing notes).
-
----
-
-## 14) Quick “who owns what” checklist
-
-- **Planner** owns: task orchestration, retries, retargeting, high-level recovery decisions.
-- **Perception** owns: target discovery/track, fused hints, validity/confidence, failure codes.
-- **SkillRunner** owns: phase timing, success predicates, ACT chunking, micro-retries.
-- **ControlService** owns: real-time streaming, smoothing, clamps, enforcing safety gates.
-- **Safety/Reflex** owns: immediate overrides; LLM cannot bypass.
-
----
-
-## 15) MuJoCo simulation module (`mujoco_sim/`)
-
-Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (5-DOF + 1-DOF gripper, 6 actuated joints). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
-
-### 15.1 Trajectory planning pipeline
-
-PickTeacher pre-computes a full trajectory on first `step()`, then samples in real time:
-
-```
-grasp_planner (64 candidates, geometric filter, IK scoring)
-  → keyframe_planner (5 SE(3) keyframes: home → pregrasp → grasp → close → lift)
-    → waypoint_generator (IK with yaw-retry fallbacks)
-      → trajectory (jerk-limited ruckig segments, start/end at rest)
-        → pick_teacher.step() samples at elapsed time → (action, phase_id, done)
+    RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry
+    RECOVER_REGRASP --> MOVE_PREGRASP : retry
+    DONE --> [*]
 ```
 
-Teacher phase sequence: `IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation.
+`CLOSE_GRIPPER` is triggered deterministically when distance stays below threshold for `grasp_persistence_ms`. The planner never commands gripper actions directly.
 
-### 15.2 Constants sync
+## MuJoCo Simulation
 
-Phase IDs, gripper semantics, wrist-active phases synced between `halo/contracts/enums.py` and `mujoco_sim/constants.py`, verified by cross-module tests. Action space intentionally different (sim: 6D joint-position, core: 7D EE-delta).
+MuJoCo is the primary development and validation environment for HALO. It provides a physics-accurate SO-101 arm (5-DOF + 1-DOF gripper) with two cameras (scene 1280x720, wrist 640x480), contact dynamics tuned for reliable grasping, and an autonomous sim server that runs the full pick-and-place pipeline without human teleoperation.
 
-See `mujoco_sim/CLAUDE.md` for full details (env, dataset format, scene constants, IK, grasp planner, contact solver tuning).
+The sim is used for rapid iteration on the entire stack — from trajectory planning through FSM execution to planner integration — before moving to real hardware. The HALO runtime connects to the sim server over ZMQ and treats it as a real robot: same command protocol, same telemetry stream, same skill lifecycle.
 
----
+### Teacher Model and Trajectory Planning
 
-## 16) ZMQ bridge (`halo/bridge/`)
+Instead of human teleoperation, HALO uses an **analytic teacher** to generate expert demonstrations for training an ACT (Action Chunking Transformer) imitation learning policy. The teacher pre-computes a full trajectory on the first step, then samples actions in real time at the control rate:
 
-Connects HALO runtime to the MuJoCo sim server via 2-channel ZMQ.
+```mermaid
+flowchart TB
+    GP["Grasp Planner\n64 candidates\ngeometric filter + IK scoring"] --> KP["Keyframe Planner\n5 SE(3) keyframes:\nhome → pregrasp → grasp\n→ close → lift"]
+    KP --> WG["Waypoint Generator\nIK per keyframe\nyaw-retry fallbacks"]
+    WG --> TJ["Trajectory\njerk-limited ruckig segments\nstart/end at rest"]
+    TJ --> PT["Teacher step()\nsamples at elapsed time\n→ (action, phase_id, done)"]
+```
+
+**Grasp planner**: enumerates 64 candidates across 4 cube side faces, filters by geometric feasibility (pregrasp above table, no gripper-body collision), scores by a weighted combination of IK position error, joint margin, orientation error, manipulability, and tilt penalty. Falls back to expanded search with relaxed tolerances if no valid grasp is found.
+
+**Trajectory planning**: converts scored grasps into SE(3) keyframes, solves IK at each keyframe with yaw-retry (0, 90, -90, 180 degrees), then generates jerk-limited ruckig profiles with per-joint velocity/acceleration/jerk limits. All segments start and end at rest. Clearance validation rejects trajectories that come too close to the table.
+
+**Teacher phase sequence**: `IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation. A place teacher handles `SELECT_PLACE → TRANSIT_PREPLACE → DESCEND_PLACE → OPEN → RETREAT → DONE`.
+
+### Episode Generation and Dataset
+
+Teacher demonstrations are recorded as HDF5 episodes with phase-labeled timesteps:
+
+```
+ep_000000.hdf5
+├── obs/
+│   ├── rgb_scene      (T, 720, 1280, 3)    scene camera
+│   ├── rgb_wrist      (T, 480, 640, 3)     wrist camera
+│   ├── joint_pos      (T, 6)               actuated joint positions
+│   ├── ee_pose        (T, 7)               end-effector pose (xyz + quat)
+│   ├── gripper        (T,)                 gripper joint angle
+│   ├── phase_id       (T,) int32           FSM phase label per timestep
+│   ├── object_pose    (T, 7)               ground-truth object pose
+│   └── ...
+├── action             (T, 6)               joint-position targets
+└── attrs: seed, control_freq=20, robot="SO101", success
+```
+
+Episodes are generated with `make generate-episodes` (configurable: `EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0`). Each run: reset with seeded randomization → 5 s physics stabilization → teacher loop → write HDF5 → verify lift success (cube Z must rise >= 5 mm). Pick-and-place episodes chain both skills in sequence.
+
+### From Teacher Demos to ACT
+
+The dataset is designed to train a skill-conditioned **ACT** (Action Chunking Transformer) policy:
+
+1. **Generate** 10k-50k clean teacher episodes (100% success rate with current tuning)
+2. **Train** skill-conditioned ACT: input `(wrist_rgb, proprio, phase_token)` → output `chunk_len x action_dim`
+3. **Evaluate** closed-loop: FSM orchestrator + ACT-predicted actions replace teacher actions
+4. **Scale** with domain randomization (lighting, textures, object placement)
+5. **Transfer** to real hardware with identical dataset schema
+
+The action space is intentionally different between sim teacher (6D joint-position targets) and HALO runtime ACT (7D EE-frame deltas). Conversion is handled by the `apply_fn` factory. Dataset schema stays identical between sim and real — same observation keys, same chunking, same phase labels.
+
+### SimServer Architecture
+
+The SimServer runs physics autonomously at 20 Hz and communicates with the HALO runtime over two ZMQ channels:
 
 | Channel | ZMQ Pattern | Port | Direction | Purpose |
 |---------|-------------|------|-----------|---------|
 | TelemetryStream | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
-| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, shutdown |
+| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, start_place, configure, shutdown |
 
-**SimServer** (`mujoco_sim.server`) runs an autonomous physics loop at 20 Hz, plans and executes trajectories, and publishes telemetry. Single-threaded (macOS OpenGL constraint). Protocol: msgpack + JPEG. **SimClient** (`sim_client.py`) provides a thread-safe command interface with background telemetry reception; `BridgeTransportError` on timeout (ControlService catches → `ActStatus.STALE`). **SimSource** (`sim_source.py`) wraps SimClient as a drop-in video source (`capture_fn` → `CapturedFrame`).
+The server is single-threaded (macOS OpenGL constraint). On `start_pick(target_body)`, it pre-computes the full trajectory and begins autonomous execution. The HALO runtime monitors progress via telemetry — phase IDs, joint state, camera frames — and the SkillRunnerService syncs its FSM via forward-only `sync_phase()` transitions. No env resets between skills; the arm stays at its final position and sim runs continuously.
 
----
+## Live Agent
 
-## 17) Cognitive backend switching (`halo/cognitive/`)
+The Live Agent is a conversational voice and text interface between an operator and the HALO system, built on the **Gemini Live API**. It enables natural interaction with the robot: the operator speaks, the agent narrates what the robot is doing, answers questions about the scene, and forwards operator instructions to the planner.
 
-Transparent proxy layer that routes planner (LLM) and perception (VLM) calls through a **Switchboard** to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini Live API / remote HTTP). Split-brain prevention via **LeaseManager**, context continuity via **ContextStore**, and ADK-native event compaction with cross-backend sync.
+### Architecture
 
-PlannerService and TargetPerceptionService call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-in replacements — they are unaware of which backend is active.
-
-### 17.1 Component overview
-
-| File | Role |
-|---|---|
-| `config.py` | `BackendType`, `BackendReadiness`, `CognitiveConfig`, `LocalConfig`, `CloudConfig`, `RemoteCloudConfig`, `CompactionConfig` |
-| `backend.py` | `CognitiveBackend` protocol (decide + vlm_scene + health_check), `WarmableBackend` extension (warm_up + readiness + caught_up_cursor) |
-| `switchboard.py` | Transparent proxy, retry logic, failure counting, failover/failback, health loop, event journal loop, compaction sync |
-| `lease.py` | `LeaseManager` + `Lease` — epoch-monotonic grants with UUID token + TTL; `CommandRouter` rejects stale epoch/token |
-| `context_store.py` | `ContextStore` (append-only journal), `ContextEntry`, `ContextSnapshot`, `CognitiveState` for handoff |
-| `compactor.py` | `MessageHistory` (UUID-tracked parallel message list), `CompactionResult` for cross-backend sync |
-| `compaction_plugin.py` | `CompactionPlugin` — ADK-native event compaction callback; detects compaction boundaries and triggers cross-backend sync |
-| `local_backend.py` | `LocalCognitiveBackend` — wraps PlannerAgent (ADK + LiteLLM/Ollama) + Ollama VLM |
-| `remote_backend.py` | `RemoteCognitiveBackend` — HTTP client to Cloud Run cognitive service |
-| `live_session.py` | `LivePlannerSession` — Gemini Live API session management |
-| `audio_io.py` | Audio capture/playback for voice interaction with cloud backend |
-
-### 17.2 Failover flow
-
-When the active backend fails 3 consecutive times (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically fails over to the alternate backend.
+The Live Agent spans three layers connected by a bidirectional WebSocket:
 
 ```mermaid
-sequenceDiagram
-    participant PS as PlannerService
-    participant SB as Switchboard
-    participant Active as Active Backend (cloud)
-    participant Standby as Standby Backend (local)
-    participant LM as LeaseManager
+flowchart LR
+    subgraph TUI["TUI (Edge)"]
+        MIC["AudioCapture\n16kHz mono"] --> LAC["LiveAgentClient"]
+        LAC --> SPK["AudioPlayback\n24kHz mono"]
+        LAC --> TH["Tool Handler\n(local execution)"]
+        TH --> RT["HALORuntime\n(fresh state)"]
+    end
 
-    PS->>SB: decide(snapshot)
-    SB->>Active: decide() — retries with backoff
-    Note over SB,Active: 3 consecutive failures → failover threshold reached
+    subgraph Cloud["Cloud Service (Cloud Run)"]
+        WS["WebSocket\nHandler"] --> LAS["LiveAgentSession"]
+        LAS --> GEMINI["Gemini Live API\n(bidirectional streaming)"]
+        LAS --> PROXY["Proxy Tool\nCallback"]
+    end
 
-    SB->>SB: take_snapshot + build_cognitive_state
-    SB->>Standby: warm_up(state, journal_entries)
-    SB->>LM: revoke(old_epoch) → grant("local")
-    SB->>Active: reset_loop_state()
-    SB->>Standby: reset_loop_state()
-    Note over SB: publish BACKEND_SWITCHED
-
-    SB->>Standby: decide(snapshot) — replay original call
-    Standby-->>SB: commands (stamped with new epoch + token)
-    SB-->>PS: commands
+    LAC <-->|"WebSocket\naudio + text + tools"| WS
 ```
 
-### 17.3 Failback flow (warm-up handoff)
+**TUI side** captures audio at 16 kHz (100 ms chunks) and sends it to the cloud service over WebSocket. Audio responses from Gemini (24 kHz) are played back through the speaker. Tool calls arrive over the same WebSocket and are executed locally against fresh runtime state.
 
-A background health loop (every 5 s) checks whether the preferred backend has recovered. Failback uses a graduated warm-up protocol to ensure seamless context transfer before switching.
+**Cloud side** maintains a persistent Gemini Live API session via ADK `run_live()`. Audio flows continuously via `send_realtime()`. Text and snapshots use request-response via `send_content()`. The session supports automatic reconnection with exponential backoff.
 
-```mermaid
-sequenceDiagram
-    participant HL as Health Loop
-    participant SB as Switchboard
-    participant Preferred as Preferred Backend (cloud)
+### Proxy-Tool Pattern
 
-    Note over SB: Currently on fallback (local)
+The Live Agent uses a proxy-tool architecture that keeps Gemini decoupled from the robot's runtime state. Tools are defined as stubs on the cloud side; actual execution happens on the TUI:
 
-    HL->>Preferred: health_check() → healthy
-    Note over HL,Preferred: Graduated warm-up: COLD → WARMING → READY
+1. Gemini decides to call a tool (e.g., `describe_scene`, `submit_user_intent`, `abort`)
+2. ADK's `before_tool_callback` intercepts the call and serializes it over WebSocket to the TUI
+3. The TUI executes the tool locally with fresh runtime state (not stale cloud-side state)
+4. The result is sent back over WebSocket, unblocking the ADK future
+5. Gemini continues its turn with the tool result
 
-    HL->>Preferred: warm_up(full state + journal)
-    Note over Preferred: COLD → WARMING
-    HL->>Preferred: warm_up(incremental batches ≤20)
-    Note over Preferred: WARMING → READY (when cursor caught up)
+This pattern ensures tool actions are always based on the latest robot state, eliminates cloud→edge state synchronization issues, and keeps tool execution within the safety boundary of the TUI process.
 
-    HL->>SB: switch_to(preferred, "recovered and warmed up")
-    Note over SB: Full switch_to() protocol (see §17.2)
-```
+**Available tools:**
 
-### 17.4 ADK compaction and cross-backend sync
-
-The cloud backend uses ADK-native event compaction to keep session context bounded. When compaction occurs, the summary is propagated to the inactive local backend so failback starts with concise context.
-
-```mermaid
-sequenceDiagram
-    participant CB as CloudBackend
-    participant ADK as ADK Session
-    participant MH as MessageHistory
-    participant SB as Switchboard
-    participant LB as LocalBackend
-
-    Note over CB: After ~20 events on cloud session
-
-    CB->>ADK: decide() returns response
-    CB->>CB: _detect_compaction(session_events)
-    Note over CB: Finds compaction boundary in ADK events
-
-    CB->>MH: apply_compaction(up_to_msg_id, summary)
-    Note over MH: Replace old records with single summary record
-
-    CB->>SB: on_compaction(CompactionResult)
-
-    SB->>LB: agent.reset_session()
-    SB->>LB: agent.inject_handoff_context(summary)
-    SB->>LB: msg_history.clear()
-
-    SB->>CS: append(entry_type="compaction", summary)
-    Note over CS: Journal records compaction event
-```
-
-### 17.5 Lease protocol
-
-The `LeaseManager` prevents split-brain — only one backend may issue commands at a time.
-
-- **Epoch**: monotonically increasing integer, incremented on every `grant()`
-- **Token**: UUID string, unique per grant — prevents replayed commands from a prior epoch that happen to share the same epoch number
-- **TTL**: 30 s default, renewed on every successful `decide()` / `vlm_scene()` call
-- **Validation**: `CommandRouter` checks both `epoch` and `lease_token` on every command when a `LeaseManager` is active; commands with missing or stale values are rejected
-
-Lifecycle: `grant(holder) → renew(epoch) → revoke(epoch) → grant(new_holder)`
-
-### 17.6 ContextStore journal
-
-Append-only journal (bounded to 200 entries) that captures what the planner knows and has decided, enabling context transfer across backend switches.
-
-**Entry types:**
-
-| Type | When recorded | Effect on tracked state |
+| Tool | Execution | Purpose |
 |---|---|---|
-| `decision` | After successful `decide()` with reasoning | Clears `pending_operator_instruction` |
-| `scene` | After successful `vlm_scene()` | Updates `known_scene_handles`, `last_scene_description` |
-| `event` | Runtime events (SKILL_STARTED/SUCCEEDED/FAILED, SAFETY_REFLEX, TARGET_ACQUIRED, PERCEPTION_FAILURE) | — |
-| `operator` | Operator instruction received | Sets `pending_operator_instruction` |
-| `compaction` | ADK compaction detected | — |
+| `describe_scene(reason)` | TUI: submits DescribeSceneCommand to runtime | Trigger VLM scene analysis |
+| `submit_user_intent(intent)` | TUI: enqueues intent to planner's operator message queue | Forward operator instruction to planner |
+| `abort()` | TUI: submits AbortSkillCommand to runtime | Emergency stop |
+| `monitor()` | Cloud: ADK-executed async generator | Receive streaming robot state updates |
 
-**Handoff**: `build_cognitive_state()` produces a `CognitiveState` with journal-derived context (recent decisions, events, goal summary) plus snapshot-derived runtime state (skill phase, outcome, held object) — everything a new backend needs to resume without calling back to the edge runtime.
+The `monitor()` tool is the only tool executed directly by ADK on the cloud side. It yields a continuous stream of robot state updates — events (SKILL_STARTED, SKILL_FAILED, SAFETY_REFLEX_TRIGGERED), planner decisions, and scene descriptions — enabling Gemini to narrate the robot's progress in real time without polling.
 
-**Cursor-based sync**: `get_entries_after(cursor)` enables incremental catch-up. `WarmableBackend.caught_up_cursor` tracks how far the standby backend has consumed, enabling bounded batch warm-up during failback.
+### Voice Interaction Flow
 
----
+```mermaid
+sequenceDiagram
+    participant Op as Operator
+    participant AC as AudioCapture (16kHz)
+    participant LAC as LiveAgentClient
+    participant WS as WebSocket
+    participant LAS as LiveAgentSession
+    participant G as Gemini Live API
 
-## Appendix A — Naming conventions (stable)
+    Op->>AC: "Pick up the red cube"
+    AC->>LAC: PCM chunks (100ms)
+    LAC->>WS: audio_in (base64 PCM)
+    WS->>LAS: on_audio_chunk()
+    LAS->>G: send_realtime(Blob)
 
-- `PlannerService`
-- `TargetPerceptionService`
-- `SkillRunnerService`
-- `ControlService`
-- `SafetyGuard`, `ReflexLayer`
-- `SkillOutcomeMonitor`
-- `RuntimeStateStore`, `EventBus`
+    G->>G: Transcribe + reason
+
+    G->>LAS: tool_call: submit_user_intent("pick the red cube")
+    LAS->>WS: tool_call message
+    WS->>LAC: {"type":"tool_call", "name":"submit_user_intent", ...}
+    LAC->>LAC: Execute locally: enqueue intent to planner
+    LAC->>WS: tool_result
+    WS->>LAS: resolve_tool_call()
+    LAS->>G: tool result
+
+    G->>LAS: audio response: "Starting pick skill..."
+    LAS->>WS: audio_out (base64 PCM)
+    WS->>LAC: on_audio_out
+    LAC->>Op: AudioPlayback (24kHz)
+
+    Note over LAS,G: monitor() yields "[Event] SKILL_STARTED pick"
+    G->>LAS: audio: "Approaching the red cube..."
+    LAS->>Op: (via audio_out → playback)
+```
+
+### Barge-in and Interruption
+
+The Gemini Live API supports barge-in through Automatic Activity Detection (AAD). When the operator starts speaking while the agent is responding:
+
+1. Gemini signals `event.interrupted = True`
+2. The cloud service sends an `interrupt` message over WebSocket
+3. The TUI calls `AudioPlayback.clear()` — the speaker stops immediately
+4. Gemini processes the new utterance, resuming its turn with the operator's input
+
+AAD is configured with high sensitivity for both start and end of speech, 150 ms prefix padding, and 500 ms silence threshold for end-of-utterance detection.
+
+### WebSocket Protocol
+
+The WebSocket endpoint (`/ws/live/{arm_id}`) carries all data between TUI and cloud:
+
+| Direction | Message Type | Payload |
+|-----------|-------------|---------|
+| TUI → Cloud | `audio_in` | Base64 PCM (16kHz, mono, int16) |
+| TUI → Cloud | `text_in` | Text string |
+| TUI → Cloud | `monitor_update` | Category (event/planner_decision/scene_description) + text |
+| TUI → Cloud | `tool_result` | call_id + result string |
+| Cloud → TUI | `audio_out` | Base64 PCM (24kHz, mono, int16) |
+| Cloud → TUI | `text_out` | Agent text response |
+| Cloud → TUI | `transcription_in` | Partial/final input transcription |
+| Cloud → TUI | `transcription_out` | Partial/final output transcription |
+| Cloud → TUI | `tool_call` | call_id + tool name + args |
+| Cloud → TUI | `interrupt` | Barge-in signal |
+| Cloud → TUI | `status` | Connection/session status |
+
+### Session Management
+
+The `LiveAgentManager` manages per-arm Live Agent sessions with idle eviction (600 s timeout) and LRU eviction (max 8 concurrent sessions). Each session maintains its own Gemini Live API connection, tool state, and monitor queue.
+
+**Configuration:**
+
+| Setting | Default | Purpose |
+|---|---|---|
+| Model | `gemini-2.5-flash-native-audio-preview` | Gemini model for Live API |
+| Voice | `Kore` | Voice preset (also: `Aoede`) |
+| Response modalities | AUDIO + TEXT | Multimodal output |
+| Session resumption | Enabled | Transparent reconnection |
+| Context window compression | Sliding window | Keep session context bounded |
+
+## Cognitive Backend Switching
+
+The **Switchboard** transparently routes planner (LLM) and perception (VLM) calls to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini / Cloud Run). Services call `switchboard.decide()` and `switchboard.vlm_scene()` as drop-in replacements, unaware of which backend is active.
+
+```mermaid
+flowchart TB
+    subgraph Services["HALO Services"]
+        PS["PlannerService"]
+        TPS["TargetPerceptionService"]
+    end
+
+    SB["Switchboard\n(retry + failover)"]
+
+    subgraph Backends["Backends"]
+        LOCAL["LocalCognitiveBackend\n(Ollama: gpt-oss:20b + qwen2.5vl)"]
+        CLOUD["RemoteCognitiveBackend\n(Cloud Run → Gemini)"]
+    end
+
+    PS -->|"decide(snapshot)"| SB
+    TPS -->|"vlm_scene(image)"| SB
+    SB -->|"active"| LOCAL
+    SB -.->|"standby"| CLOUD
+
+    LM["LeaseManager\n(epoch + token)"] --> SB
+    CS["ContextStore\n(journal + handoff)"] --> SB
+```
+
+**Failover**: after 3 consecutive failures (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically switches to the alternate backend. The ContextStore captures recent decisions, events, and scene descriptions in an append-only journal (bounded to 200 entries). On switch, `build_cognitive_state()` generates a handoff context injected into the new backend's first turn.
+
+**Failback**: a background health loop (5 s interval) monitors the preferred backend. When it recovers, a graduated warm-up protocol transfers context incrementally (COLD → WARMING → READY) before switching back.
+
+**Split-brain prevention**: the LeaseManager issues epoch-monotonic grants with UUID tokens (30 s TTL, renewed on every successful call). The CommandRouter rejects any command with a stale epoch or token, ensuring only one backend can issue commands at a time.
+
+### GCP Deployment
+
+The cloud service deploys to Cloud Run via Terraform. The infrastructure includes:
+
+- **Cloud Run** — cognitive service (scale 0-1, 2 CPU / 2 Gi, concurrency 10)
+- **Artifact Registry** — Docker image storage
+- **Secret Manager** — `GOOGLE_API_KEY` for Gemini API access
+- **Firestore** — optional session persistence with TTL (1 hour default)
+- **Service Accounts** — `halo-cognitive` (runs the service) + `halo-tui-invoker` (TUI client authentication via SA impersonation)
+
+See `cloud_service/README.md` for the service and `infra/README.md` for Terraform configuration.
+
+## Perception Pipeline
+
+Two loops with very different timing characteristics:
+
+```mermaid
+flowchart TB
+    subgraph Fast["Fast Loop (10-30 Hz, ≤80-120ms)"]
+        OBS["observe_fn\n(tracker + depth)"] --> PG["Plausibility\nGates"]
+        PG -->|valid| PUB["Publish\ntarget_hint_vec"]
+        PG -->|invalid| INV["hint_valid = false\n→ HOLD / REACQUIRE"]
+    end
+
+    subgraph Async["Async VLM (0.5-5s, off critical path)"]
+        VLM["VLM\n(qwen2.5vl)"] --> PARSE["vlm_parser\n→ VlmScene"]
+        PARSE --> SEED["Store _vlm_seed"]
+    end
+
+    SEED -.->|"consumed when\nobserve returns None"| OBS
+    INV -.->|"trigger reacquire"| VLM
+```
+
+The **fast loop** runs the tracker, depth fusion, and plausibility gates at 10-30 Hz. It publishes target hints with both base-frame pose and EE-relative deltas. This loop must stay under 80-120 ms end-to-end to support moving targets.
+
+The **async VLM loop** handles initial acquisition, reacquisition after tracking loss, and scene analysis requests. It runs asynchronously and is never on the critical path. VLM output is a coarse seed (bbox/ROI) that initializes the fast tracker.
+
+## Safety
+
+### SafetyGuard (v0 — implemented)
+
+- Per-timestep linear delta limit (`max_linear_delta_m`)
+- Per-timestep angular delta limit (`max_angular_delta_rad`)
+- Hint freshness gating (`obs_age_ms` and `time_skew_ms` thresholds)
+- Reflex layer: immediate stop/retract/open-gripper on unsafe conditions
+
+### Planned extensions
+
+- Workspace AABB limits
+- Velocity/acceleration/jerk rate limits
+- Coarse collision checks
+
+The planner handles recovery only after the reflex has stabilized the robot. Safety events are surfaced in the snapshot and event stream.
+
+## Timing Budgets
+
+| Path | Target | v0 MuJoCo |
+|---|---|---|
+| ControlService tick | 50-100 Hz (10-20 ms) | 20 Hz (50 ms) |
+| Fast perception → hint publish | ≤ 80-120 ms | same |
+| VLM reacquire (async) | 0.5-5 s | same |
+| ACT chunk horizon | 200-500 ms | 1 s (10 steps) |
+| ACT buffer fill target | 150-300 ms | ~1 s |
+| Planner watchdog | 30 s max between ticks | same |
+
+## Key Design Invariants
+
+1. SkillRunner reads `target_hint_vec` directly from runtime state — never through the planner.
+2. Planner sees exactly one snapshot: the latest. Old snapshots are replaced, not appended.
+3. Every mutating command carries `command_id` (UUID) and `precondition_snapshot_id`; the router enforces idempotency and rejects stale preconditions.
+4. VLM reacquire runs asynchronously — never on the critical path of the 10-30 Hz hint-publish loop.
+5. On phase transition, the ACT buffer is trimmed to ~50-100 ms to avoid executing old-phase tail actions.
+6. When a LeaseManager is active, every command must carry both `epoch` and `lease_token`. Stale values are rejected.
+7. Dataset schema stays identical between sim and real (same observation keys, chunking, phase labels). Action space conversion (6D joint-position ↔ 7D EE-delta) is handled by the `apply_fn` factory.
+8. All state is namespaced by `arm_id` from day one.

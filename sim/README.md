@@ -21,7 +21,7 @@ This directory previously contained scaffolded stubs for an Isaac Lab extension 
 - `scripts/` — generate_demos, replay_demos, test_robot_spawn, run_bridge (all stubs)
 - `constants.py` — phase IDs, action fields synced from `halo.contracts` (verified by `test_sim_contract_sync.py`)
 
-All scripts were stubs raising `NotImplementedError`. The scaffolding was removed in favor of completing the MuJoCo integration first. The design documents and patterns remain in `docs/halo_plan_summary.md` (sections on Isaac Lab bootstrapping, teacher pipeline, dataset schema, training plan).
+All scripts were stubs raising `NotImplementedError`. The scaffolding was removed in favor of completing the MuJoCo integration first. The design patterns are captured in `docs/halo_architecture.md` (sim strategy section) and the MuJoCo implementation in `mujoco_sim/`.
 
 ## When to Implement
 

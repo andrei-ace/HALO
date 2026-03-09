@@ -103,8 +103,8 @@ halo/
 mujoco_sim/         # MuJoCo + SO-101 sim (env, dataset, teacher, autonomous SimServer; see mujoco_sim/CLAUDE.md)
 sim/                # Isaac Lab extension (planned — see sim/README.md)
 docs/
-  halo_architecture.md   # module boundaries, runtime contracts, dataflows, timing
-  halo_plan_summary.md   # project plan including Isaac Lab sim-to-real strategy
+  halo_architecture.md   # high-level architecture, dataflows, cloud integration
+  README.md              # developer reference — repo structure, service internals, testing
   data/                  # gitignored; video.mp4 for video capture simulation
 runs/               # live TUI session logs (JSONL, one file per session; git-ignored except .gitkeep)
 tests/

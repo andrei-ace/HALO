@@ -1,371 +1,316 @@
-# HALO Architecture
+# HALO Developer Reference
 
-HALO is a robotic manipulation system built around **continuous control decoupled from LLM reasoning** — the robot never pauses motion waiting for the planner.
+Implementation details for developers working in the codebase. For high-level architecture, see [halo_architecture.md](halo_architecture.md).
 
-The project follows a **three-phase sim strategy**: (1) **MuJoCo + SO-101** (current) for teacher demos, ACT training data, and closed-loop eval; (2) **Isaac Lab** (future) for GPU-accelerated parallel envs and domain randomization; (3) **Real SO-ARM101 hardware** (later). The v0 software backbone (services, contracts, planner agent, TUI) is fully implemented and tested.
+## Repository Structure
 
----
-
-## System Overview
-
-Five services with strict role separation, coordinated through a shared runtime:
-
-| Service | Rate | Role |
-|---|---|---|
-| **PlannerService** | event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery |
-| **TargetPerceptionService** | 10–30 Hz + async VLM | Target discovery/tracking, fused hints, failure codes |
-| **SkillRunnerService** | 10–20 Hz | Pick FSM, phase transitions, ACT chunk buffering; dual-mode (ACT + sim) |
-| **ControlService** | 50–100 Hz (target); 10 Hz in v0 sim | Real-time action streaming, temporal ensembling, safety |
-| **SafetyGuard** | Hard real-time | Delta limits, hint freshness gating, reflexes |
-
-```mermaid
-graph TB
-    subgraph Runtime["HALORuntime"]
-        SS["RuntimeStateStore"]
-        EB["EventBus"]
-        CR["CommandRouter"]
-    end
-
-    PS["PlannerService\n(LLM: gpt-oss:20b)"]
-    TPS["TargetPerceptionService\n(VLM: qwen2.5vl:3b)"]
-    SRS["SkillRunnerService\n(Pick FSM + ACT/Sim)"]
-    CS["ControlService\n(50-100 Hz)"]
-    SG["SafetyGuard\n(Reflex Layer)"]
-
-    PS -->|commands| CR
-    CR -->|acks + events| EB
-    PS -->|read snapshot| SS
-
-    TPS -->|target_hint_vec| SS
-    SRS -->|action_chunks| CS
-    SRS -->|read hints| SS
-    CS -->|clamped actions| Robot["Robot"]
-    SG -->|reflex override| CS
-    SG -->|reflex events| EB
-    EB -->|urgent events| PS
-
-    style Runtime fill:#1a1a2e,stroke:#16213e,color:#e0e0e0
-    style PS fill:#0f3460,stroke:#16213e,color:#e0e0e0
-    style TPS fill:#533483,stroke:#16213e,color:#e0e0e0
-    style SRS fill:#e94560,stroke:#16213e,color:#e0e0e0
-    style CS fill:#c84b31,stroke:#16213e,color:#e0e0e0
-    style SG fill:#7b2d26,stroke:#16213e,color:#e0e0e0
+```
+halo/
+  contracts/                         # Enums, snapshots, commands, events, actions
+    enums.py                         # PhaseId, SkillName, SkillFailureCode, PerceptionFailureCode, etc.
+    snapshots.py                     # PlannerSnapshot, TargetInfo, ActInfo, SafetyInfo
+    commands.py                      # StartSkillCommand, AbortSkillCommand, DescribeSceneCommand, etc.
+    events.py                        # Event types (SKILL_SUCCEEDED, PHASE_ENTER, etc.)
+    actions.py                       # Action, ActionChunk, ZERO_ACTION
+    *.json                           # JSON schemas for enums, commands, events, snapshot
+  runtime/
+    state_store.py                   # RuntimeStateStore — single source of truth, partitioned by arm_id
+    event_bus.py                     # EventBus — async pub/sub, subscribe() returns asyncio.Queue
+    command_router.py                # CommandRouter — idempotency, precondition checks, lease validation
+    runtime.py                       # HALORuntime — top-level entry point, owns store + bus + router
+  services/
+    control_service/                 # Real-time action streaming
+      config.py                      # ControlConfig
+      action_buffer.py               # ActionBuffer
+      te_buffer.py                   # TemporalEnsemblingBuffer
+      safety_guard.py                # SafetyGuard + reflex layer
+      service.py                     # ControlService
+    skill_runner_service/            # FSM engine + skill execution
+      engine/                        # Generic FSM engine
+        graph.py                     # FsmGraph, FsmNode, FsmEdge (immutable topology)
+        mermaid_parser.py            # parse_mermaid_fsm() → FsmGraph
+        handlers.py                  # StateHandler protocol, GlobalGuard protocol
+        engine.py                    # FsmEngine (advance, sync_phase, abort, fail)
+        skill_run.py                 # SkillRun (runtime state), NodeStatus, TransitionRecord
+        queue.py                     # SkillQueue (FIFO, max_size=16)
+        definitions.py              # SkillDefinition, SkillRegistry, build_default_registry()
+        view_model.py                # FsmViewModel, build_fsm_view_model()
+      config.py                      # SkillRunnerConfig
+      fsm.py                         # Legacy PickFSM (backward compat)
+      service.py                     # SkillRunnerService
+    planner_service/                 # LLM-based task orchestration
+      config.py                      # PlannerConfig
+      snapshot_serializer.py         # Snapshot → planner-grade text
+      tools.py                       # ADK tool definitions (start_skill, abort_skill, describe_scene)
+      agent.py                       # PlannerAgent (ADK ReAct + before_model_callback)
+      service.py                     # PlannerService (event-driven tick + 30s watchdog)
+    target_perception_service/       # Target tracking + VLM scene analysis
+      config.py                      # PerceptionConfig
+      service.py                     # TargetPerceptionService (fast loop + async VLM)
+      vlm_parser.py                  # VlmDetection, VlmScene, parse_vlm_response()
+      ollama_vlm_fn.py               # make_ollama_vlm_fn() → async VlmFn
+      mock_fns.py                    # make_mock_capture_fn(), make_mock_tracker_factory_fn()
+      handle_match.py                # VLM handle deduplication
+      tracker_fn.py                  # Tracker factory
+      frame_buffer.py                # Frame buffer for VLM
+  cognitive/                         # Backend switching layer
+    config.py                        # BackendType, CognitiveConfig, LocalConfig, CloudConfig
+    backend.py                       # CognitiveBackend protocol, WarmableBackend extension
+    switchboard.py                   # Switchboard — proxy, retry, failover/failback, health loop
+    lease.py                         # LeaseManager + Lease — epoch-monotonic grants, UUID token, TTL
+    context_store.py                 # ContextStore — append-only journal, cursor-based sync
+    compactor.py                     # MessageHistory, CompactionResult
+    compaction_plugin.py             # CompactionPlugin — ADK event compaction callback
+    local_backend.py                 # LocalCognitiveBackend (ADK + LiteLLM/Ollama + Ollama VLM)
+    remote_backend.py                # RemoteCognitiveBackend (HTTP client to Cloud Run)
+    live_session.py                  # LivePlannerSession — Gemini Live API management
+    live_agent_client.py             # TUI-side WebSocket client for Live Agent
+    audio_io.py                      # AudioCapture (16kHz) + AudioPlayback (24kHz)
+  bridge/                            # ZMQ bridge to MuJoCo sim
+    config.py                        # SimBridgeConfig
+    sim_client.py                    # SimClient — thread-safe command + background telemetry
+    sim_source.py                    # SimSource — drop-in video source (capture_fn → CapturedFrame)
+    transforms.py                    # Coordinate transforms
+    sim_tracker_service.py           # Sim-based tracker
+  tui/
+    app.py                           # Textual TUI — mock + live modes
+    run_logger.py                    # RunLogger — JSONL session logs to runs/
+  testing/                           # Test framework
+    event_recorder.py                # EventRecorder for system tests
+    state_seeder.py                  # Seed RuntimeStateStore with test state
+    mock_fns.py                      # Shared mock callables
+    runner.py                        # Test runner utilities
+    metrics.py                       # Test metrics
+  configs/
+    planner/system_prompt.md         # Core planner agent instructions
+    perception/scene_analysis.md     # VLM prompt for object detection
+    skills/                          # Per-skill directories
+      pick/default.mmd              # PICK skill Mermaid FSM
+      place/default.mmd             # PLACE skill Mermaid FSM
+      track/default.mmd             # TRACK skill Mermaid FSM
+      pick/system_prompt.md          # Skill reference for planner
+      place/system_prompt.md         # Skill reference for planner
+    live_agent/system_prompt.md      # Conversational voice/text assistant prompt
+  models/                            # (planned) act/, vlm/
+  tools/                             # (planned) ollama_clients/, zed_capture/, uvc_capture/
+  eval/                              # (planned) sim/, real/
+mujoco_sim/                          # MuJoCo + SO-101 sim (see mujoco_sim/CLAUDE.md)
+cloud_service/                       # Cloud Run service (see cloud_service/README.md)
+infra/                               # Terraform GCP config (see infra/README.md)
+sim/                                 # Isaac Lab extension (planned)
+docs/
+  halo_architecture.md               # High-level architecture
+  data/                              # gitignored; video.mp4 for video capture simulation
+runs/                                # Live TUI session logs (JSONL, gitignored)
+tests/                               # Unit tests
+integration/                         # LLM integration tests (require Ollama)
+  conftest.py                        # Ollama health-check; auto-skips if unavailable
+  runs/                              # Timestamped result folders
 ```
 
 ---
 
-## Dataflows
+## Contracts Layer (`halo/contracts/`)
 
-The system has two independent paths — a high-frequency **control path** (machine-to-machine, no LLM) and a low-frequency **decision path** (LLM-driven).
+Shared data types used across all services.
 
-### Control Path
+**Enums** (`enums.py`): `PhaseId` (0-52), `SkillName` (PICK/PLACE/TRACK), `SkillFailureCode`, `PerceptionFailureCode`, `SafetyReflexReason`, `TrackingStatus`, `ActStatus`, `WRIST_ACTIVE_PHASES`. Phase IDs are stable across sim and real.
 
-Numeric control hints flow machine-to-machine and never enter LLM context.
+**Snapshots** (`snapshots.py`): `PlannerSnapshot` is the planner-grade view of runtime state. Fields: `snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh), `perception`, `act`, `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle`. All bbox/centroid/center_px values are normalised 0..1.
 
-```mermaid
-flowchart LR
-    CAM["Cameras\n+ RobotState"] --> TPS["TargetPerception\nService"]
-    TPS -->|"target_hint_vec\n(robot frame + EE deltas)"| SS["RuntimeState\nStore"]
-    SS -->|"read hints\ndirectly"| SRS["SkillRunner\nService"]
-    SRS -->|"ACT inference\n(10-20 Hz)"| AC["action_chunks"]
-    AC --> CS["ControlService\n(50-100 Hz)"]
-    CS -->|"clamped deltas\n→ IK/OSC"| R["Robot"]
-```
+**Commands** (`commands.py`): Each command carries `command_id` (UUID), `arm_id`, `precondition_snapshot_id`. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = None`.
 
-### Decision Path
+**Events** (`events.py`): `COMMAND_ACCEPTED/REJECTED`, `SKILL_STARTED/SUCCEEDED/FAILED`, `PHASE_ENTER/EXIT`, `PERCEPTION_FAILURE/RECOVERED`, `SCENE_DESCRIBED`, `TARGET_ACQUIRED`, `SAFETY_REFLEX_TRIGGERED/RECOVERED`.
 
-The planner reads compact snapshots and issues async commands. It never blocks the control loop.
-
-```mermaid
-flowchart LR
-    SS["RuntimeState\nStore"] -->|"get_latest_runtime_snapshot()"| PS["PlannerService\n(LLM)"]
-    PS -->|"async commands\n(start_skill, abort, etc.)"| CR["Command\nRouter"]
-    CR -->|"acks + state updates"| SS
-    CR -->|"events"| EB["EventBus"]
-    EB -->|"urgent events\n(SKILL_FAILED, etc.)"| PS
-```
+**JSON schemas**: Machine-readable schemas in `enums.json`, `commands.json`, `events.json`, `snapshot.json`.
 
 ---
 
-## Command Protocol
+## Runtime (`halo/runtime/`)
 
-Every mutating command carries a `command_id` (UUID) and `precondition_snapshot_id`. The router enforces idempotency and uses **strict optimistic concurrency**: `precondition_snapshot_id` must exactly equal the current `snapshot_id` (not >=). If the world has moved on, the command is rejected and the planner must re-read and retry.
+**RuntimeStateStore** (`state_store.py`): Single source of truth for all runtime state, partitioned by `arm_id`. Provides `get_latest_runtime_snapshot(arm_id)` and state update methods.
 
-```mermaid
-sequenceDiagram
-    participant P as PlannerService
-    participant CR as CommandRouter
-    participant SS as StateStore
-    participant EB as EventBus
+**EventBus** (`event_bus.py`): Async pub/sub. `subscribe()` returns an `asyncio.Queue`. Services publish typed events; the PlannerService subscribes to urgent events.
 
-    P->>CR: submit_command(start_skill, snapshot_id=42)
-    Note over CR: Check: duplicate command_id → ALREADY_APPLIED
-    CR->>SS: latest snapshot_id == 42?
-    alt Exact match
-        CR->>SS: apply command
-        CR->>EB: publish COMMAND_ACCEPTED
-    else Stale or mismatched
-        CR->>EB: publish COMMAND_REJECTED
-    end
-    EB-->>P: event in next snapshot
-```
+**CommandRouter** (`command_router.py`): Validates and routes planner commands. Enforces idempotency (duplicate `command_id` → `ALREADY_APPLIED`), precondition checks (stale `snapshot_id` → `REJECTED_STALE`), and lease validation when a LeaseManager is active (checks `epoch` + `lease_token`).
 
-### Planner Tools
-
-| Tool | Precondition | Purpose |
-|---|---|---|
-| `start_skill(skill, target, options)` | snapshot_id | Launch a skill (pick, place) |
-| `abort_skill(skill_run_id, reason)` | snapshot_id | Abort a running skill |
-| `override_target(skill_run_id, handle)` | snapshot_id | Retarget mid-skill |
-| `describe_scene(reason)` | None (stateless) | Trigger async VLM scene analysis |
-| `track_object(target_handle)` | None (stateless) | Set perception tracking target |
+**HALORuntime** (`runtime.py`): Top-level entry point. Owns StateStore, EventBus, and CommandRouter. Exposes `get_latest_runtime_snapshot(arm_id)` and `submit_command(cmd)`.
 
 ---
 
-## Pick Skill FSM
+## Service Internals
 
-The SkillRunnerService drives a deterministic FSM. Phase transitions are fast and local — the planner only starts/aborts skills, never times micro-actions.
+### PlannerService
 
-```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> SELECT_GRASP
+Event-driven LLM agent using ADK ReAct. Ticks fire on urgent events (`SKILL_SUCCEEDED`, `SKILL_FAILED`, `SAFETY_REFLEX_TRIGGERED`, `PERCEPTION_FAILURE`, `SCENE_DESCRIBED`, `TARGET_ACQUIRED`, `COMMAND_REJECTED`) plus a 30 s watchdog. Ticks are serialized — `decide_fn` is awaited before the next event is processed.
 
-    SELECT_GRASP --> PLAN_APPROACH : grasp selected (v0: pass-through)
-    PLAN_APPROACH --> MOVE_PREGRASP : plan ready (v0: pass-through)
+Three planner tools: `start_skill` (PICK/PLACE/TRACK), `abort_skill`, `describe_scene`. The `before_model_callback` replaces the previous snapshot in LLM context with the latest one (never appends).
 
-    MOVE_PREGRASP --> VISUAL_ALIGN : position reached
-    MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : timeout / no progress
+### TargetPerceptionService
 
-    VISUAL_ALIGN --> EXECUTE_APPROACH : aligned
-    VISUAL_ALIGN --> RECOVER_RETRY_APPROACH : timeout / no progress
+Fast loop (10 Hz default) + async VLM reacquisition. Accepts injected `ObserveFn` (tracker) and optional `VlmFn` (scene analysis). At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`.
 
-    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance < threshold\nheld for grasp_persistence_ms
-    EXECUTE_APPROACH --> RECOVER_RETRY_APPROACH : timeout / no progress
+VLM handle dedup: `dedupe_detection_handles()` renames duplicates to `{handle}_dup2`, `{handle}_dup3`. All coordinates normalised 0..1 throughout; denormalisation only at OpenCV boundaries.
 
-    CLOSE_GRIPPER --> VERIFY_GRASP : dwell complete
+### SkillRunnerService
 
-    VERIFY_GRASP --> LIFT : grasp confirmed
-    VERIFY_GRASP --> RECOVER_REGRASP : grasp failed
+Uses the generic FSM engine to execute skills defined as Mermaid diagrams. Key engine components:
 
-    LIFT --> DONE : lift complete
+- **FsmGraph** (`graph.py`): immutable topology parsed from Mermaid
+- **parse_mermaid_fsm()** (`mermaid_parser.py`): Mermaid → FsmGraph
+- **StateHandler** (`handlers.py`): per-node handler protocol with `on_enter`, `tick`, `on_exit`
+- **FsmEngine** (`engine.py`): `advance()`, `sync_phase()`, `abort()`, `fail()`, `needs_chunk()`
+- **SkillRun** (`skill_run.py`): runtime state per skill execution
+- **SkillQueue** (`queue.py`): FIFO queue (max 16)
+- **SkillRegistry** (`definitions.py`): maps SkillName → SkillDefinition (graph + handlers)
 
-    RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry (if retries remain)
-    RECOVER_REGRASP --> MOVE_PREGRASP : retry (if retries remain)
+Dual-mode: ACT (chunk_fn/push_fn) or Sim (start_pick_fn/sim_phase_fn). In sim mode, `sync_phase()` performs forward-only transitions based on SimServer telemetry.
 
-    DONE --> [*]
-```
+`held_object_handle` in the state store tracks what's in the gripper after a successful pick. The planner prompt enforces: if held_object_handle is set, never start another PICK.
 
-**Key invariant:** `CLOSE_GRIPPER` is triggered deterministically when `distance < grasp_distance_threshold_m` held for `grasp_persistence_ms`. The planner never commands "close gripper now". Wrist camera is active in `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, and `VERIFY_GRASP`.
+### ControlService
 
-### Dual-Mode SkillRunner (ACT vs Sim)
+Streams actions at the target rate using temporal ensembling to blend overlapping action chunks. The TemporalEnsemblingBuffer blends per-timestep — overlapping predicted deltas become a single commanded delta sequence before IK/OSC mapping. On phase transition, the buffer is trimmed to ~50-100 ms.
 
-The SkillRunnerService operates in two modes:
+Action spaces are intentionally different between core and sim:
+- **HALO core**: `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas
+- **MuJoCo sim**: `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint positions
 
-- **ACT mode** (default): uses `chunk_fn` (ACT inference) + `push_fn` (ControlService) for end-effector delta control.
-- **Sim mode**: uses `start_pick_fn` (triggers autonomous trajectory on SimServer) + `sim_phase_fn` (polls phase/done from telemetry). No joint chunk pushing needed — the server runs physics autonomously.
-
-```python
-# Sim mode callables
-StartPickFn = Callable[[str, str], Awaitable[dict]]   # (arm_id, target_body) → server response
-SimPhaseFn  = Callable[[], tuple[int, bool]]           # () → (phase_id, done)
-```
-
-In sim mode, `start_skill()` calls `start_pick_fn`; a `start_pick_error` response triggers `SKILL_FAILED` with `NO_GRASP`. The `_tick_sim()` method reads phase from `sim_phase_fn` and syncs the FSM via `sync_phase()` (forward-only transitions). On `SKILL_SUCCEEDED`, the `held_object_handle` in the state store is set to the target; on failure/abort it is cleared.
-
-### Held-Object State
-
-`PlannerSnapshot.held_object_handle` tracks which object is in the gripper after a successful pick. The planner system prompt enforces: if `held_object_handle` is not null, never start another PICK — ask for a place target first.
+Conversion is the responsibility of the `apply_fn` factory.
 
 ---
 
-## TargetPerceptionService
+## Cognitive Backend (`halo/cognitive/`)
 
-Two loops: a fast tracking loop (10–30 Hz) and an async VLM loop for scene analysis/reacquisition.
+**Switchboard** (`switchboard.py`): Transparent proxy routing LLM/VLM calls. Retry logic with backoff, failure counting (3 consecutive → failover), warm-up handoff on failback, health loop (5 s). Services call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-ins.
 
-```mermaid
-flowchart TB
-    subgraph Fast["Fast Loop (10-30 Hz, ≤80-120ms)"]
-        OBS["observe_fn\n(tracker + depth)"] --> PG["Plausibility\nGates"]
-        PG -->|valid| PUB["Publish\ntarget_hint_vec"]
-        PG -->|invalid| INV["hint_valid = false\n→ HOLD / REACQUIRE"]
-    end
+**LeaseManager** (`lease.py`): Epoch-monotonic grants with UUID token + TTL (30 s default). Renewed on every successful `decide()` / `vlm_scene()`. CommandRouter validates both `epoch` and `lease_token` on every command. Lifecycle: `grant(holder) → renew(epoch) → revoke(epoch) → grant(new_holder)`.
 
-    subgraph Async["Async VLM (0.5-5s, off critical path)"]
-        VLM["VLM\n(qwen2.5vl)"] --> PARSE["vlm_parser\n→ VlmScene"]
-        PARSE --> SEED["Store _vlm_seed"]
-    end
+**ContextStore** (`context_store.py`): Append-only journal (bounded to 200 entries) capturing decisions, scenes, events, operator instructions, compaction events. `build_cognitive_state()` produces a `CognitiveState` for backend handoff. Cursor-based sync (`get_entries_after(cursor)`) enables incremental warm-up.
 
-    SEED -.->|"consumed when\nobserve returns None"| OBS
-    INV -.->|"trigger reacquire"| VLM
+**CompactionPlugin** (`compaction_plugin.py`): ADK-native event compaction callback. Detects compaction boundaries and propagates summaries to the inactive backend for concise failback context.
 
-    CAM["Scene Camera"] --> VLM
-    CAM2["Cameras + Robot State"] --> OBS
-```
+**Backends**: `LocalCognitiveBackend` wraps PlannerAgent (ADK + LiteLLM/Ollama) + Ollama VLM. `RemoteCognitiveBackend` is an HTTP client to the Cloud Run service.
 
-### VLM Handle Deduplication
-
-VLM may return multiple detections with the same handle. After parsing, `dedupe_detection_handles()` renames duplicates to `{handle}_dup2`, `{handle}_dup3`, etc., guaranteeing unique handles downstream. The scene prompt also detects the robot hand/gripper (`robot_hand_NN` handle, `is_graspable: false`).
-
-### Normalised Coordinates
-
-All perception coordinates are **normalised to 0..1** throughout the system. `TargetInfo.center_px`, `TargetInfo.bbox_xywh`, `VlmDetection.bbox`, and `VlmDetection.centroid` carry normalised values. Denormalisation to pixels happens only at OpenCV/drawing boundaries (`feed_viewer.py`, `tracker_fn.py`). `parse_vlm_response()` accepts `img_w`/`img_h` for normalisation.
-
-### Perception Failure Codes
-
-`OK` · `OCCLUDED` · `OUT_OF_VIEW` · `DEPTH_INVALID` · `MULTIPLE_CANDIDATES` · `CALIB_INVALID` · `TRACK_JUMP_REJECTED` · `REACQUIRE_FAILED`
+**Live Agent**: `LivePlannerSession` manages Gemini Live API sessions. `LiveAgentClient` is the TUI-side WebSocket client with `send_tool_result()` and `set_audio_callbacks()`. `AudioCapture` (16 kHz) and `AudioPlayback` (24 kHz) via sounddevice.
 
 ---
 
-## ControlService & Safety
+## Bridge (`halo/bridge/`)
 
-The ControlService applies temporal ensembling to blend overlapping action chunks into smooth per-timestep deltas. Target rate is 50–100 Hz for real hardware; v0 MuJoCo sim uses 10 Hz for debugging simplicity.
-
-```mermaid
-flowchart LR
-    SRS["SkillRunner\naction_chunks"] --> TEB["Temporal\nEnsembling\nBuffer"]
-    TEB -->|"blended delta\nper timestep"| SG["SafetyGuard\n(clamp + freshness)"]
-    SG -->|"safe action"| IK["IK / OSC\nMapping"]
-    IK --> Robot["Robot"]
-
-    SG -->|"reflex triggered"| REF["Reflex\n(stop/retract/open)"]
-    REF --> Robot
-    REF -->|"SAFETY_REFLEX_TRIGGERED"| EB["EventBus"]
-```
-
-### Safety Guards (v0)
-
-- Per-timestep linear delta limit (`max_linear_delta_m`)
-- Per-timestep angular delta limit (`max_angular_delta_rad`)
-- Hint freshness gating (`obs_age_ms`, `time_skew_ms` thresholds)
-- Reflex: immediate stop/retract/open-gripper on unsafe conditions
-
-The LLM cannot bypass safety guards.
-
----
-
-## Event Flow
-
-Services communicate asynchronously through the EventBus. The planner wakes on urgent events.
-
-```mermaid
-flowchart TB
-    SRS["SkillRunner"] -->|"SKILL_SUCCEEDED\nSKILL_FAILED\nPHASE_ENTER"| EB["EventBus"]
-    TPS["Perception"] -->|"PERCEPTION_FAILURE\nSCENE_DESCRIBED\nTARGET_ACQUIRED"| EB
-    SG["SafetyGuard"] -->|"SAFETY_REFLEX_TRIGGERED\nSAFETY_RECOVERED"| EB
-    CR["CommandRouter"] -->|"COMMAND_ACCEPTED\nCOMMAND_REJECTED"| EB
-
-    EB -->|"urgent events\nwake planner"| PS["PlannerService"]
-    EB -->|"30s watchdog\n(if no events)"| PS
-
-    PS -->|"reads latest\nsnapshot"| SS["StateStore"]
-    SS -->|"snapshot includes\nrecent_events ring"| PS
-```
-
-### Urgent Events (wake PlannerService)
-
-`SKILL_SUCCEEDED` · `SKILL_FAILED` · `SAFETY_REFLEX_TRIGGERED` · `PERCEPTION_FAILURE` · `SCENE_DESCRIBED` · `TARGET_ACQUIRED` · `COMMAND_REJECTED`
-
----
-
-## Planner Snapshot
-
-The planner sees exactly **one** compact snapshot (the latest). Old snapshots are replaced, never appended.
-
-Snapshot field groups:
-- **Identity**: `snapshot_id`, `arm_id`, `ts_ms`
-- **Skill**: name, phase, `skill_run_id` | **Target**: `hint_valid`, confidence, `obs_age_ms`, `delta_xyz_ee`, `distance_m`
-- **Perception**: `tracking_status`, `failure_code` | **ACT**: status, `buffer_fill_ms`, `buffer_low`
-- **Progress/Outcome**: `elapsed_ms`, `no_progress_ms`, `delta_distance`, state, `reason_code`
-- **Safety**: state, `reflex_active` | **Misc**: `command_acks`, `recent_events` (ring of 8), `held_object_handle`
-
----
-
-## ACT Action Space
-
-**HALO core** (runtime/bridge) actions are **per-timestep servo increments** in the end-effector frame:
-
-```
-[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]   (7D EE-frame deltas)
-```
-
-**MuJoCo sim** (`mujoco_sim/`) uses **joint-position targets** written directly to `data.ctrl[:]`:
-
-```
-[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]   (6D joint positions)
-```
-
-The action spaces are **intentionally different** — conversion is the responsibility of the `apply_fn` factory. Constants sync tests verify phase/gripper alignment but not action format.
-
-- Deltas are applied relative to the **current measured** EE pose (closed-loop)
-- Temporal ensembling blends overlapping chunk predictions per-timestep
-- On phase transition, the buffer is trimmed to ~50–100 ms to avoid stale tail actions
-- **v0 MuJoCo profile:** 20 Hz control (10 Hz ACT), 10-step chunks (1 s horizon). Production target is 50–100 Hz with shorter horizons (200–500 ms).
-
----
-
-## Timing Budgets
-
-| Path | Target | v0 Sim |
-|---|---|---|
-| ControlService tick | 50–100 Hz (10–20 ms) | 20 Hz (50 ms) in MuJoCo |
-| Fast perception loop → hint publish | ≤ 80–120 ms | same |
-| VLM reacquire (async, off critical path) | 0.5–5 s | same |
-| ACT chunk horizon | 200–500 ms | 1 s (10 steps) |
-| ACT buffer fill target | 150–300 ms | ~1 s |
-| Planner watchdog | 30 s max between ticks | same |
-
----
-
-## Cognitive Backend Switching (`halo/cognitive/`)
-
-Transparent proxy layer that routes planner and VLM calls through a **Switchboard** to either a **LOCAL** (Ollama) or **CLOUD** (Gemini Live API / remote HTTP) backend. Services call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-in replacements — unaware of which backend is active.
-
-- **Switchboard**: retry logic, failure counting (3 consecutive → failover), warm-up handoff on failback, health loop (5 s interval)
-- **LeaseManager**: epoch-monotonic grants with UUID token + TTL; `CommandRouter` rejects stale epoch/token — prevents split-brain
-- **ContextStore**: append-only journal (bounded to 200 entries) with cursor-based sync for incremental warm-up during failback
-- **CompactionPlugin**: ADK-native event compaction callback; propagates summaries to inactive backend for concise failback context
-- **Backends**: `LocalCognitiveBackend` (ADK + LiteLLM/Ollama), `RemoteCognitiveBackend` (HTTP client to Cloud Run)
-
-See `docs/halo_architecture.md` §17 for detailed failover/failback/compaction sequence diagrams.
-
----
-
-## MuJoCo Simulation (`mujoco_sim/`)
-
-Phase 1 of the sim strategy. Raw MuJoCo + SO-101 arm (5-DOF + 1-DOF gripper, 6 actuated joints). Generates teacher pick demos, records episodes to HDF5, and bridges to HALO runtime via ZMQ. Separate workspace member with its own `pyproject.toml`.
-
-### Trajectory Planning Pipeline
-
-PickTeacher pre-computes a full trajectory on first `step()`, then samples in real time:
-
-```
-grasp_planner (64 candidates, geometric filter, IK scoring)
-  → keyframe_planner (5 SE(3) keyframes: home → pregrasp → grasp → close → lift)
-    → waypoint_generator (IK with yaw-retry fallbacks)
-      → trajectory (jerk-limited ruckig segments, start/end at rest)
-        → pick_teacher.step() samples at elapsed time → (action, phase_id, done)
-```
-
-**Teacher phase sequence:** `IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(8) → DONE(9)`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation.
-
-Episode generation: reset → 5 s stabilization → teacher loop → write HDF5 → verify lift. **100% success rate** with current tuning. Use `make generate-episodes` to produce datasets.
-
-### Constants Sync
-
-Phase IDs, gripper semantics, and wrist-active phases are synced between `halo/contracts/enums.py` and `mujoco_sim/constants.py`, verified by cross-module tests. Action space intentionally diverged (sim: 6D joint-position, core: 7D EE-delta).
-
-See `mujoco_sim/CLAUDE.md` for full details (env, dataset format, scene constants, IK, grasp planner, contact solver tuning).
-
----
-
-## ZMQ Bridge (`halo/bridge/`)
-
-Connects the HALO runtime to the MuJoCo sim server via a 2-channel ZMQ protocol.
+2-channel ZMQ connection to the MuJoCo sim server.
 
 | Channel | ZMQ Pattern | Port | Direction | Purpose |
 |---------|-------------|------|-----------|---------|
-| **TelemetryStream** | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
-| **CommandRPC** | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, shutdown |
+| TelemetryStream | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
+| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, configure, shutdown |
 
-**SimServer** (`mujoco_sim.server`) runs an autonomous physics loop at 20 Hz, plans and executes trajectories, and publishes telemetry. Single-threaded (macOS OpenGL constraint). Protocol: msgpack + JPEG. **SimClient** (`sim_client.py`) provides a thread-safe command interface with background telemetry reception; `BridgeTransportError` on timeout (ControlService catches → `ActStatus.STALE`). **SimSource** (`sim_source.py`) wraps SimClient as a drop-in video source (`capture_fn` → `CapturedFrame`). No env resets between skills — arm stays at final position, sim runs continuously.
+**SimServer** (`mujoco_sim.server`): autonomous physics loop at 20 Hz, plans and executes trajectories, publishes telemetry. Single-threaded (macOS OpenGL). Protocol: msgpack + JPEG.
+
+**SimClient** (`sim_client.py`): thread-safe command interface with background telemetry reception. `BridgeTransportError` on timeout.
+
+**SimSource** (`sim_source.py`): wraps SimClient as a drop-in video source (`capture_fn` → `CapturedFrame`).
+
+No env resets between skills — the arm stays at its final position and sim runs continuously.
+
+---
+
+## Configuration (`halo/configs/`)
+
+- `planner/system_prompt.md` — core planner agent instructions (tool usage, snapshot interpretation, recovery logic)
+- `perception/scene_analysis.md` — VLM prompt for object detection (JSON output format, handle naming)
+- `skills/pick/default.mmd` — PICK skill Mermaid FSM topology
+- `skills/place/default.mmd` — PLACE skill Mermaid FSM topology
+- `skills/track/default.mmd` — TRACK skill Mermaid FSM topology
+- `skills/pick/system_prompt.md` — PICK skill reference for planner
+- `skills/place/system_prompt.md` — PLACE skill reference for planner
+- `live_agent/system_prompt.md` — conversational voice/text assistant prompt
+
+---
+
+## Testing
+
+### Test Tiers
+
+1. **Unit tests** (`tests/`): ~740 tests. Pure unit tests for contracts, runtime, services, cognitive. Run with `uv run python -m pytest`.
+2. **Component tests**: service-level tests with injected mocks (mock observe_fn, mock chunk_fn).
+3. **System tests**: multi-service tests using the testing framework (EventRecorder, StateSeeder).
+4. **Integration tests** (`integration/`): require Ollama with `gpt-oss:20b`. Auto-skip if unreachable. Run with `make test-integration`.
+
+Additional: 116 mujoco_sim tests (`make test-sim`), 20 cloud_service tests (`make test-cloud-service`).
+
+### Testing Framework (`halo/testing/`)
+
+- `event_recorder.py` — subscribe to EventBus, collect events for assertions
+- `state_seeder.py` — seed RuntimeStateStore with specific state for test scenarios
+- `mock_fns.py` — shared mock callables (chunk_fn, push_fn, observe_fn, etc.)
+- `runner.py` — test runner utilities
+- `metrics.py` — test metrics collection
+
+Conventions: `pytest-asyncio` with `asyncio_mode = "auto"`. Tests use `HALORuntime()` + `register_arm("arm0")`. System tests set `precondition_snapshot_id=None` for `START_SKILL`.
+
+---
+
+## Development Workflow
+
+### Install
+
+```bash
+make install                    # uv sync --extra dev
+make install-sim                # install mujoco_sim deps
+```
+
+### Lint and Format
+
+```bash
+make ruff                       # ruff check --fix + ruff format (run before every commit)
+```
+
+Ruff config: line-length=120, target py313, select E/F/I/W.
+
+### Test
+
+```bash
+uv run python -m pytest                              # all unit tests
+uv run python -m pytest tests/test_contracts.py       # single file
+uv run python -m pytest -k test_snapshot_ids          # single test by name
+make test-sim                                         # mujoco_sim tests
+make test-cloud-service                               # cloud_service tests
+make test-integration                                 # LLM integration tests (requires Ollama)
+make smoke-cloud-service                              # smoke test against Gemini
+```
+
+### TUI Modes
+
+```bash
+make tui-mock                   # static fixture data, no services needed
+make tui-live                   # Ollama planner + VLM + MuJoCo sim
+make tui-live-cloud             # HTTP client to cloud service (set HALO_CLOUD_URL)
+make tui-live-cloud-local       # cloud service on localhost
+```
+
+### Sim
+
+```bash
+make run-sim                    # start MuJoCo sim server
+make generate-episodes          # generate teacher episodes (EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0)
+```
+
+---
+
+## Command Reference
+
+| Command | Description |
+|---|---|
+| `make install` | Install deps + MuJoCo (`uv sync --extra dev`) |
+| `make ruff` | Lint + format (ruff check --fix + ruff format) |
+| `make test-sim` | Run mujoco_sim tests |
+| `make tui-mock` | TUI in mock mode |
+| `make tui-live` | TUI with Ollama + MuJoCo |
+| `make tui-live-cloud` | TUI via cloud service HTTP |
+| `make tui-live-cloud-local` | TUI against local cloud service |
+| `make run-cloud-service` | Run cloud service (needs GOOGLE_API_KEY) |
+| `make test-cloud-service` | Cloud service unit tests |
+| `make smoke-cloud-service` | Smoke test against Gemini |
+| `make generate-episodes` | Generate teacher episodes |
+| `make test-integration` | LLM integration tests (needs Ollama) |
