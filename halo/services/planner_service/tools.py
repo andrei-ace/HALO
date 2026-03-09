@@ -12,7 +12,7 @@ from halo.contracts.commands import (
 )
 from halo.contracts.enums import CommandType, SkillName
 
-MAX_TOOL_CALLS = 5
+MAX_TOOL_CALLS = 10
 
 
 @dataclass
