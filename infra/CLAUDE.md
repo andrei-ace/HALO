@@ -34,6 +34,7 @@ Terraform configuration for HALO's GCP infrastructure (Artifact Registry, Cloud 
 | `live_agent_model` | string | `gemini-2.5-flash-native-audio-preview-12-2025` | Gemini model for Live Agent |
 | `invoker_impersonators` | list(string) | `[]` | IAM members allowed to impersonate invoker SA |
 | `deploy_service` | bool | `true` | `false` for bootstrap (registry + secrets only) |
+| `image_digest` | string | `""` | Docker image digest (`sha256:...`); forces Cloud Run redeployment |
 
 ## Outputs
 
@@ -53,7 +54,7 @@ Terraform configuration for HALO's GCP infrastructure (Artifact Registry, Cloud 
 | `make tf-apply` | `terraform apply` |
 | `make tf-bootstrap` | Apply with `deploy_service=false` (registry + secrets only) |
 | `make docker-push` | Build + push cognitive image to Artifact Registry |
-| `make deploy-cloud` | `docker-push` then `tf-apply` with `deploy_service=true` |
+| `make deploy-cloud` | `docker-push` then `tf-apply` with `deploy_service=true` and image digest |
 
 ## Key Design Notes
 
@@ -62,4 +63,5 @@ Terraform configuration for HALO's GCP infrastructure (Artifact Registry, Cloud 
 - **Secret handling**: Secret shell is managed by Terraform; the secret *value* is set manually via `gcloud` (never in state).
 - **Scale-to-zero**: `min_instance_count = 0` with `cpu_idle = true` and `startup_cpu_boost = true`.
 - **GCP APIs**: Must be enabled before first apply — see `cloud_service/README.md` for the `gcloud services enable` commands.
+- **Image digest pinning**: `deploy-cloud` captures the pushed image's `sha256` digest and passes it to Terraform as `image_digest`, forcing Cloud Run to redeploy even when the `:latest` tag hasn't changed in the Terraform state.
 - **Full deployment walkthrough**: See `cloud_service/README.md`.

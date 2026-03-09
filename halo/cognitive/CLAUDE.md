@@ -7,7 +7,7 @@ Backend abstraction and switching for the HALO planner. Supports local (Ollama) 
 | File | Purpose |
 |------|---------|
 | `__init__.py` | `CognitiveStack` dataclass + `make_cognitive_stack()` factory |
-| `config.py` | `BackendType`, `BackendReadiness`, `CognitiveConfig`, `LocalConfig`, `CloudConfig`, `RemoteCloudConfig`, `CompactionConfig`, `LiveAgentConfig` |
+| `config.py` | `BackendType`, `BackendReadiness`, `CognitiveConfig`, `LocalConfig`, `CloudConfig`, `RemoteCloudConfig` (`vlm_timeout_s`), `CompactionConfig`, `LiveAgentConfig` |
 | `backend.py` | `CognitiveBackend` protocol: `decide()`, `vlm_scene()`, `health_check()`, `reset_loop_state()` |
 | `local_backend.py` | `LocalCognitiveBackend` — wraps `PlannerAgent` + Ollama VLM |
 | `remote_backend.py` | `RemoteCognitiveBackend` — HTTP client to Cloud Run; IAM auth, `last_msg_id` sync, multipart VLM |

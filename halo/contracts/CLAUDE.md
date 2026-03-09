@@ -7,7 +7,7 @@ Canonical type definitions, enums, and serialization for the HALO runtime. Defin
 | File | Purpose |
 |------|---------|
 | `enums.py` | Stable enums: `PhaseId`, `SkillName`, `TrackingStatus`, failure codes, safety reasons, command/event types |
-| `snapshots.py` | Frozen dataclasses: `PlannerSnapshot` and its components (`SkillInfo`, `TargetInfo`, `PerceptionInfo`, `ActInfo`, `ProgressInfo`, `OutcomeInfo`, `SafetyInfo`) |
+| `snapshots.py` | Frozen dataclasses: `PlannerSnapshot` and its components (`SkillInfo`, `TargetInfo`, `PerceptionInfo`, `ActInfo`, `ProgressInfo`, `OutcomeInfo`, `SafetyInfo`, `QueuedSkillInfo`) |
 | `commands.py` | `CommandEnvelope`, payload dataclasses (`StartSkillPayload`, `AbortSkillPayload`, `OverrideTargetPayload`, `DescribeScenePayload`), `CommandAck` |
 | `events.py` | `EventType` enum, `EventEnvelope` dataclass |
 | `actions.py` | `Action` (7D EE-frame deltas), `ActionChunk`, `JointPositionAction` (6D SO-101), `JointPositionChunk`, `ZERO_ACTION`, `ZERO_JOINT_ACTION` |
@@ -56,7 +56,8 @@ PlannerSnapshot
 ├── safety: SafetyInfo (state, reflex_active, reason_codes)
 ├── command_acks: tuple[CommandAck, ...] (last 10)
 ├── recent_events: tuple[EventEnvelope, ...] (last 8)
-└── held_object_handle: str | None
+├── held_object_handle: str | None
+└── queued_skills: tuple[QueuedSkillInfo, ...] (skills waiting in queue)
 ```
 
 All coordinates (center_px, bbox_xywh) are normalised 0..1. Snapshot is **replaced** (never appended) in planner context.

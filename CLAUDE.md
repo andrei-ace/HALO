@@ -166,7 +166,7 @@ Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`,
 **MuJoCo sim (`mujoco_sim/`):** `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets for SO-101 (5 arm DOF + 1 gripper DOF). Written directly to `data.ctrl[:]`.
 
 ### Planner snapshot fields (compact; no raw telemetry)
-`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh — all normalised 0..1), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle` (str|None — which object is in the gripper after a successful pick).
+`snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh — all normalised 0..1), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle` (str|None — which object is in the gripper after a successful pick), `queued_skills` (tuple of `QueuedSkillInfo(skill_name, target_handle)` — skills waiting in the queue after the current one).
 
 ### Stable enums (define in `contracts/enums`)
 - Perception failure codes: `OK`, `OCCLUDED`, `OUT_OF_VIEW`, `DEPTH_INVALID`, `MULTIPLE_CANDIDATES`, `CALIB_INVALID`, `TRACK_JUMP_REJECTED`, `REACQUIRE_FAILED`

@@ -116,7 +116,7 @@ Shared data types used across all services.
 
 **Enums** (`enums.py`): `PhaseId` (0-52), `SkillName` (PICK/PLACE/TRACK), `SkillFailureCode`, `PerceptionFailureCode`, `SafetyReflexReason`, `TrackingStatus`, `ActStatus`, `WRIST_ACTIVE_PHASES`. Phase IDs are stable across sim and real.
 
-**Snapshots** (`snapshots.py`): `PlannerSnapshot` is the planner-grade view of runtime state. Fields: `snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh), `perception`, `act`, `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle`. All bbox/centroid/center_px values are normalised 0..1.
+**Snapshots** (`snapshots.py`): `PlannerSnapshot` is the planner-grade view of runtime state. Fields: `snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh), `perception`, `act`, `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle`, `queued_skills` (skills waiting in queue after the current one). All bbox/centroid/center_px values are normalised 0..1.
 
 **Commands** (`commands.py`): Each command carries `command_id` (UUID), `arm_id`, `precondition_snapshot_id`. Stateless commands (`describe_scene`, `track_object`) set `precondition_snapshot_id = None`.
 

@@ -122,7 +122,7 @@ In sim mode, `_tick_sim()` defers `start_pick_fn`/`start_place_fn` until FSM exi
 
 ## SkillQueue
 
-FIFO deque (max 16 by default). Deduplicates by `(skill_name, target_handle)`. Service drains queue when current skill completes.
+FIFO deque (max 16 by default). Deduplicates by `(skill_name, target_handle)`. Service drains queue when current skill completes successfully; clears queue on failure. Queue state is synced to `RuntimeStateStore` (via `_sync_queue_to_store()`) after every mutation (enqueue, dequeue, clear), making it visible to the planner as `queued_skills` in the `PlannerSnapshot`.
 
 ## Config Defaults
 
@@ -173,7 +173,7 @@ FIFO deque (max 16 by default). Deduplicates by `(skill_name, target_handle)`. S
 ## Integration
 
 - **Reads**: target, perception, act, held_object_handle from RuntimeStateStore (via snapshot)
-- **Writes**: skill info, outcome, progress to store
+- **Writes**: skill info, outcome, progress, queued_skills to store
 - **Publishes**: SKILL_STARTED/SUCCEEDED/FAILED, PHASE_ENTER/EXIT
 - **Consumed by**: ControlService (PHASE_ENTER → buffer trim), PlannerService (SKILL_SUCCEEDED/FAILED → replan)
 - **Registry**: `build_default_registry()` loads Mermaid files from `configs/skills/`

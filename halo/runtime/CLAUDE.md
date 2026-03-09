@@ -31,7 +31,7 @@ Services update state via `runtime.store` and `runtime.bus`; the planner only se
 
 Per-arm state partitioned by `arm_id`. All updates async with `asyncio.Lock`.
 
-**Per-field update methods:** `update_skill()`, `update_target()`, `update_held_object_handle()`, `update_perception()`, `update_target_and_perception()` (atomic), `update_act()`, `update_progress()`, `update_outcome()`, `update_safety()`, `add_command_ack()`
+**Per-field update methods:** `update_skill()`, `update_target()`, `update_held_object_handle()`, `update_perception()`, `update_target_and_perception()` (atomic), `update_act()`, `update_progress()`, `update_outcome()`, `update_safety()`, `update_queued_skills()`, `add_command_ack()`
 
 **Snapshot assembly:** `build_and_cache_snapshot(arm_id, recent_events)` — assembles from all fields, assigns monotonic `snapshot_id`, **replaces** (never appends) cached snapshot. Ring of 10 command acks, 8 recent events.
 

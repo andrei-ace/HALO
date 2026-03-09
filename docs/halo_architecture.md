@@ -326,7 +326,7 @@ Three skills are implemented: **PICK**, **PLACE**, and **TRACK**. The SkillRunne
 - **ACT mode**: uses chunk inference + ControlService for end-effector delta control
 - **Sim mode**: triggers autonomous trajectories on the MuJoCo SimServer and monitors progress via telemetry
 
-The planner has three tools: `start_skill`, `abort_skill`, and `describe_scene`. It starts and monitors skills but never times micro-actions like "close gripper now".
+The planner has three tools: `start_skill`, `abort_skill`, and `describe_scene`. It starts and monitors skills but never times micro-actions like "close gripper now". The planner can queue multiple skills in one response; the `queued_skills` field in the snapshot shows what's pending, preventing duplicate commands on subsequent ticks.
 
 ### Pick Skill FSM
 
