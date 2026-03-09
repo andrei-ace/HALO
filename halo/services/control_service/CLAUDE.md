@@ -10,6 +10,8 @@ Real-time (50–100 Hz) action-streaming service. Never waits on LLM or VLM.
 | `te_buffer.py` | `TemporalEnsemblingBuffer` — blends overlapping ACT chunks with exponential decay |
 | `action_buffer.py` | `ActionBuffer` — legacy FIFO deque (kept, not used by default) |
 | `safety_guard.py` | `SafetyGuard` — per-timestep constraint checks + clamping |
+| `joint_safety_guard.py` | `JointSafetyGuard` — joint-level angle + velocity limits for SO-101 |
+| `joint_service.py` | `JointService` — monitors joint state from telemetry, enforces joint limits, publishes metrics |
 | `service.py` | `ControlService` — asyncio loop, event drain, applies actions to robot |
 
 ## Key Types

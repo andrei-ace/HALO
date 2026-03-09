@@ -12,7 +12,11 @@ Fast-loop (10 Hz) perception service for target tracking and async VLM scene ana
 | `frame_buffer.py` | `CapturedFrame`, `FrameRingBuffer` — append-only buffer with read-cursor for replay |
 | `vlm_parser.py` | `VlmDetection`, `VlmScene`, `parse_vlm_response()` — structured VLM output |
 | `ollama_vlm_fn.py` | `make_ollama_vlm_fn()` — factory for async Ollama VLM callable (`qwen2.5vl`); accepts live camera frames |
+| `gemini_vlm_fn.py` | `make_gemini_vlm_fn()` — factory for async Gemini VLM callable (cloud backend) |
+| `vlm_fn.py` | `VlmFn` + `VlmFnWithTargetHandle` types, signature introspection, dual-slot parallelism (scene + track) |
 | `video_capture_fn.py` | `make_video_capture_fn()` — factory for `CaptureFn` backed by a looping video file (OpenCV) |
+| `video_source.py` | `VideoSource` — OpenCV frame capture thread with state tracking |
+| `handle_match.py` | `_find_detection()` (fuzzy handle matching with prefix fallback), `_stabilize_scene_for_tracked_target()` (anchor-based detection rename) |
 | `mock_fns.py` | `make_mock_capture_fn()`, `make_mock_tracker_factory_fn()` — test factories |
 
 ## Key Types
