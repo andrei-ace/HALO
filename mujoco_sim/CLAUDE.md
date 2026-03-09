@@ -17,17 +17,19 @@ mujoco_sim/
     env_config.py       # EnvConfig dataclass (SO-101 defaults)
   env/
     so101_env.py        # SO101Env wrapper (raw MuJoCo, dual cameras, joint-position control)
-    robosuite_env.py    # (legacy, not exported)
   dataset/
     raw_episode.py      # Timestep (with phase_id, joint_pos) + RawEpisode in-memory buffer
     writer_hdf5.py      # write_episode() — one HDF5 per episode, gzip images
     reader_hdf5.py      # read_episode() — load HDF5 → RawEpisode
   teacher/
     pick_teacher.py     # PickTeacher trajectory-planned policy (pre-computes full trajectory on first step)
+    grasp_planner.py    # 64-candidate grasp enumeration, geometric filtering, IK scoring
     ik_helper.py        # Damped least-squares IK: EE position → 5 arm joint angles
     keyframe_planner.py # SE(3) keyframe planner: cube pose → 5 Cartesian keyframes with phase tags
+    place_keyframe_planner.py  # Keyframe planner for PLACE skill (tray target)
     waypoint_generator.py # Cartesian keyframes → joint-space waypoints via orientation-aware IK
     trajectory.py       # Jerk-limited trajectory planning via ruckig (joint waypoints → smooth profiles)
+    trajectory_validator.py  # Clearance validation: FK + EE/gripper Z checks against table
   runner/
     run_teacher.py      # run_teacher() — stabilize → teacher loop → write HDF5
   server/
@@ -112,7 +114,7 @@ EE site: `gripperframe` on the `gripper` body.
 
 Written directly to `data.ctrl[:]`. Position actuators with `kp=998.22` track targets.
 
-Gripper semantics: `-0.17` = fully open, `1.75` = fully closed (joint angle, rad).
+Gripper semantics: `1.75` = fully open (`GRIPPER_OPEN`), `-0.17` = fully closed (`GRIPPER_CLOSE`) (joint angle, rad).
 
 ## Trajectory Planning Pipeline
 
@@ -152,12 +154,12 @@ All defaults are named constants in `scene_info.py` (single source of truth):
 
 ```python
 TeacherConfig(
-    pregrasp_height_offset=DEFAULT_PREGRASP_STANDOFF,  # 0.08 m
+    pregrasp_height_offset=DEFAULT_PREGRASP_STANDOFF,  # 0.02 m
     lift_height=DEFAULT_LIFT_HEIGHT,                    # 0.08 m
-    ori_tol_deg=DEFAULT_ORI_TOL_DEG,                    # 55°
+    ori_tol_deg=DEFAULT_ORI_TOL_DEG,                    # 15°
     grasp_n_candidates=DEFAULT_GRASP_N_CANDIDATES,      # 64
-    grasp_max_cone_deg=DEFAULT_GRASP_MAX_CONE_DEG,      # 5°
-    grasp_face_contact_span=DEFAULT_CUBE_FACE_CONTACT_SPAN,  # 0.10
+    grasp_max_cone_deg=DEFAULT_GRASP_MAX_CONE_DEG,      # 2°
+    grasp_face_contact_span=DEFAULT_CUBE_FACE_CONTACT_SPAN,  # 0.25
     grasp_face_standoff=DEFAULT_FACE_STANDOFF,          # 0.003 m (3 mm)
     max_velocity=None,            # defaults in JointLimits
     max_acceleration=None,
@@ -192,8 +194,8 @@ SimServerConfig(
     command_port=5561,
     render_fps=10,
     jpeg_quality=85,
+    physics_hz=20,
     env_config=EnvConfig(),
-    teacher_config=TeacherConfig(),
 )
 ```
 
@@ -208,7 +210,7 @@ import numpy as np
 
 env = SO101Env(EnvConfig())
 obs = env.reset(seed=42)
-# obs keys: rgb_scene (480,640,3), rgb_wrist (480,640,3),
+# obs keys: rgb_scene (720,1280,3), rgb_wrist (480,640,3),
 #           qpos (13,), qvel (12,), gripper (float),
 #           ee_pose (7,), object_pose (7,), joint_pos (6,)
 
@@ -260,10 +262,88 @@ env.close()
 ### Teacher phase sequence (executed in trajectory)
 
 ```
-IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(8) → DONE(9)
+IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(7) → DONE(9)
 ```
 
 SELECT_GRASP, PLAN_APPROACH, and VISUAL_ALIGN are folded into the planning step (instantaneous). VERIFY_GRASP is implicit in the gripper-close segment.
+
+## Trajectory Computation Pipeline (detailed)
+
+### Grasp Planning (`grasp_planner.py`)
+
+**Enumeration:** 64 candidates across 4 side faces (16/face), sampled within `face_contact_span` (0.25), approach along face normal ± `max_cone_deg` (2°), ~8 yaw variants per position.
+
+**Geometric filter:** reject pregrasp below table, reject gripper-body/table collision.
+
+**IK scoring:** 3-point IK per candidate (grasp, pregrasp, lift), weighted score:
+- `0.25 × pos_err` (normalized by pos_tol)
+- `0.25 × joint_margin`
+- `0.20 × ori_err` (normalized by ori_tol_deg)
+- `0.15 × manipulability`
+- `0.15 × tilt_penalty`
+
+**Fallback:** expand search 2× candidates + 2× cone, then relax tolerances.
+
+### Keyframe Planning (`keyframe_planner.py`)
+
+6 Cartesian keyframes: `home → pregrasp → grasp → grasp_closed → lift → verify_grasp`. Orientation: gripperframe Z aligned with world -Z (pointing down), yaw from cube quaternion.
+
+### Waypoint Generation (`waypoint_generator.py`)
+
+IK per keyframe, seeded from previous solution for continuity. Yaw-retry fallbacks `[0°, 90°, -90°, 180°]` on failure. Position-only IK for lift phases (5-DOF can't fully control 6D).
+
+### IK Solver (`ik_helper.py`)
+
+Damped least-squares: `dq = J^T (J J^T + λ²I)^{-1} error`. Coupled position+orientation solver with configurable weights (pos=1.0, ori=0.3). Step limit 0.1 rad/iteration, max 200 iterations, damping λ=0.01.
+
+### Ruckig Trajectory (`trajectory.py`)
+
+Each waypoint pair → one ruckig segment (S-curve: jerk-limited, time-optimal). All segments start/end at rest (v=0, a=0). Gripper interpolated linearly within each segment. Pure gripper segments: minimum 0.5 s duration.
+
+### Clearance Validation (`trajectory_validator.py`)
+
+**Waypoint-level:** FK all joints, check EE + gripper geoms ≥ `table_z + 0.01 m`.
+
+**Trajectory-level:** sample 5 points per segment (at t=0, 0.25T, 0.5T, 0.75T, T), check EE Z clearance.
+
+### Execution (`pick_teacher.py`)
+
+On first `step()`: iterate scored grasps best-first, plan trajectory, validate clearance. Each subsequent `step()`: `plan.sample(elapsed_time)` → `(action[6], phase_id, done)`.
+
+## Available Skills
+
+### PICK (fully implemented)
+
+`PickTeacher` trajectory-planned policy. Phases: `IDLE(0) → MOVE_PREGRASP(3) → EXECUTE_APPROACH(5) → CLOSE_GRIPPER(6) → LIFT(7) → DONE(9)`. Verification: cube Z must rise ≥5 mm during LIFT (max Z, not final).
+
+### PLACE (implemented in server handlers)
+
+`execute_pending_place()` in `handlers.py`. Phases: `SELECT_PLACE(34) → TRANSIT_PREPLACE(30) → DESCEND_PLACE(31) → OPEN(32) → RETREAT(33) → DONE(9)`. Can place into tray target body.
+
+### PICK-AND-PLACE sequence
+
+Supported by `generate_episodes --pick-and-place`: pick cube → switch tracker to tray → place into tray → verify placement.
+
+## ACT Training Strategy
+
+**Note:** ACT training code is not yet implemented. The HDF5 episode format is designed to be framework-agnostic.
+
+### Dataset → Training → Eval loop (planned)
+
+1. Generate 10k–50k clean teacher episodes
+2. Train skill-conditioned ACT: input `(wrist_rgb, proprio, phase_token)` → output `chunk_len × action_dim`
+3. Closed-loop eval: FSM orchestrator + ACT-predicted actions
+4. Domain randomization + hard inits, fine-tune
+5. DAgger-like corrections from teacher
+6. Optional: remove phase conditioning (end-to-end)
+
+### ACT action space (for HALO runtime, different from sim teacher)
+
+`[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas. 10 Hz control, 10-step chunks (1 s horizon, v0). Training loss: Huber/MSE on deltas + BCE for gripper.
+
+### Dataset schema alignment
+
+Identical between sim and real (same action space, chunking, observation keys). Split by episode seed/placement, not timestep. Per-episode: seed, success, failure_reason. Per-timestep: wrist_rgb, q, qd, gripper_state, action, phase_id, done.
 
 ### HDF5 file layout
 
@@ -279,6 +359,9 @@ ep_000000.hdf5
 |   +-- joint_pos    (T, 6)             [if present]
 |   +-- phase_id     (T,) int32         [if present]
 |   +-- object_pose  (T, 7)             [if present]
+|   +-- red_object_pose (T, 7)         [if present]
+|   +-- bbox_xywh    (T, 4)            [if present]
+|   +-- tracker_ok   (T,) bool         [if present]
 |   +-- contacts/    step_NNNNNN (N,)   [if present]
 +-- action           (T, 6)
 +-- attrs: seed, env_name, robot, control_freq, num_steps, created_at
@@ -314,11 +397,12 @@ All grasp planner and teacher defaults are centralized as named constants in `sc
 Key constants:
 - `TCP_PINCH_OFFSET_LOCAL = [0, 0, 0]` — zeroed (3-4 mm actual offset hurts more via IK error)
 - `DEFAULT_FACE_STANDOFF = 0.003` — 3 mm outward offset to prevent jaw overshoot
-- `DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.10` — tangential sampling range on cube faces
+- `DEFAULT_CUBE_FACE_CONTACT_SPAN = 0.25` — tangential sampling range on cube faces
 - `DEFAULT_GRASP_N_CANDIDATES = 64` — grasp candidates (16 per side face)
-- `DEFAULT_PREGRASP_STANDOFF = 0.08` — pregrasp distance along approach
+- `DEFAULT_PREGRASP_STANDOFF = 0.02` — pregrasp distance along approach
 - `DEFAULT_LIFT_HEIGHT = 0.08` — lift distance above grasp contact
-- `DEFAULT_ORI_TOL_DEG = 55.0` — IK orientation tolerance
+- `DEFAULT_ORI_TOL_DEG = 15.0` — IK orientation tolerance
+- `DEFAULT_GRASP_MAX_CONE_DEG = 2.0` — approach cone half-angle
 - `DEFAULT_IK_POS_TOL = 0.03` — IK position tolerance (metres)
 
 ## Key Design

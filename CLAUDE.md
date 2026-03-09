@@ -51,7 +51,7 @@ All v0 backbone services are implemented and tested:
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
 | Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ 2-channel: SimClient, SimSource, transforms) |
 | Cognitive backend switching (`halo/cognitive/`) | ✅ done — Switchboard, LeaseManager, ContextStore, failover/failback, epoch+token gating, warm-up handoff |
-| MuJoCo sim (`mujoco_sim/`) | ✅ done — SO-101 + raw MuJoCo (env, dataset, teacher, IK, autonomous SimServer); PR4-6 pending (phase FSM, VCR, annotation) |
+| MuJoCo sim (`mujoco_sim/`) | ✅ done — SO-101 + raw MuJoCo (env, dataset, pick+place teachers, grasp planner, IK, ruckig trajectory, clearance validation, autonomous ZMQ SimServer, pick-and-place episode generation); 116 tests |
 | Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
 The TUI supports multiple modes:
@@ -189,7 +189,7 @@ Current sim work uses MuJoCo + SO-101 (phase 1), then Isaac Lab (phase 2). The r
 
 ## Sim strategy (three phases)
 
-**Phase 1 — MuJoCo + SO-101 (current):** Single-env teacher demos with raw MuJoCo, 6D joint-position actions, damped least-squares IK. Autonomous SimServer runs physics and trajectories; HALO runtime triggers via `start_pick` and monitors progress via telemetry. ACT training pipeline, closed-loop eval. SO-101 env, HDF5 episodes, trajectory-planned teacher with 5 s stabilization + phase tracking. See `mujoco_sim/CLAUDE.md`.
+**Phase 1 — MuJoCo + SO-101 (current):** Single-env teacher demos with raw MuJoCo, 6D joint-position actions, damped least-squares IK. Full trajectory pipeline: 64-candidate grasp planner → SE(3) keyframes → IK with yaw-retry → jerk-limited ruckig profiles → clearance validation. Pick + place skills implemented. Autonomous ZMQ SimServer runs physics and trajectories; HALO runtime triggers via `start_pick`/`start_place` and monitors progress via telemetry. Pick-and-place episode generation (`--pick-and-place`). 116 tests. See `mujoco_sim/CLAUDE.md`.
 
 **Phase 2 — Isaac Lab (future):** GPU-accelerated parallel envs (64 envs on A6000), domain randomization at scale, sim-to-real transfer. See `sim/README.md`.
 

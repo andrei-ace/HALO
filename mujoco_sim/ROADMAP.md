@@ -2,7 +2,7 @@
 
 ## Context
 
-HALO needs a MuJoCo simulation module for data generation and episode replay/annotation. This is a sibling to `sim/` (Isaac Lab) but focused on: teacher generates PICK demos → episodes recorded to HDF5 → offline phase detection → VCR replay with manual annotation. No ACT training, no tracking migration, no bridge to HALO runtime. Module lives at `mujoco_sim/` at the repo root with its own `pyproject.toml`.
+HALO needs a MuJoCo simulation module for data generation and episode replay/annotation. This is a sibling to `sim/` (Isaac Lab) but focused on: teacher generates PICK/PLACE demos → episodes recorded to HDF5 → offline phase detection → VCR replay with manual annotation. ZMQ bridge connects SimServer to HALO runtime. Module lives at `mujoco_sim/` at the repo root with its own `pyproject.toml`.
 
 ## Directory Structure (all PRs)
 
@@ -18,34 +18,25 @@ mujoco_sim/
     │   └── env_config.py
     ├── env/
     │   ├── __init__.py
-    │   ├── so101_env.py
-    │   └── robosuite_env.py          # legacy, not exported
+    │   └── so101_env.py
     ├── dataset/                       # PR2
     │   ├── __init__.py
     │   ├── raw_episode.py
     │   ├── writer_hdf5.py
     │   └── reader_hdf5.py
-    ├── teacher/                       # PR3
+    ├── teacher/                       # PR3+
     │   ├── __init__.py
+    │   ├── grasp_planner.py
     │   ├── ik_helper.py
-    │   └── pick_teacher.py
+    │   ├── keyframe_planner.py
+    │   ├── pick_teacher.py
+    │   ├── place_keyframe_planner.py
+    │   ├── trajectory.py
+    │   ├── trajectory_validator.py
+    │   └── waypoint_generator.py
     ├── runner/                        # PR3
     │   ├── __init__.py
     │   └── run_teacher.py
-    ├── fsm/                           # PR4
-    │   ├── __init__.py
-    │   ├── guards.py
-    │   └── pick_phase_detector.py
-    ├── replay/                        # PR5
-    │   ├── __init__.py
-    │   ├── vcr_player.py
-    │   ├── viewer_app.py
-    │   └── phase_overlay.py
-    ├── annotator/                     # PR6
-    │   ├── __init__.py
-    │   ├── phase_track.py
-    │   ├── annotation_ui.py
-    │   └── annotation_io.py
     ├── server/                        # ZMQ sim server
     │   ├── __init__.py
     │   ├── __main__.py
@@ -57,19 +48,16 @@ mujoco_sim/
     │   ├── test_env.py                # PR1
     │   ├── generate_episodes.py       # PR3
     │   ├── inspect_episode.py         # PR3
-    │   ├── detect_phases.py           # PR4
-    │   ├── replay_episode.py          # PR5
-    │   └── annotate_episode.py        # PR6
+    │   ├── visualize_ik_pose.py       # IK waypoint visualization
+    │   └── measure_pinch_offset.py    # TCP offset measurement
     └── tests/
         ├── __init__.py
         ├── test_constants_sync.py     # PR1
         ├── test_raw_episode.py        # PR2
         ├── test_pick_teacher.py       # PR3
-        ├── test_server.py             # server tests
-        ├── test_guards.py            # PR4
-        ├── test_phase_detector.py     # PR4
-        ├── test_phase_track.py        # PR6
-        └── test_annotation_io.py      # PR6
+        ├── test_grasp_planner.py      # grasp enumeration + scoring
+        ├── test_trajectory_pipeline.py # keyframes → IK → ruckig
+        └── test_server.py             # server tests
 ```
 
 ## PR Dependency Graph
@@ -101,7 +89,7 @@ Foundation: `SO101Env` wrapper with dual cameras, seeded resets, 6-DOF joint-pos
 
 ### PR2 — Episode Recording Format ✅
 
-**Timestep** dataclass: `rgb_scene(H,W,3)`, `rgb_wrist(H,W,3)`, `qpos(nq)`, `qvel(nv)`, `gripper(float)`, `ee_pose(7)`, `action(7)`, optional `phase_id(int)`, `object_pose(7)`, `contacts(N)`
+**Timestep** dataclass: `rgb_scene(H,W,3)`, `rgb_wrist(H,W,3)`, `qpos(nq)`, `qvel(nv)`, `gripper(float)`, `ee_pose(7)`, `action(6)`, optional `phase_id(int)`, `object_pose(7)`, `red_object_pose(7)`, `bbox_xywh(4)`, `tracker_ok(bool)`, `contacts(N)`
 
 **RawEpisode** — in-memory buffer with `append(Timestep)`, indexing, bulk numpy accessors
 
@@ -114,7 +102,7 @@ Foundation: `SO101Env` wrapper with dual cameras, seeded resets, 6-DOF joint-pos
 - `dataset/writer_hdf5.py` — `write_episode()` + `episode_path()` helper
 - `dataset/reader_hdf5.py` — `read_episode()` (inverse of writer)
 - `dataset/__init__.py` — public exports
-- `tests/test_raw_episode.py` — 24 tests (Timestep, RawEpisode, HDF5 roundtrip, gzip, metadata)
+- `tests/test_raw_episode.py` — 29 tests (Timestep, RawEpisode, HDF5 roundtrip, gzip, metadata)
 - Fixed `pyproject.toml` — added `[tool.hatch.build.targets.wheel]` packages + correct testpaths
 
 ### PR3 — Teacher Runner ✅
@@ -127,7 +115,7 @@ Foundation: `SO101Env` wrapper with dual cameras, seeded resets, 6-DOF joint-pos
 - `teacher/pick_teacher.py` — `PickTeacher` + `TeacherConfig` (proportional control, same thresholds as SkillRunnerConfig)
 - `runner/run_teacher.py` — `run_teacher()` with stabilization phase + `_run_single_episode()` helper
 - `scripts/generate_episodes.py` — CLI: `python -m mujoco_sim.scripts.generate_episodes --num-episodes 10`
-- `tests/test_pick_teacher.py` — 19 tests (init, phase transitions, action output, full episode)
+- `tests/test_pick_teacher.py` — 20 tests (init, phase transitions, action output, full episode)
 - `Timestep.phase_id` field added — persisted in HDF5, roundtripped in reader
 - Stabilization: 5 s of zero-action steps before recording to let physics settle
 
