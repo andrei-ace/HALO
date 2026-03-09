@@ -81,12 +81,17 @@ async def live_agent_ws(websocket: WebSocket, arm_id: str) -> None:
             _ws_send({"type": "tool_call", "call_id": call_id, "name": name, "args": args}), loop
         )
 
+    def on_interrupt() -> None:
+        logger.info("Barge-in interrupt → forwarding to TUI (arm_id=%s)", arm_id)
+        asyncio.run_coroutine_threadsafe(_ws_send({"type": "interrupt"}), loop)
+
     session.set_callbacks(
         on_audio_out=on_audio_out,
         on_text_out=on_text_out,
         on_transcription_in=on_transcription_in,
         on_transcription_out=on_transcription_out,
         on_tool_call=on_tool_call,
+        on_interrupt=on_interrupt,
     )
 
     try:

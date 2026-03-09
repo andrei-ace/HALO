@@ -300,6 +300,42 @@ class TestLiveAgentSession:
         assert future.cancelled()
         assert len(session._tool_results) == 0
 
+    def test_handle_event_interrupt_fires_callback(self):
+        """Barge-in event fires the on_interrupt callback."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        interrupted = []
+        session.set_callbacks(on_interrupt=lambda: interrupted.append(True))
+
+        event = MagicMock()
+        event.interrupted = True
+        event.content = None
+        event.input_transcription = None
+        event.output_transcription = None
+        event.turn_complete = False
+
+        session._handle_event(event)
+        assert interrupted == [True]
+
+    def test_handle_event_no_interrupt_no_callback(self):
+        """Non-interrupted event does not fire on_interrupt."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        interrupted = []
+        session.set_callbacks(on_interrupt=lambda: interrupted.append(True))
+
+        event = MagicMock()
+        event.interrupted = False
+        event.content = None
+        event.input_transcription = None
+        event.output_transcription = None
+        event.turn_complete = False
+
+        session._handle_event(event)
+        assert interrupted == []
+
     def test_handle_event_transcription_forwards_raw_chunks(self):
         """Server forwards raw chunks + finished flag; no accumulation."""
         from cloud_service.live_agent import LiveAgentSession

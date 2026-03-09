@@ -141,6 +141,7 @@ class LiveAgentSession:
         self._on_transcription_in: Callable[[str, bool], None] | None = None
         self._on_transcription_out: Callable[[str, bool], None] | None = None
         self._on_tool_call: Callable[[str, str, dict], None] | None = None
+        self._on_interrupt: Callable[[], None] | None = None
 
         # Proxy-tool infrastructure
         self._tool_results: dict[str, asyncio.Future] = {}
@@ -163,6 +164,7 @@ class LiveAgentSession:
         on_transcription_in: Callable[[str, bool], None] | None = None,
         on_transcription_out: Callable[[str, bool], None] | None = None,
         on_tool_call: Callable[[str, str, dict], None] | None = None,
+        on_interrupt: Callable[[], None] | None = None,
     ) -> None:
         """Register callbacks for outbound data (used by WS handler)."""
         self._on_audio_out = on_audio_out
@@ -170,6 +172,7 @@ class LiveAgentSession:
         self._on_transcription_in = on_transcription_in
         self._on_transcription_out = on_transcription_out
         self._on_tool_call = on_tool_call
+        self._on_interrupt = on_interrupt
 
     def resolve_tool_call(self, call_id: str, result: str) -> None:
         """Resolve a pending proxy tool call with the TUI-provided result.
@@ -342,9 +345,12 @@ class LiveAgentSession:
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=False,
+                    # High sensitivity ensures the system catches the very start of a command
                     start_of_speech_sensitivity=types.StartSensitivity.START_SENSITIVITY_HIGH,
                     end_of_speech_sensitivity=types.EndSensitivity.END_SENSITIVITY_HIGH,
-                    prefix_padding_ms=100,
+                    # 150ms buffer to safely capture sharp consonants without adding lag
+                    prefix_padding_ms=150,
+                    # 500ms endpoints the speech quickly to execute the command immediately
                     silence_duration_ms=500,
                 ),
                 activity_handling=types.ActivityHandling.START_OF_ACTIVITY_INTERRUPTS,
@@ -404,11 +410,14 @@ class LiveAgentSession:
 
     def _handle_event(self, event) -> None:
         """Process a single ADK Event from the live stream."""
-        # Log barge-in (server-side only — no callback to client)
         if event.interrupted:
             logger.info("Barge-in detected — interrupting audio output")
+            self._state.turn_active = False
+            if self._on_interrupt:
+                self._on_interrupt()
 
-        # Handle content output (audio + text)
+        # Handle content output (interrupt clears playback above, then any
+        # new audio in this event is still forwarded — matches local path)
         if event.content and event.content.parts:
             for part in event.content.parts:
                 # Audio data
