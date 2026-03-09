@@ -1,6 +1,8 @@
 # HALO
 
-HALO is a robotic manipulation system for the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) that decouples continuous motor control from LLM-based task reasoning. The robot never pauses motion waiting for the planner — perception and control run machine-to-machine at 10-100 Hz, while an LLM agent orchestrates skills asynchronously. Safety-critical decisions live outside the LLM loop entirely.
+HALO is a robotic manipulation system that decouples continuous motor control from LLM-based task reasoning. The robot never pauses motion waiting for the planner — perception and control run machine-to-machine at 10-100 Hz, while an LLM agent orchestrates skills asynchronously. Safety-critical decisions live outside the LLM loop entirely.
+
+The architecture is robot-agnostic — any 5+ DOF arm with a gripper can be integrated by providing an IK solver and controller mapping. The current development target is the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) (5-DOF + 1-DOF gripper), validated in MuJoCo simulation.
 
 The system supports both local inference (Ollama) and cloud backends (Google Gemini via Cloud Run), with automatic failover between them. A terminal UI provides real-time monitoring, operator interaction, and voice control through the cloud backend's Live API.
 

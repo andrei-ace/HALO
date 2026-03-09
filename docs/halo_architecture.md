@@ -1,6 +1,8 @@
 # HALO Architecture
 
-HALO is a robotic manipulation system for the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) that separates continuous motor control from LLM-based task planning. The core challenge it addresses: how to combine the flexibility of language model reasoning with the strict timing requirements of real-time robot control, without sacrificing either.
+HALO is a robotic manipulation system that separates continuous motor control from LLM-based task planning. The core challenge it addresses: how to combine the flexibility of language model reasoning with the strict timing requirements of real-time robot control, without sacrificing either.
+
+The architecture is robot-agnostic — it works with any arm that has 5+ DOF and a gripper. The control path operates on end-effector frame deltas, so swapping robots requires only an IK solver and controller mapping. The current development target is the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) (5-DOF + 1-DOF gripper), validated end-to-end in MuJoCo simulation.
 
 The system uses an LLM agent to decide *what* to do (which object to pick, where to place it, when to retry) while deterministic services handle *how* to do it (motion planning, visual tracking, safety enforcement). These two paths run independently — the robot maintains smooth motion even when the LLM is mid-inference.
 
