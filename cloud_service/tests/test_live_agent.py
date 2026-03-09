@@ -385,6 +385,91 @@ class TestLiveAgentSession:
         assert transcription_calls_out[-1] == ("Starting pick skill", True)
 
 
+# ── Event loop reconnection ──
+
+
+class TestEventLoopReconnect:
+    @pytest.mark.asyncio
+    async def test_event_loop_reconnects_on_clean_exit(self):
+        """Clean _run_live_session exit reconnects with same session_id."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session._session_service = MagicMock()
+        session._queue = MagicMock()
+
+        call_count = 0
+        original_session_id = session._session_id
+
+        async def fake_run_live_session():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                raise asyncio.CancelledError
+
+        with patch.object(session, "_run_live_session", side_effect=fake_run_live_session):
+            with pytest.raises(asyncio.CancelledError):
+                await session._run_event_loop()
+
+        assert call_count == 2
+        assert session._session_id == original_session_id
+
+    @pytest.mark.asyncio
+    async def test_event_loop_changes_session_id_on_crash(self):
+        """Crash path creates a fresh session_id and increments reconnect_count."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session._session_service = AsyncMock()
+        session._queue = MagicMock()
+
+        original_session_id = session._session_id
+        call_count = 0
+
+        async def fake_run_live_session():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError("Gemini stream died")
+            raise asyncio.CancelledError
+
+        with patch.object(session, "_run_live_session", side_effect=fake_run_live_session):
+            with patch("cloud_service.live_agent.asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(asyncio.CancelledError):
+                    await session._run_event_loop()
+
+        assert call_count == 2
+        assert session._session_id != original_session_id
+        assert session._state.reconnect_count == 1
+
+    @pytest.mark.asyncio
+    async def test_event_loop_preserves_session_id_on_clean_exit(self):
+        """Multiple clean exits keep the same session_id throughout."""
+        from cloud_service.live_agent import LiveAgentSession
+
+        session = LiveAgentSession(arm_id="arm0")
+        session._session_service = MagicMock()
+        session._queue = MagicMock()
+
+        original_session_id = session._session_id
+        call_count = 0
+
+        async def fake_run_live_session():
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 3:
+                raise asyncio.CancelledError
+
+        with patch.object(session, "_run_live_session", side_effect=fake_run_live_session):
+            with patch("cloud_service.live_agent.asyncio.sleep", new_callable=AsyncMock):
+                with pytest.raises(asyncio.CancelledError):
+                    await session._run_event_loop()
+
+        assert call_count == 3
+        assert session._session_id == original_session_id
+        assert session._state.reconnect_count == 0
+
+
 # ── LiveAgentManager ──
 
 

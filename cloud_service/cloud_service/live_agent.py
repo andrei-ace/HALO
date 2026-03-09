@@ -380,7 +380,12 @@ class LiveAgentSession:
                 )
                 self._queue = LiveRequestQueue()
                 continue
-            break
+            # Clean exit (interrupt, server-side close) — reconnect with same
+            # session_id to preserve conversation history via InMemorySessionService
+            logger.info("Live session ended, reconnecting (session_id=%s)", self._session_id)
+            self._queue = LiveRequestQueue()
+            delay = 1.0
+            await asyncio.sleep(0.5)
 
     async def _run_live_session(self) -> None:
         """Single run_live() iteration — iterates events until the session ends."""
