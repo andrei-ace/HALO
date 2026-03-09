@@ -104,7 +104,7 @@ resource "google_cloud_run_v2_service" "cognitive" {
     max_instance_request_concurrency = 10
 
     containers {
-      image = "${var.region}-docker.pkg.dev/${var.project_id}/halo/halo-cognitive:latest"
+      image = var.image_digest != "" ? "${var.region}-docker.pkg.dev/${var.project_id}/halo/halo-cognitive@${var.image_digest}" : "${var.region}-docker.pkg.dev/${var.project_id}/halo/halo-cognitive:latest"
 
       resources {
         limits = {

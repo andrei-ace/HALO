@@ -38,3 +38,9 @@ variable "deploy_service" {
   type        = bool
   default     = true
 }
+
+variable "image_digest" {
+  description = "Docker image digest (sha256:...) for the cognitive service. Forces Cloud Run redeployment on every new push."
+  type        = string
+  default     = ""
+}

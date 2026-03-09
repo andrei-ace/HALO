@@ -35,6 +35,7 @@ from halo.contracts.snapshots import (
     PerceptionInfo,
     PlannerSnapshot,
     ProgressInfo,
+    QueuedSkillInfo,
     SafetyInfo,
     SkillInfo,
     TargetInfo,
@@ -122,6 +123,10 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
         for ev in snap.recent_events
     ]
 
+    queued_skills_list = [
+        {"skill_name": q.skill_name.value, "target_handle": q.target_handle} for q in snap.queued_skills
+    ]
+
     return {
         "snapshot_id": snap.snapshot_id,
         "ts_ms": snap.ts_ms,
@@ -136,6 +141,7 @@ def snapshot_to_dict(snap: PlannerSnapshot) -> dict:
         "safety": safety_dict,
         "command_acks": command_acks_list,
         "recent_events": recent_events_list,
+        "queued_skills": queued_skills_list,
     }
 
 
@@ -177,6 +183,12 @@ def snapshot_to_text(d: dict) -> str:
         if reason:
             line += f" ({reason})"
         lines.append(line)
+
+    # Queued skills
+    queued = d.get("queued_skills") or []
+    if queued:
+        items = ", ".join(f"{q['skill_name']}({q['target_handle']})" for q in queued)
+        lines.append(f"Queued: {items}")
 
     # Safety — only surface problems
     safety = d.get("safety") or {}
@@ -272,6 +284,11 @@ def snapshot_from_dict(d: dict) -> PlannerSnapshot:
         for ev in d.get("recent_events", ())
     )
 
+    queued_skills = tuple(
+        QueuedSkillInfo(skill_name=SkillName(q["skill_name"]), target_handle=q["target_handle"])
+        for q in d.get("queued_skills", ())
+    )
+
     return PlannerSnapshot(
         snapshot_id=d["snapshot_id"],
         ts_ms=d["ts_ms"],
@@ -286,6 +303,7 @@ def snapshot_from_dict(d: dict) -> PlannerSnapshot:
         command_acks=command_acks,
         recent_events=recent_events,
         held_object_handle=d.get("held_object_handle"),
+        queued_skills=queued_skills,
     )
 
 

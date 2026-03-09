@@ -43,6 +43,7 @@ from halo.contracts.snapshots import (
     PerceptionInfo,
     PlannerSnapshot,
     ProgressInfo,
+    QueuedSkillInfo,
     SafetyInfo,
     SkillInfo,
     TargetInfo,
@@ -206,6 +207,50 @@ def test_snapshot_roundtrip_failure():
     assert restored.safety.reflex_active is True
     assert len(restored.safety.reason_codes) == 2
     assert restored.held_object_handle == "green_cube_01"
+
+
+def test_snapshot_roundtrip_queued_skills():
+    snap = _full_snapshot()
+    # Replace with a snapshot that has queued skills
+    snap_with_queue = PlannerSnapshot(
+        snapshot_id=snap.snapshot_id,
+        ts_ms=snap.ts_ms,
+        arm_id=snap.arm_id,
+        skill=snap.skill,
+        target=snap.target,
+        perception=snap.perception,
+        act=snap.act,
+        progress=snap.progress,
+        outcome=snap.outcome,
+        safety=snap.safety,
+        command_acks=snap.command_acks,
+        recent_events=snap.recent_events,
+        held_object_handle=snap.held_object_handle,
+        queued_skills=(
+            QueuedSkillInfo(skill_name=SkillName.TRACK, target_handle="beige_tray_01"),
+            QueuedSkillInfo(skill_name=SkillName.PLACE, target_handle="beige_tray_01"),
+        ),
+    )
+    d = snapshot_to_dict(snap_with_queue)
+    assert len(d["queued_skills"]) == 2
+    assert d["queued_skills"][0] == {"skill_name": "TRACK", "target_handle": "beige_tray_01"}
+
+    restored = snapshot_from_dict(d)
+    assert len(restored.queued_skills) == 2
+    assert restored.queued_skills[0].skill_name == SkillName.TRACK
+    assert restored.queued_skills[0].target_handle == "beige_tray_01"
+    assert restored.queued_skills[1].skill_name == SkillName.PLACE
+
+
+def test_snapshot_roundtrip_empty_queued_skills():
+    """Snapshots without queued_skills in dict default to empty tuple."""
+    snap = _idle_snapshot()
+    d = snapshot_to_dict(snap)
+    assert d["queued_skills"] == []
+    # Also test missing key (backward compat)
+    del d["queued_skills"]
+    restored = snapshot_from_dict(d)
+    assert restored.queued_skills == ()
 
 
 # ---------------------------------------------------------------------------

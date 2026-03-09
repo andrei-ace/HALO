@@ -16,7 +16,7 @@ from halo.contracts.enums import (
     SkillOutcomeState,
 )
 from halo.contracts.events import EventEnvelope, EventType
-from halo.contracts.snapshots import ActInfo, OutcomeInfo, ProgressInfo, SkillInfo
+from halo.contracts.snapshots import ActInfo, OutcomeInfo, ProgressInfo, QueuedSkillInfo, SkillInfo
 from halo.runtime.runtime import HALORuntime
 from halo.services.skill_runner_service.config import SkillRunnerConfig
 from halo.services.skill_runner_service.definitions import SkillRegistry, build_default_registry
@@ -213,6 +213,7 @@ class SkillRunnerService:
                         "failure_code": SkillFailureCode.PLANNER_ABORT.value,
                     },
                 )
+            await self._sync_queue_to_store()
             return
 
         await self._activate_skill(skill_name, skill_run_id, target_handle, variant, defn, options=options)
@@ -269,9 +270,11 @@ class SkillRunnerService:
             cleared = self._queue.clear()
             if cleared:
                 logger.info("abort_skill: cleared %d queued skill(s)", cleared)
+            await self._sync_queue_to_store()
         else:
             # Auto-activate next from queue
             await self._activate_next_from_queue()
+            await self._sync_queue_to_store()
 
     async def tick(self) -> PhaseId | None:
         """One runner tick. Dispatches to ACT, sim, or track mode."""
@@ -568,11 +571,13 @@ class SkillRunnerService:
                 cleared = self._queue.clear()
                 if cleared:
                     logger.info("skill failed: cleared %d queued skill(s)", cleared)
+                await self._sync_queue_to_store()
             self._active_target_handle = None
 
             if self._active_run and self._active_run.outcome == SkillOutcomeState.SUCCESS:
                 # Auto-activate next from queue only on success
                 await self._activate_next_from_queue()
+                await self._sync_queue_to_store()
 
     async def _tick_act(self) -> PhaseId | None:
         if self._active_run is None or not self._active_run.is_active:
@@ -720,6 +725,13 @@ class SkillRunnerService:
         while not self._stop_event.is_set():
             await self.tick()
             await asyncio.sleep(period)
+
+    async def _sync_queue_to_store(self) -> None:
+        """Push current queue state to RuntimeStateStore for planner visibility."""
+        skills = tuple(
+            QueuedSkillInfo(skill_name=q.skill_name, target_handle=q.target_handle) for q in self._queue.items
+        )
+        await self._runtime.store.update_queued_skills(self._arm_id, skills)
 
     async def _publish(self, event_type: EventType, data: dict) -> None:
         event = EventEnvelope(

@@ -169,6 +169,7 @@ docker-push:
 	@test -n "$(REPO)" || { echo "ERROR: Set GCP_PROJECT_ID or run 'make tf-apply' first"; exit 1; }
 	docker build --platform linux/amd64 -t $(REPO)/halo-cognitive:latest -f cloud_service/Dockerfile .
 	docker push $(REPO)/halo-cognitive:latest
+	@echo "HALO_IMAGE_DIGEST=$$(docker inspect --format='{{index .RepoDigests 0}}' $(REPO)/halo-cognitive:latest | sed 's/.*@//')"
 
 # Bootstrap (first-time only): create registry, secrets, SAs, Firestore — no Cloud Run yet.
 # After this, push the image and add the API key secret, then run deploy-cloud.
@@ -179,7 +180,11 @@ tf-bootstrap:
 # Requires: tf-bootstrap done, image pushable, API key secret populated.
 deploy-cloud:
 	$(MAKE) docker-push
-	cd infra && terraform apply -var deploy_service=true
+	$(eval REPO := $(or \
+		$(shell cd infra && terraform output -raw artifact_registry 2>/dev/null), \
+		$(if $(GCP_PROJECT_ID),$(GCP_REGION)-docker.pkg.dev/$(GCP_PROJECT_ID)/halo)))
+	cd infra && terraform apply -var deploy_service=true \
+		-var image_digest=$$(docker inspect --format='{{index .RepoDigests 0}}' $(REPO)/halo-cognitive:latest | sed 's/.*@//')
 
 # ---------------------------------------------------------------------------
 

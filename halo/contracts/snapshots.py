@@ -80,6 +80,12 @@ class SafetyInfo:
 
 
 @dataclass(frozen=True)
+class QueuedSkillInfo:
+    skill_name: SkillName
+    target_handle: str
+
+
+@dataclass(frozen=True)
 class PlannerSnapshot:
     snapshot_id: str
     ts_ms: int
@@ -94,3 +100,4 @@ class PlannerSnapshot:
     command_acks: tuple[CommandAck, ...]
     recent_events: tuple[EventEnvelope, ...]
     held_object_handle: str | None = None
+    queued_skills: tuple[QueuedSkillInfo, ...] = ()

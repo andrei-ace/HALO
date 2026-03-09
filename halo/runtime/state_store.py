@@ -20,6 +20,7 @@ from halo.contracts.snapshots import (
     PerceptionInfo,
     PlannerSnapshot,
     ProgressInfo,
+    QueuedSkillInfo,
     SafetyInfo,
     SkillInfo,
     TargetInfo,
@@ -72,6 +73,7 @@ class RuntimeStateStore:
         self._outcome: dict[str, OutcomeInfo] = {}
         self._safety: dict[str, SafetyInfo] = {}
         self._acks: dict[str, deque[CommandAck]] = {}
+        self._queued_skills: dict[str, tuple[QueuedSkillInfo, ...]] = {}
         self._latest_snapshot: dict[str, PlannerSnapshot | None] = {}
         self._snap_counter: dict[str, itertools.count] = {}
         self._lock = asyncio.Lock()
@@ -89,6 +91,7 @@ class RuntimeStateStore:
         self._outcome[arm_id] = _default_outcome()
         self._safety[arm_id] = _default_safety()
         self._acks[arm_id] = deque(maxlen=self.COMMAND_ACK_RING_SIZE)
+        self._queued_skills[arm_id] = ()
         self._latest_snapshot[arm_id] = None
         self._snap_counter[arm_id] = itertools.count(1)
 
@@ -149,6 +152,11 @@ class RuntimeStateStore:
             self._require_arm(arm_id)
             self._safety[arm_id] = safety
 
+    async def update_queued_skills(self, arm_id: str, skills: tuple[QueuedSkillInfo, ...]) -> None:
+        async with self._lock:
+            self._require_arm(arm_id)
+            self._queued_skills[arm_id] = skills
+
     async def add_command_ack(self, arm_id: str, ack: CommandAck) -> None:
         async with self._lock:
             self._require_arm(arm_id)
@@ -184,6 +192,7 @@ class RuntimeStateStore:
                 command_acks=tuple(self._acks[arm_id]),
                 recent_events=tuple(recent_events[-8:]),
                 held_object_handle=self._held_object_handle[arm_id],
+                queued_skills=self._queued_skills[arm_id],
             )
             self._latest_snapshot[arm_id] = snapshot
         return snapshot
