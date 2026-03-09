@@ -10,8 +10,10 @@ Endpoints:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
 
 import numpy as np
 from fastapi import Depends, FastAPI, File, Form, UploadFile
@@ -129,17 +131,26 @@ async def vlm_scene(
     target_handle = meta.get("target_handle")
 
     image_bytes = await image.read()
-    # Decode JPEG to numpy BGR for VLM pipeline
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    import cv2
 
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    # Decode JPEG in thread pool to avoid blocking the event loop
+    def _decode_jpeg(data: bytes):
+        import cv2
+
+        arr = np.frombuffer(data, dtype=np.uint8)
+        return cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    img = await asyncio.to_thread(_decode_jpeg, image_bytes)
     if img is None:
         img = image_bytes  # fallback: pass raw bytes
 
+    t0 = time.monotonic()
     scene = await vlm_fn(arm_id, img, known_handles, target_handle=target_handle)
+    vlm_ms = int((time.monotonic() - t0) * 1000)
+
     result = vlm_scene_to_dict(scene)
     result["token_usage"] = scene.token_usage
+    result["vlm_ms"] = vlm_ms
+    logger.info("vlm/scene arm_id=%s target=%s vlm_ms=%d", arm_id, target_handle or "(scene)", vlm_ms)
     return result
 
 

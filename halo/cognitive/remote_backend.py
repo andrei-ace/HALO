@@ -287,15 +287,28 @@ class RemoteCognitiveBackend:
                 "session_id": self._session_id,
             }
         )
+        vlm_timeout = httpx.Timeout(self._config.vlm_timeout_s)
         resp = await self._client.post(
             "/vlm/scene",
             files={"image": ("frame.jpg", jpeg_bytes, "image/jpeg")},
             data={"metadata": metadata},
+            timeout=vlm_timeout,
         )
         resp.raise_for_status()
         resp_data = resp.json()
         vlm_token_usage = resp_data.get("token_usage") or {}
+        server_vlm_ms = resp_data.get("vlm_ms")
         scene = dataclasses.replace(vlm_scene_from_dict(resp_data), token_usage=vlm_token_usage)
+
+        total_ms = int((time.monotonic() - t0) * 1000)
+        if server_vlm_ms is not None:
+            logger.info(
+                "vlm_scene arm_id=%s total_ms=%d server_vlm_ms=%d overhead_ms=%d",
+                arm_id,
+                total_ms,
+                server_vlm_ms,
+                total_ms - server_vlm_ms,
+            )
 
         if self._run_logger is not None:
             det_dicts = [{"handle": d.handle, "bbox": d.bbox} for d in scene.detections]
@@ -305,10 +318,11 @@ class RemoteCognitiveBackend:
                 model="remote",
                 raw_response={},
                 target_info=None,
-                inference_ms=int((time.monotonic() - t0) * 1000),
+                inference_ms=total_ms,
                 image=image,
                 detections=det_dicts,
                 token_usage=vlm_token_usage,
+                server_vlm_ms=server_vlm_ms,
             )
 
         return scene

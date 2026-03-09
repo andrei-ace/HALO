@@ -95,6 +95,7 @@ class RunLogger:
         image: object | None = None,
         detections: list[dict] | None = None,
         token_usage: dict[str, int] | None = None,
+        server_vlm_ms: int | None = None,
     ) -> None:
         self._vlm_counter += 1
         idx = f"{self._vlm_counter:03d}"
@@ -123,6 +124,8 @@ class RunLogger:
             "image_file": img_file,
             "token_usage": token_usage or {},
         }
+        if server_vlm_ms is not None:
+            entry["server_vlm_ms"] = server_vlm_ms
         self._file.write(json.dumps(entry, default=str) + "\n")
         self._file.flush()
 

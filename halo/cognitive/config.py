@@ -50,6 +50,7 @@ class RemoteCloudConfig:
     sa_key_file: str | None = None  # optional path to service account key JSON
     sa_email: str | None = None  # optional SA email for impersonation (user ADC → SA → ID token)
     request_timeout_s: float = 30.0
+    vlm_timeout_s: float = 12.0  # VLM-specific timeout (shorter than planner default)
     planner_model: str = "gemini-3.1-flash-lite-preview"
     vlm_model: str = "gemini-3.1-flash-lite-preview"
 
