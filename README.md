@@ -1,4 +1,4 @@
-# HALO
+![HALO — Hierarchical Adaptive LLM-Operated Robot](docs/imgs/Logo.png)
 
 HALO is a robotic manipulation system that decouples continuous motor control from LLM-based task reasoning. The robot never pauses motion waiting for the planner — perception and control run machine-to-machine at 10-100 Hz, while an LLM agent orchestrates skills asynchronously. Safety-critical decisions live outside the LLM loop entirely.
 
