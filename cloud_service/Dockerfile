@@ -2,19 +2,24 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install uv for fast dependency resolution
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /usr/local/bin/uv
 
-# Install system deps for opencv (headless)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# --- Layer 1: dependency install (cached unless lock/pyproject change) ---
+COPY uv.lock pyproject.toml ./
+COPY cloud_service/pyproject.toml cloud_service/pyproject.toml
+# Stub all workspace packages so uv can resolve deps without full source
+COPY mujoco_sim/pyproject.toml mujoco_sim/pyproject.toml
+RUN mkdir -p halo && touch halo/__init__.py && \
+    mkdir -p cloud_service/cloud_service && touch cloud_service/cloud_service/__init__.py && \
+    mkdir -p mujoco_sim/mujoco_sim && touch mujoco_sim/mujoco_sim/__init__.py
+RUN uv sync --project cloud_service --no-dev --no-editable
 
-# Copy workspace (halo + cloud_service)
-COPY . .
-
-# Install cloud_service and all its deps
-RUN uv sync --project cloud_service
+# --- Layer 2: source code + configs (small, changes often) ---
+COPY halo/ halo/
+COPY cloud_service/ cloud_service/
+COPY configs/ configs/
+# Re-sync to install workspace packages in editable/linked mode
+RUN uv sync --project cloud_service --no-dev
 
 EXPOSE 8080
 
