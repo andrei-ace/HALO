@@ -274,6 +274,62 @@ See `cloud_service/README.md` for the service and `infra/README.md` for Terrafor
 
 ![Firestore session persistence](imgs/firestore-sessions.png)
 
+### Gemini Integration
+
+```mermaid
+flowchart TB
+    subgraph Edge["TUI (Edge)"]
+        TUI["TUI App"]
+        LAC["LiveAgentClient"]
+        AC["AudioCapture<br/>16 kHz PCM"]
+        AP["AudioPlayback<br/>24 kHz PCM"]
+        RB["RemoteCognitiveBackend"]
+    end
+
+    subgraph CloudRun["Cloud Run — halo-cognitive"]
+        APP["FastAPI"]
+        SM["SessionManager<br/>(per-arm sessions)"]
+        PA["PlannerAgent<br/>(ADK Agent + ReAct)"]
+        VLM["VLM Scene Analysis<br/>(google.genai)"]
+        WSH["WebSocket Handler<br/>/ws/live/{arm_id}"]
+        LAS["LiveAgentSession<br/>(ADK run_live)"]
+        LAM["LiveAgentManager<br/>(idle/LRU eviction)"]
+    end
+
+    subgraph Gemini["Gemini APIs"]
+        FLASH["gemini-3.1-flash-lite<br/>(Planner + VLM)"]
+        LIVE["gemini-2.5-flash<br/>native-audio<br/>(Live Agent)"]
+    end
+
+    subgraph GCP["Google Cloud"]
+        FS[("Firestore<br/>session docs<br/>1 h TTL")]
+        SEC["Secret Manager<br/>GOOGLE_API_KEY"]
+    end
+
+    RB -->|"HTTPS POST /decide"| APP
+    RB -->|"HTTPS POST /vlm/scene"| APP
+    APP --> SM
+    SM --> PA
+    SM --> VLM
+    PA -->|"ADK run_async()"| FLASH
+    VLM -->|"generate_content()<br/>structured JSON"| FLASH
+    SM <-->|"load / persist"| FS
+    SEC -.->|"env inject"| CloudRun
+
+    AC --> LAC
+    LAC --> AP
+    LAC <-->|"WebSocket<br/>audio + text + tools"| WSH
+    WSH --> LAM --> LAS
+    LAS -->|"ADK run_live()<br/>send_realtime()"| LIVE
+    LAS -->|"proxy tool_call"| WSH
+```
+
+Three Gemini models serve distinct roles:
+
+- **`gemini-3.1-flash-lite-preview`** — powers both the Planner (ADK ReAct agent with `start_skill`, `abort_skill`, `describe_scene` tools) and VLM scene analysis (structured JSON output with bounding boxes and object labels). Chosen for low latency and cost efficiency.
+- **`gemini-2.5-flash-native-audio-preview`** — powers the Live Agent for bidirectional audio streaming. The TUI sends 16 kHz PCM via WebSocket; the cloud service pipes it to Gemini's native audio endpoint via ADK `run_live()` / `send_realtime()`. Audio responses stream back at 24 kHz.
+- **Proxy-tool architecture** — Live Agent tools (`start_skill`, `abort_skill`, `describe_scene`) are dummy stubs on the cloud side. `before_tool_callback` intercepts calls and serializes them over WebSocket to the TUI, which executes locally with fresh runtime state and returns results. This keeps all robot control local while leveraging cloud LLM reasoning.
+
 ## Dataflows
 
 The system has two independent paths that never block each other.
