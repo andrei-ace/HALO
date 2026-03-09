@@ -92,11 +92,12 @@ halo/
     run_logger.py   # RunLogger: writes JSONL session logs to runs/
   models/           # (planned) act/, vlm/
   configs/
-    planner/        # system_prompt.md, skills/pick.md, skills/place.md
-    perception/     # scene_analysis.md (VLM prompt for qwen2.5vl)
-    calib/          # (planned)
-    skills/         # (planned)
-    safety/         # (planned)
+    planner/        # system_prompt.md — core planner agent instructions
+    perception/     # scene_analysis.md — VLM prompt for object detection
+    skills/         # per-skill dirs (pick/, place/, track/)
+                    #   default.mmd — Mermaid FSM topology (→ SkillRunnerService)
+                    #   system_prompt.md — skill reference for planner (pick, place only)
+    live_agent/     # system_prompt.md — conversational voice/text assistant prompt
   tools/            # (planned) ollama_clients/, zed_capture/, uvc_capture/
   eval/             # (planned) sim/, real/
 mujoco_sim/         # MuJoCo + SO-101 sim (env, dataset, teacher, autonomous SimServer; see mujoco_sim/CLAUDE.md)

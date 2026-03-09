@@ -68,10 +68,9 @@ Converts PlannerSnapshot to plain dict. Key conversions:
 
 ## Prompts
 
-Loaded from `configs/planner/`:
-- `system_prompt.md` — core agent instructions
-- `skills/pick.md` — PICK skill reference
-- `skills/place.md` — PLACE skill reference
+Loaded by `_load_prompts()` in `agent.py`:
+- `configs/planner/system_prompt.md` — core agent instructions
+- `configs/skills/*/system_prompt.md` — per-skill references (PICK, PLACE), appended under "Skill Reference" header
 
 ## Integration
 
