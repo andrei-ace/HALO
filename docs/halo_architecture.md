@@ -61,6 +61,8 @@ graph LR
     end
 ```
 
+![TUI showing all runtime panels — services, perception, joints, planner, events](imgs/tui-idle-cloud.png)
+
 Five services with strict role separation, coordinated through a shared runtime:
 
 | Service | Rate | Owns |
@@ -74,6 +76,8 @@ Five services with strict role separation, coordinated through a shared runtime:
 The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It exposes two APIs: `get_latest_runtime_snapshot(arm_id)` for the planner to read state, and `submit_command(cmd)` for the planner to issue actions.
 
 ## Live Agent
+
+![Live mode with embedded sim view, FSM progress bar, and voice panel](imgs/tui-live-pick-lift.png)
 
 The Live Agent is a conversational voice and text interface between an operator and the HALO system, built on the **Gemini Live API**. It enables natural interaction with the robot: the operator speaks, the agent narrates what the robot is doing, answers questions about the scene, and forwards operator instructions to the planner.
 
@@ -257,6 +261,10 @@ The cloud service deploys to Cloud Run via Terraform. The infrastructure include
 
 See `cloud_service/README.md` for the service and `infra/README.md` for Terraform configuration.
 
+![Cloud Run logs for halo-cognitive](imgs/cloud-run-logs.png)
+
+![Firestore session persistence](imgs/firestore-sessions.png)
+
 ## Dataflows
 
 The system has two independent paths that never block each other.
@@ -380,6 +388,8 @@ The **async VLM loop** handles initial acquisition, reacquisition after tracking
 The planner handles recovery only after the reflex has stabilized the robot. Safety events are surfaced in the snapshot and event stream.
 
 ## MuJoCo Simulation
+
+![SO-101 arm in MuJoCo with scene objects](imgs/mujoco-sim-scene.png)
 
 MuJoCo is the primary development and validation environment for HALO. It provides a physics-accurate SO-101 arm (5-DOF + 1-DOF gripper) with two cameras (scene 1280x720, wrist 640x480), contact dynamics tuned for reliable grasping, and an autonomous sim server that runs the full pick-and-place pipeline without human teleoperation.
 

@@ -289,12 +289,20 @@ make tui-live-cloud             # HTTP client to cloud service (set HALO_CLOUD_U
 make tui-live-cloud-local       # cloud service on localhost
 ```
 
+![TUI in live mode during pick skill](imgs/tui-live-pick-lift.png)
+
+![Pick-place sequence completion with event log](imgs/tui-live-place-complete.png)
+
+![Planner reasoning overlay — multilingual output (LLM responds in the operator's language)](imgs/tui-planner-reasoning.png)
+
 ### Sim
 
 ```bash
 make run-sim                    # start MuJoCo sim server
 make generate-episodes          # generate teacher episodes (EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0)
 ```
+
+![MuJoCo sim environment](imgs/mujoco-sim-scene.png)
 
 ---
 

@@ -48,6 +48,14 @@ graph LR
     end
 ```
 
+## Screenshots
+
+![MuJoCo simulation — SO-101 arm with scene objects](docs/imgs/mujoco-sim-scene.png)
+
+![TUI during a pick skill with embedded sim view and FSM progress](docs/imgs/tui-live-pick-lift.png)
+
+![TUI during a place skill — arm carrying cube to tray](docs/imgs/tui-live-place-transit.png)
+
 ## Quickstart
 
 ```bash
