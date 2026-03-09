@@ -28,7 +28,7 @@ graph LR
 
     subgraph Cloud["Cloud Backend"]
         LA <-->|"WebSocket<br/>(proxy tools)"| CS_SVC["Cloud Service<br/>(Cloud Run)"]
-        CS_SVC -->|"Gemini LLM + VLM"| CS_SVC
+        CS_SVC -->|"Gemini Flash<br/>(LLM + VLM)"| CS_SVC
         CS_SVC <-->|sessions| FS[("Firestore")]
     end
 
@@ -68,8 +68,8 @@ Five services with strict role separation, coordinated through a shared runtime:
 
 | Service | Rate | Owns |
 |---|---|---|
-| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM via Ollama or Gemini. |
-| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence, failure codes. |
+| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM: `gpt-oss:20b` (local) or Gemini Flash (cloud). |
+| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence. VLM: `qwen2.5vl:3b` (local) or Gemini Flash (cloud). |
 | **SkillRunnerService** | 10-20 Hz | Skill FSMs, phase transitions, ACT chunk buffering, dual-mode (ACT + sim). |
 | **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping. |
 | **SafetyGuard / ReflexLayer** | Hard real-time | Delta limits, hint freshness gating, immediate overrides. |
@@ -213,7 +213,15 @@ The `LiveAgentManager` manages per-arm Live Agent sessions with idle eviction (6
 
 ## Cognitive Backend Switching
 
-The **Switchboard** transparently routes planner (LLM) and perception (VLM) calls to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini / Cloud Run). Services call `switchboard.decide()` and `switchboard.vlm_scene()` as drop-in replacements, unaware of which backend is active.
+HALO deliberately uses **small, fast models** rather than large frontier models. A 20B-parameter LLM handles task planning, a 3B-parameter VLM handles scene understanding, and Gemini Flash handles cloud inference and voice interaction. These models are fast enough for real-time robotics (sub-second decisions), cheap enough to run locally on consumer hardware or at minimal cloud cost, and fully capable of the structured reasoning HALO requires — skill sequencing, failure recovery, and scene grounding don't need a 400B model.
+
+| Role | Local (Ollama) | Cloud (Gemini) |
+|---|---|---|
+| **Planner LLM** | `gpt-oss:20b` (20B params) | Gemini 2.5 Flash |
+| **Scene VLM** | `qwen2.5vl:3b` (3B params) | Gemini 2.5 Flash |
+| **Live Agent** | — | `gemini-2.5-flash-native-audio-preview` |
+
+The **Switchboard** transparently routes planner (LLM) and perception (VLM) calls to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini Flash via Cloud Run). Services call `switchboard.decide()` and `switchboard.vlm_scene()` as drop-in replacements, unaware of which backend is active.
 
 ```mermaid
 flowchart TB
@@ -225,8 +233,8 @@ flowchart TB
     SB["Switchboard<br/>(retry + failover)"]
 
     subgraph Backends["Backends"]
-        LOCAL["LocalCognitiveBackend<br/>(Ollama: gpt-oss:20b + qwen2.5vl)"]
-        CLOUD["RemoteCognitiveBackend<br/>(Cloud Run → Gemini)"]
+        LOCAL["LocalCognitiveBackend<br/>(Ollama: gpt-oss 20B + qwen2.5vl 3B)"]
+        CLOUD["RemoteCognitiveBackend<br/>(Cloud Run → Gemini Flash)"]
     end
 
     PS -->|"decide(snapshot)"| SB

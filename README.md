@@ -11,6 +11,7 @@ Operators interact with the robot through **natural voice and text conversation*
 - **Live Agent (Gemini Live API)** — conversational voice/text interface for operator interaction; narrates robot actions, answers scene questions, forwards intents to the planner via proxy-tool architecture; multilingual with session memory
 - **Cognitive backend switching** — Switchboard routes LLM/VLM calls to LOCAL (Ollama) or CLOUD (Gemini), with automatic failover/failback and split-brain prevention via LeaseManager
 - **Voice interaction** — bidirectional audio streaming (16 kHz capture / 24 kHz playback) with barge-in support and real-time transcription
+- **Small, fast models** — runs on modest hardware: planner uses a 20B-parameter LLM (`gpt-oss:20b`), perception uses a 3B-parameter VLM (`qwen2.5vl:3b`), cloud uses Gemini Flash — no large frontier models needed
 - **LLM task planner** — ADK ReAct agent that orchestrates pick/place/track skills via async commands
 - **Continuous control** — 50-100 Hz action streaming with temporal ensembling, independent of LLM latency
 - **Dual perception pipeline** — fast tracking loop (10-30 Hz) + async VLM scene analysis (off critical path)
@@ -29,7 +30,7 @@ graph LR
     end
 
     subgraph Cognitive["Cognitive Layer"]
-        LA <-->|"WebSocket<br/>(proxy tools)"| CLOUD["Cloud Backend<br/>(Gemini via Cloud Run)"]
+        LA <-->|"WebSocket<br/>(proxy tools)"| CLOUD["Cloud Backend<br/>(Gemini Flash via Cloud Run)"]
         CLOUD <-->|sessions| FS[("Firestore")]
         SB["Switchboard"] -->|active| LOCAL["Local Backend<br/>(Ollama)"]
         SB -.->|standby| CLOUD
@@ -80,7 +81,7 @@ make tui-live-cloud              # TUI against deployed cloud service
 
 ## GCP Deployment
 
-The cloud service deploys to Google Cloud Run with Terraform. It provides HTTP endpoints for planner decisions and VLM scene analysis, plus WebSocket endpoints for the Live Agent (voice/text). See [cloud_service/README.md](cloud_service/README.md) for the service itself and [infra/README.md](infra/README.md) for Terraform configuration.
+The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 2.5 Flash** for both planner decisions and VLM scene analysis, plus `gemini-2.5-flash-native-audio-preview` for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal. See [cloud_service/README.md](cloud_service/README.md) for the service itself and [infra/README.md](infra/README.md) for Terraform configuration.
 
 ## Project Status
 
