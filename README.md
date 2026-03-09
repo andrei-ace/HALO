@@ -8,36 +8,55 @@ The system supports both local inference (Ollama) and cloud backends (Google Gem
 
 ## Key Features
 
-- **Continuous control** — 50-100 Hz action streaming with temporal ensembling, independent of LLM latency
+- **Live Agent (Gemini Live API)** — conversational voice/text interface for operator interaction; narrates robot actions, answers scene questions, forwards intents to the planner via proxy-tool architecture
+- **Cognitive backend switching** — Switchboard routes LLM/VLM calls to LOCAL (Ollama) or CLOUD (Gemini), with automatic failover/failback and split-brain prevention via LeaseManager
+- **Voice interaction** — bidirectional audio streaming (16 kHz capture / 24 kHz playback) with barge-in support and real-time transcription
 - **LLM task planner** — ADK ReAct agent that orchestrates pick/place/track skills via async commands
-- **Mermaid-authored FSMs** — skill state machines defined as Mermaid diagrams, executed by a generic FSM engine
+- **Continuous control** — 50-100 Hz action streaming with temporal ensembling, independent of LLM latency
 - **Dual perception pipeline** — fast tracking loop (10-30 Hz) + async VLM scene analysis (off critical path)
 - **Deterministic safety** — per-timestep delta clamping, hint freshness gating, reflex layer; LLM cannot bypass
-- **Cognitive backend switching** — Switchboard routes LLM/VLM calls to LOCAL (Ollama) or CLOUD (Gemini), with automatic failover, warm-up handoff, and split-brain prevention via LeaseManager
-- **MuJoCo simulation** — SO-101 env with trajectory-planned teachers, 64-candidate grasp planner, jerk-limited motion, autonomous ZMQ sim server
+- **Visual FSM engine** — skill state machines defined as Mermaid diagrams, executed by a generic FSM engine
+- **MuJoCo simulation** — robot-agnostic env with trajectory-planned teachers, 64-candidate grasp planner, jerk-limited motion, autonomous ZMQ sim server
 - **Terminal UI** — Textual-based TUI with mock, live-local, and live-cloud modes
-- **Voice interaction** — audio capture/playback through cloud backend's Gemini Live API
 - **JSONL observability** — per-session run logs with full event and VLM result capture
 
 ## System Overview
 
 ```mermaid
 graph TB
-    subgraph Runtime["HALORuntime"]
-        SS["RuntimeStateStore"]
-        EB["EventBus"]
-        CR["CommandRouter"]
+    Operator["Operator\n(voice / text)"]
+
+    subgraph Cloud["Cloud Service (Cloud Run)"]
+        LA["Live Agent\n(Gemini Live API)"]
     end
 
-    PS["PlannerService\n(LLM)"] -->|commands| CR
+    subgraph Edge["Edge (TUI)"]
+        subgraph Runtime["HALORuntime"]
+            SS["RuntimeStateStore"]
+            EB["EventBus"]
+            CR["CommandRouter"]
+        end
+
+        SB["Switchboard\n(failover / failback)"]
+        PS["PlannerService\n(LLM)"]
+        TPS["TargetPerceptionService\n(VLM)"]
+        SRS["SkillRunnerService\n(FSM + ACT/Sim)"]
+        CS["ControlService\n(50-100 Hz)"]
+        SG["SafetyGuard\n(Reflex Layer)"]
+    end
+
+    Operator <-->|"audio / text"| LA
+    LA <-->|"WebSocket\n(proxy tools)"| SB
+    SB -->|"decide / vlm_scene"| PS
+    PS -->|commands| CR
     PS -->|read snapshot| SS
     EB -->|urgent events| PS
 
-    TPS["TargetPerceptionService\n(VLM)"] -->|target_hint_vec| SS
-    SRS["SkillRunnerService\n(FSM + ACT/Sim)"] -->|read hints| SS
-    SRS -->|action_chunks| CS["ControlService"]
+    TPS -->|target_hint_vec| SS
+    SRS -->|read hints| SS
+    SRS -->|action_chunks| CS
     CS -->|clamped actions| Robot["Robot / Sim"]
-    SG["SafetyGuard"] -->|reflex override| CS
+    SG -->|reflex override| CS
     SG -->|reflex events| EB
     CR -->|acks + events| EB
 ```
@@ -78,7 +97,9 @@ The cloud service deploys to Google Cloud Run with Terraform. It provides HTTP e
 | ZMQ bridge to MuJoCo sim | Done |
 | MuJoCo sim (SO-101 env, teachers, grasp planner, SimServer) | Done |
 | Integration tests (Ollama-backed) | Done |
-| Isaac Lab extension | Planned |
+| ACT model training (imitation learning from teacher demos) | Planned |
+| Isaac Lab extension (GPU-accelerated parallel envs) | Planned |
+| Sim-to-real transfer + real hardware deployment | Planned |
 
 ## Repository Structure
 

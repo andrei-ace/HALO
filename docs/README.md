@@ -182,7 +182,7 @@ Conversion is the responsibility of the `apply_fn` factory.
 
 ## Cognitive Backend (`halo/cognitive/`)
 
-**Switchboard** (`switchboard.py`): Transparent proxy routing LLM/VLM calls. Retry logic with backoff, failure counting (3 consecutive → failover), warm-up handoff on failback, health loop (5 s). Services call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-ins.
+**Switchboard** (`switchboard.py`): Transparent proxy routing LLM/VLM calls. Retry logic with backoff, failure counting (3 consecutive → failover), health-check failback (5 s loop), context handoff via ContextStore. Services call `switchboard.decide()` / `switchboard.vlm_scene()` as drop-ins.
 
 **LeaseManager** (`lease.py`): Epoch-monotonic grants with UUID token + TTL (30 s default). Renewed on every successful `decide()` / `vlm_scene()`. CommandRouter validates both `epoch` and `lease_token` on every command. Lifecycle: `grant(holder) → renew(epoch) → revoke(epoch) → grant(new_holder)`.
 

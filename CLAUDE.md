@@ -50,7 +50,7 @@ All v0 backbone services are implemented and tested:
 | RunLogger + observability | ✅ done |
 | Integration tests (`integration/`) | ✅ done (requires Ollama) |
 | Bridge adapters (`halo/bridge/`) | ✅ done (ZMQ 2-channel: SimClient, SimSource, transforms) |
-| Cognitive backend switching (`halo/cognitive/`) | ✅ done — Switchboard, LeaseManager, ContextStore, failover/failback, epoch+token gating, warm-up handoff |
+| Cognitive backend switching (`halo/cognitive/`) | ✅ done — Switchboard, LeaseManager, ContextStore, failover/failback, epoch+token gating |
 | MuJoCo sim (`mujoco_sim/`) | ✅ done — SO-101 + raw MuJoCo (env, dataset, pick+place teachers, grasp planner, IK, ruckig trajectory, clearance validation, autonomous ZMQ SimServer, pick-and-place episode generation); 116 tests |
 | Isaac Lab extension (`sim/`) | 📋 planned (after MuJoCo pipeline validated) |
 
@@ -60,7 +60,7 @@ The TUI supports multiple modes:
 - **Live cloud** (`make tui-live-cloud`): HTTP client to cloud service via Switchboard. Set `HALO_CLOUD_URL` for remote.
 - **Live cloud local** (`make tui-live-cloud-local`): Connect to a cloud service running on localhost.
 
-All cloud modes use the Switchboard with LeaseManager for split-brain prevention, automatic failover (3 consecutive failures → switch), and warm-up handoff on failback. Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
+All cloud modes use the Switchboard with LeaseManager for split-brain prevention and automatic failover/failback (3 consecutive failures → switch). Each session writes a JSONL log to `runs/YYYYMMDD_HHMMSS_<arm_id>.jsonl` + `events.jsonl` (via `halo/tui/run_logger.py`). No env resets between skills in live-mujoco mode.
 
 To regenerate the screenshot: `uv run python -m halo.tui.app --screenshot runs/halo_tui.svg`
 

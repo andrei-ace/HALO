@@ -360,7 +360,7 @@ flowchart TB
 
 **Failover**: after 3 consecutive failures (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically switches to the alternate backend. The ContextStore captures recent decisions, events, and scene descriptions in an append-only journal (bounded to 200 entries). On switch, `build_cognitive_state()` generates a handoff context injected into the new backend's first turn.
 
-**Failback**: a background health loop (5 s interval) monitors the preferred backend. When it recovers, a graduated warm-up protocol transfers context incrementally (COLD → WARMING → READY) before switching back.
+**Failback**: a background health loop (5 s interval) monitors the preferred backend. When it recovers and passes a health check, the Switchboard switches back immediately with context handoff via the ContextStore.
 
 **Split-brain prevention**: the LeaseManager issues epoch-monotonic grants with UUID tokens (30 s TTL, renewed on every successful call). The CommandRouter rejects any command with a stale epoch or token, ensuring only one backend can issue commands at a time.
 
