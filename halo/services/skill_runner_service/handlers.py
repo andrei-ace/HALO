@@ -249,6 +249,20 @@ class AcquiringHandler:
 class SelectPlaceHandler:
     def evaluate(self, ctx: StateContext) -> HandlerResult:
         if ctx.elapsed_ms >= ctx.config.select_place_timeout_ms:
+            if ctx.perception.tracking_status == TrackingStatus.IDLE:
+                return HandlerResult.fail(
+                    SkillFailureCode.PERCEPTION_LOST,
+                    trigger="place_target_not_tracked",
+                )
+            if (
+                ctx.perception.tracking_status == TrackingStatus.TRACKING
+                and ctx.target is not None
+                and ctx.target.handle != ctx.target_handle
+            ):
+                return HandlerResult.fail(
+                    SkillFailureCode.PERCEPTION_LOST,
+                    trigger="tracking_wrong_target",
+                )
             return HandlerResult.fail(SkillFailureCode.PERCEPTION_LOST, trigger="timeout")
         if ctx.perception.tracking_status != TrackingStatus.TRACKING:
             return HandlerResult.stay()

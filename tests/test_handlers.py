@@ -333,8 +333,38 @@ def test_select_place_stays_when_wrong_handle():
 
 def test_select_place_timeout():
     h = SelectPlaceHandler()
+    # TRACKING correct handle but timed out → generic "timeout"
     result = h.evaluate(_ctx(elapsed_ms=10000, config=_cfg(select_place_timeout_ms=10000)))
     assert result.fail_code == SkillFailureCode.PERCEPTION_LOST
+    assert result.trigger == "timeout"
+
+
+def test_select_place_timeout_not_tracked():
+    h = SelectPlaceHandler()
+    result = h.evaluate(
+        _ctx(
+            elapsed_ms=30000,
+            perception=_perception(TrackingStatus.IDLE),
+            config=_cfg(select_place_timeout_ms=30000),
+        )
+    )
+    assert result.fail_code == SkillFailureCode.PERCEPTION_LOST
+    assert result.trigger == "place_target_not_tracked"
+
+
+def test_select_place_timeout_wrong_target():
+    h = SelectPlaceHandler()
+    result = h.evaluate(
+        _ctx(
+            elapsed_ms=30000,
+            target=_target(handle="green_cube_01"),
+            perception=_perception(TrackingStatus.TRACKING),
+            config=_cfg(select_place_timeout_ms=30000),
+            target_handle="beige_tray_01",
+        )
+    )
+    assert result.fail_code == SkillFailureCode.PERCEPTION_LOST
+    assert result.trigger == "tracking_wrong_target"
 
 
 # --- TransitPreplaceHandler ---
