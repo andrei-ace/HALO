@@ -4,7 +4,7 @@ HALO is a robotic manipulation system that decouples continuous motor control fr
 
 The architecture is robot-agnostic — any 5+ DOF arm with a gripper can be integrated by providing an IK solver and controller mapping. The current development target is the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) (5-DOF + 1-DOF gripper), validated in MuJoCo simulation.
 
-The system supports both local inference (Ollama) and cloud backends (Google Gemini via Cloud Run), with automatic failover between them. A terminal UI provides real-time monitoring, operator interaction, and voice control through the cloud backend's Live API.
+Operators interact with the robot through **natural voice and text conversation** powered by the **Gemini Live API**. A Live Agent narrates what the robot is doing, answers questions about the scene, and translates spoken instructions into planner actions — no programming or GUI needed. The system supports both local inference (Ollama) and cloud backends (Google Gemini via Cloud Run), with automatic failover between them.
 
 ## Key Features
 
@@ -24,10 +24,10 @@ The system supports both local inference (Ollama) and cloud backends (Google Gem
 
 ```mermaid
 graph TB
-    Operator["Operator\n(voice / text)"]
+    Operator["Operator<br/>(voice / text)"]
 
     subgraph Cloud["Cloud Service (Cloud Run)"]
-        LA["Live Agent\n(Gemini Live API)"]
+        LA["Live Agent<br/>(Gemini Live API)"]
     end
 
     subgraph Edge["Edge (TUI)"]
@@ -37,16 +37,16 @@ graph TB
             CR["CommandRouter"]
         end
 
-        SB["Switchboard\n(failover / failback)"]
-        PS["PlannerService\n(LLM)"]
-        TPS["TargetPerceptionService\n(VLM)"]
-        SRS["SkillRunnerService\n(FSM + ACT/Sim)"]
-        CS["ControlService\n(50-100 Hz)"]
-        SG["SafetyGuard\n(Reflex Layer)"]
+        SB["Switchboard<br/>(failover / failback)"]
+        PS["PlannerService<br/>(LLM)"]
+        TPS["TargetPerceptionService<br/>(VLM)"]
+        SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
+        CS["ControlService<br/>(50-100 Hz)"]
+        SG["SafetyGuard<br/>(Reflex Layer)"]
     end
 
     Operator <-->|"audio / text"| LA
-    LA <-->|"WebSocket\n(proxy tools)"| SB
+    LA <-->|"WebSocket<br/>(proxy tools)"| SB
     SB -->|"decide / vlm_scene"| PS
     PS -->|commands| CR
     PS -->|read snapshot| SS

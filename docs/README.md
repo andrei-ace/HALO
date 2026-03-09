@@ -186,7 +186,7 @@ Conversion is the responsibility of the `apply_fn` factory.
 
 **LeaseManager** (`lease.py`): Epoch-monotonic grants with UUID token + TTL (30 s default). Renewed on every successful `decide()` / `vlm_scene()`. CommandRouter validates both `epoch` and `lease_token` on every command. Lifecycle: `grant(holder) → renew(epoch) → revoke(epoch) → grant(new_holder)`.
 
-**ContextStore** (`context_store.py`): Append-only journal (bounded to 200 entries) capturing decisions, scenes, events, operator instructions, compaction events. `build_cognitive_state()` produces a `CognitiveState` for backend handoff. Cursor-based sync (`get_entries_after(cursor)`) enables incremental warm-up.
+**ContextStore** (`context_store.py`): Append-only journal (bounded to 200 entries) capturing decisions, scenes, events, operator instructions, compaction events. `get_handoff_context()` produces a text summary for backend handoff on switch.
 
 **CompactionPlugin** (`compaction_plugin.py`): ADK-native event compaction callback. Detects compaction boundaries and propagates summaries to the inactive backend for concise failback context.
 

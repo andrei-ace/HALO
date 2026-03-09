@@ -40,12 +40,12 @@ graph TB
         CR["CommandRouter"]
     end
 
-    PS["PlannerService\n(LLM)"]
-    TPS["TargetPerceptionService\n(VLM + Tracker)"]
-    SRS["SkillRunnerService\n(FSM + ACT/Sim)"]
-    CS["ControlService\n(50-100 Hz)"]
-    SG["SafetyGuard\n(Reflex Layer)"]
-    LA["Live Agent\n(Gemini Live API)"]
+    PS["PlannerService<br/>(LLM)"]
+    TPS["TargetPerceptionService<br/>(VLM + Tracker)"]
+    SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
+    CS["ControlService<br/>(50-100 Hz)"]
+    SG["SafetyGuard<br/>(Reflex Layer)"]
+    LA["Live Agent<br/>(Gemini Live API)"]
 
     PS -->|commands| CR
     CR -->|acks + events| EB
@@ -61,7 +61,7 @@ graph TB
 
     LA -->|operator intents| PS
     LA -->|monitor updates| EB
-    LA -.->|"voice/text\n(Gemini Live API)"| Operator["Operator"]
+    LA -.->|"voice/text<br/>(Gemini Live API)"| Operator["Operator"]
 ```
 
 ## Dataflows
@@ -74,11 +74,11 @@ Numeric control hints flow directly between services. The SkillRunner reads targ
 
 ```mermaid
 flowchart LR
-    CAM["Cameras\n+ RobotState"] --> TPS["TargetPerception\nService"]
-    TPS -->|"target_hint_vec\n(robot frame + EE deltas)"| SS["RuntimeState\nStore"]
-    SS -->|"read hints\ndirectly"| SRS["SkillRunner\nService"]
-    SRS -->|"ACT inference\n(10-20 Hz)"| CS["ControlService\n(50-100 Hz)"]
-    CS -->|"clamped deltas\n→ IK/OSC"| R["Robot"]
+    CAM["Cameras + RobotState"] --> TPS["TargetPerception<br/>Service"]
+    TPS -->|"target_hint_vec<br/>(robot frame + EE deltas)"| SS["RuntimeState<br/>Store"]
+    SS -->|"read hints directly"| SRS["SkillRunner<br/>Service"]
+    SRS -->|"ACT inference<br/>(10-20 Hz)"| CS["ControlService<br/>(50-100 Hz)"]
+    CS -->|"clamped deltas → IK/OSC"| R["Robot"]
 ```
 
 ### Decision Path (LLM, low frequency)
@@ -87,8 +87,8 @@ The planner reads the latest compact snapshot, reasons about it, and issues asyn
 
 ```mermaid
 flowchart LR
-    SS["RuntimeState\nStore"] -->|"get_latest_runtime_snapshot()"| PS["PlannerService\n(LLM)"]
-    PS -->|"async commands\n(start_skill, abort, etc.)"| CR["Command\nRouter"]
+    SS["RuntimeState<br/>Store"] -->|"get_latest_runtime_snapshot()"| PS["PlannerService<br/>(LLM)"]
+    PS -->|"async commands<br/>(start_skill, abort, etc.)"| CR["Command<br/>Router"]
     CR -->|"acks + state updates"| SS
     CR -->|"events"| EB["EventBus"]
     EB -->|"urgent events"| PS
@@ -117,7 +117,7 @@ stateDiagram-v2
     MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : timeout
 
     VISUAL_ALIGN --> EXECUTE_APPROACH : aligned
-    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance < threshold\nheld for persistence_ms
+    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance held for persistence_ms
     CLOSE_GRIPPER --> VERIFY_GRASP : dwell complete
     VERIFY_GRASP --> LIFT : grasp confirmed
     VERIFY_GRASP --> RECOVER_REGRASP : grasp failed
@@ -142,10 +142,10 @@ Instead of human teleoperation, HALO uses an **analytic teacher** to generate ex
 
 ```mermaid
 flowchart TB
-    GP["Grasp Planner\n64 candidates\ngeometric filter + IK scoring"] --> KP["Keyframe Planner\n5 SE(3) keyframes:\nhome → pregrasp → grasp\n→ close → lift"]
-    KP --> WG["Waypoint Generator\nIK per keyframe\nyaw-retry fallbacks"]
-    WG --> TJ["Trajectory\njerk-limited ruckig segments\nstart/end at rest"]
-    TJ --> PT["Teacher step()\nsamples at elapsed time\n→ (action, phase_id, done)"]
+    GP["Grasp Planner<br/>64 candidates<br/>geometric filter + IK scoring"] --> KP["Keyframe Planner<br/>5 SE(3) keyframes"]
+    KP --> WG["Waypoint Generator<br/>IK per keyframe"]
+    WG --> TJ["Trajectory<br/>jerk-limited ruckig"]
+    TJ --> PT["Teacher step()<br/>→ action, phase_id, done"]
 ```
 
 **Grasp planner**: enumerates 64 candidates across 4 cube side faces, filters by geometric feasibility (pregrasp above table, no gripper-body collision), scores by a weighted combination of IK position error, joint margin, orientation error, manipulability, and tilt penalty. Falls back to expanded search with relaxed tolerances if no valid grasp is found.
@@ -209,19 +209,19 @@ The Live Agent spans three layers connected by a bidirectional WebSocket:
 ```mermaid
 flowchart LR
     subgraph TUI["TUI (Edge)"]
-        MIC["AudioCapture\n16kHz mono"] --> LAC["LiveAgentClient"]
-        LAC --> SPK["AudioPlayback\n24kHz mono"]
-        LAC --> TH["Tool Handler\n(local execution)"]
-        TH --> RT["HALORuntime\n(fresh state)"]
+        MIC["AudioCapture<br/>16kHz mono"] --> LAC["LiveAgentClient"]
+        LAC --> SPK["AudioPlayback<br/>24kHz mono"]
+        LAC --> TH["Tool Handler<br/>(local execution)"]
+        TH --> RT["HALORuntime<br/>(fresh state)"]
     end
 
     subgraph Cloud["Cloud Service (Cloud Run)"]
-        WS["WebSocket\nHandler"] --> LAS["LiveAgentSession"]
-        LAS --> GEMINI["Gemini Live API\n(bidirectional streaming)"]
-        LAS --> PROXY["Proxy Tool\nCallback"]
+        WS["WebSocket<br/>Handler"] --> LAS["LiveAgentSession"]
+        LAS --> GEMINI["Gemini Live API<br/>(bidirectional streaming)"]
+        LAS --> PROXY["Proxy Tool<br/>Callback"]
     end
 
-    LAC <-->|"WebSocket\naudio + text + tools"| WS
+    LAC <-->|"WebSocket<br/>audio + text + tools"| WS
 ```
 
 **TUI side** captures audio at 16 kHz (100 ms chunks) and sends it to the cloud service over WebSocket. Audio responses from Gemini (24 kHz) are played back through the speaker. Tool calls arrive over the same WebSocket and are executed locally against fresh runtime state.
@@ -342,11 +342,11 @@ flowchart TB
         TPS["TargetPerceptionService"]
     end
 
-    SB["Switchboard\n(retry + failover)"]
+    SB["Switchboard<br/>(retry + failover)"]
 
     subgraph Backends["Backends"]
-        LOCAL["LocalCognitiveBackend\n(Ollama: gpt-oss:20b + qwen2.5vl)"]
-        CLOUD["RemoteCognitiveBackend\n(Cloud Run → Gemini)"]
+        LOCAL["LocalCognitiveBackend<br/>(Ollama: gpt-oss:20b + qwen2.5vl)"]
+        CLOUD["RemoteCognitiveBackend<br/>(Cloud Run → Gemini)"]
     end
 
     PS -->|"decide(snapshot)"| SB
@@ -354,13 +354,19 @@ flowchart TB
     SB -->|"active"| LOCAL
     SB -.->|"standby"| CLOUD
 
-    LM["LeaseManager\n(epoch + token)"] --> SB
-    CS["ContextStore\n(journal + handoff)"] --> SB
+    LM["LeaseManager<br/>(epoch + token)"] --> SB
+    CS["ContextStore<br/>(journal + handoff)"] --> SB
 ```
 
-**Failover**: after 3 consecutive failures (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically switches to the alternate backend. The ContextStore captures recent decisions, events, and scene descriptions in an append-only journal (bounded to 200 entries). On switch, `build_cognitive_state()` generates a handoff context injected into the new backend's first turn.
+**Failover**: after 3 consecutive failures (retries exhausted or non-retryable 429/quota errors), the Switchboard automatically switches to the alternate backend. On switch, the ContextStore generates a handoff context summary (recent decisions, events, scene state) that is injected into the new backend's first turn.
 
-**Failback**: a background health loop (5 s interval) monitors the preferred backend. When it recovers and passes a health check, the Switchboard switches back immediately with context handoff via the ContextStore.
+**Failback**: a background health loop (5 s interval) monitors the preferred backend. When it recovers and passes a health check, the Switchboard switches back with context handoff.
+
+**Context continuity**: three mechanisms keep both backends informed:
+
+- **ContextStore journal** — append-only log (bounded to 200 entries) of decisions, scenes, events, and operator instructions. On backend switch, `get_handoff_context()` produces a text summary injected into the new backend's first message.
+- **Message history mirroring** — after every successful cloud `decide()`, the Switchboard copies the cloud's message history to the local backend's `MessageHistory`. If failover occurs, the local backend can rebuild its ADK session from this mirror instead of starting cold.
+- **Compaction sync** — when the cloud backend's ADK session compacts (replaces old messages with a summary), the compaction result is propagated to the local backend. The local ADK session is rebuilt with the compacted summary + retained messages, keeping both backends' context aligned and bounded.
 
 **Split-brain prevention**: the LeaseManager issues epoch-monotonic grants with UUID tokens (30 s TTL, renewed on every successful call). The CommandRouter rejects any command with a stale epoch or token, ensuring only one backend can issue commands at a time.
 
@@ -383,17 +389,17 @@ Two loops with very different timing characteristics:
 ```mermaid
 flowchart TB
     subgraph Fast["Fast Loop (10-30 Hz, ≤80-120ms)"]
-        OBS["observe_fn\n(tracker + depth)"] --> PG["Plausibility\nGates"]
-        PG -->|valid| PUB["Publish\ntarget_hint_vec"]
-        PG -->|invalid| INV["hint_valid = false\n→ HOLD / REACQUIRE"]
+        OBS["observe_fn<br/>(tracker + depth)"] --> PG["Plausibility<br/>Gates"]
+        PG -->|valid| PUB["Publish<br/>target_hint_vec"]
+        PG -->|invalid| INV["hint_valid = false<br/>→ HOLD / REACQUIRE"]
     end
 
     subgraph Async["Async VLM (0.5-5s, off critical path)"]
-        VLM["VLM\n(qwen2.5vl)"] --> PARSE["vlm_parser\n→ VlmScene"]
+        VLM["VLM<br/>(qwen2.5vl)"] --> PARSE["vlm_parser<br/>→ VlmScene"]
         PARSE --> SEED["Store _vlm_seed"]
     end
 
-    SEED -.->|"consumed when\nobserve returns None"| OBS
+    SEED -.->|"consumed when<br/>observe returns None"| OBS
     INV -.->|"trigger reacquire"| VLM
 ```
 
