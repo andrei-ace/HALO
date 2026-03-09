@@ -8,9 +8,9 @@ FastAPI service that runs the HALO planner (ADK ReAct agent) and VLM (Gemini) on
 |----------|--------|-------------|
 | `/decide` | POST | Planner decision — snapshot JSON in, commands JSON out |
 | `/vlm/scene` | POST | VLM scene analysis — JPEG image + metadata in, VlmScene JSON out |
-| `/warm-up` | POST | Warm up session with CognitiveState + journal entries |
 | `/state/{arm_id}` | GET | Session readiness and cursor for a specific arm |
 | `/health` | GET | Health check |
+| `/ws/live/{arm_id}` | WS | Live Agent bidirectional audio+text streaming |
 
 ## Quick start: local testing against Gemini
 
@@ -22,7 +22,7 @@ FastAPI service that runs the HALO planner (ADK ReAct agent) and VLM (Gemini) on
    # Edit .env and paste your GOOGLE_API_KEY
    ```
 
-3. **One-command smoke test** (verifies health, warm-up, decide, state):
+3. **One-command smoke test** (verifies health, decide, state):
    ```bash
    GOOGLE_API_KEY=<your-key> make smoke-cloud-service
    ```
@@ -59,11 +59,19 @@ uv run --project cloud_service pytest cloud_service/tests/ -v
 
 ## Environment variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GOOGLE_API_KEY` | Yes | Gemini API key |
-| `HALO_PLANNER_MODEL` | No | Planner model (default: `gemini-3.1-flash-lite-preview`) |
-| `HALO_VLM_MODEL` | No | VLM model (default: `gemini-3.1-flash-lite-preview`) |
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GOOGLE_API_KEY` | Yes | — | Gemini API key |
+| `HALO_PLANNER_MODEL` | No | `gemini-3.1-flash-lite-preview` | Planner model |
+| `HALO_VLM_MODEL` | No | `gemini-3.1-flash-lite-preview` | VLM model |
+| `HALO_COMPACTION_INTERVAL` | No | `20` | Invocations between context compaction |
+| `HALO_COMPACTION_OVERLAP` | No | `4` | Recent invocations kept uncompacted |
+| `HALO_FIRESTORE_ENABLED` | No | auto-detect | Enable Firestore persistence (auto-enabled when `FIRESTORE_EMULATOR_HOST` is set) |
+| `HALO_FIRESTORE_COLLECTION` | No | `halo_sessions` | Firestore collection name |
+| `HALO_FIRESTORE_TTL_HOURS` | No | `1.0` | Session TTL in Firestore |
+| `HALO_LIVE_AGENT_ENABLED` | No | `true` | Enable Live Agent WebSocket endpoint |
+| `HALO_LIVE_AGENT_MODEL` | No | `gemini-2.5-flash-native-audio-preview-12-2025` | Gemini Live model |
+| `HALO_LIVE_AGENT_VOICE` | No | `Kore` | Live Agent voice |
 
 ## Cloud Run deployment
 
