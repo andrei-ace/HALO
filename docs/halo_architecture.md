@@ -80,7 +80,7 @@ The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It 
 
 ![Live mode with embedded sim view, FSM progress bar, and voice panel](imgs/tui-live-pick-lift.png)
 
-The Live Agent is a conversational voice and text interface between an operator and the HALO system, built on the **Gemini Live API**. It enables natural interaction with the robot: the operator speaks, the agent narrates what the robot is doing, answers questions about the scene, and forwards operator instructions to the planner.
+The Live Agent is a conversational voice and text interface between an operator and the HALO system, built on the **Gemini Live API**. It enables natural interaction with the robot: the operator speaks, the agent narrates what the robot is doing, answers questions about the scene, and forwards operator instructions to the planner. The agent is **multilingual** — it can converse, narrate, and summarize in any language the operator uses — and maintains **conversation memory** across the session, so it can recall earlier actions and context on demand.
 
 ### Architecture
 
