@@ -381,6 +381,39 @@ async def test_switch_publishes_event():
     assert event.data["to"] == BackendType.CLOUD
 
 
+@pytest.mark.asyncio
+async def test_cloud_switch_ts_set_before_event_published():
+    """cloud_switch_ts_ms must be set before BACKEND_SWITCHED is published,
+    so consumers reading it directly always see a fresh gate."""
+    ts_at_publish: list[int] = []
+
+    async def capture_ts(event):
+        # At the moment publish() is called, cloud_switch_ts_ms must already be set
+        ts_at_publish.append(sb.cloud_switch_ts_ms)
+
+    bus = MagicMock()
+    bus.publish = AsyncMock(side_effect=capture_ts)
+    sb, local, cloud = _make_switchboard(active=BackendType.LOCAL)
+    sb._bus = bus
+
+    assert sb.cloud_switch_ts_ms == 0
+    await sb.switch_to(BackendType.CLOUD, reason="test")
+
+    assert sb.cloud_switch_ts_ms > 0
+    assert len(ts_at_publish) == 1
+    assert ts_at_publish[0] == sb.cloud_switch_ts_ms  # was set before publish
+
+
+@pytest.mark.asyncio
+async def test_cloud_switch_ts_not_set_on_local_switch():
+    """Switching to LOCAL should not update cloud_switch_ts_ms."""
+    sb, local, cloud = _make_switchboard(active=BackendType.CLOUD)
+    sb.cloud_switch_ts_ms = 0
+
+    await sb.switch_to(BackendType.LOCAL, reason="test")
+    assert sb.cloud_switch_ts_ms == 0
+
+
 # ---------------------------------------------------------------------------
 # Reset loop state
 # ---------------------------------------------------------------------------
@@ -730,3 +763,172 @@ async def test_mirror_error_does_not_break_decide():
     # Should NOT raise despite mirroring failure
     result = await sb.decide(snap)
     assert result == []  # empty commands but no exception
+
+
+# ---------------------------------------------------------------------------
+# Local decide preemption on cloud failback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_local_decide_preempted_by_cloud_failback():
+    """When cloud recovers mid-decide, the slow local inference is cancelled
+    and the call is retried on cloud.  Local message history is rolled back."""
+    import asyncio
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+
+    # Local backend that takes a long time (simulated via Event)
+    local_started = asyncio.Event()
+
+    async def slow_local_decide(snap, operator_cmd=None, epoch=None):
+        local_started.set()
+        await asyncio.sleep(10)  # "slow" local inference
+        return []
+
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(side_effect=slow_local_decide)
+    mock_agent.last_reasoning = ""
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.reset_session = AsyncMock()
+    mock_agent.inject_handoff_context = AsyncMock()
+    mock_agent._pending_handoff = None
+    mock_agent.msg_history = MessageHistory()
+    # Simulate that decide() appends to history before blocking
+    mock_agent.msg_history.append("user", "pre-existing snapshot")
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    cloud = _make_mock_backend("cloud")
+    cloud.decide = AsyncMock(return_value=[])
+    type(cloud).last_reasoning = PropertyMock(return_value="cloud reasoning")
+
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
+
+    snap = _idle_snap()
+    history_count_before = local.agent.msg_history.count()
+
+    async def trigger_failback():
+        """Simulate cloud recovery while local decide is in-flight."""
+        await local_started.wait()
+        await asyncio.sleep(0.01)  # let decide race start
+        await sb.switch_to(BackendType.CLOUD, reason="cloud recovered")
+
+    # Run decide and failback concurrently
+    decide_task = asyncio.create_task(sb.decide(snap))
+    failback_task = asyncio.create_task(trigger_failback())
+
+    await decide_task
+    await failback_task
+
+    # Should have ended up on cloud
+    assert sb.active_type == BackendType.CLOUD
+    # Cloud decide should have been called (replay after preemption)
+    cloud.decide.assert_awaited()
+    # Local message history should be rolled back to pre-decide state
+    assert local.agent.msg_history.count() == history_count_before
+
+
+@pytest.mark.asyncio
+async def test_cloud_decide_not_preemptable():
+    """Cloud decide() is not raced against preemption — only local is."""
+    sb, local, cloud = _make_switchboard(active=BackendType.CLOUD)
+    snap = _idle_snap()
+
+    # If preempt was erroneously checked for cloud, this would fail
+    sb._decide_preempt.set()  # should be ignored for cloud
+    result = await sb.decide(snap)
+    assert result == []
+    cloud.decide.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_preempt_already_set_before_decide():
+    """If switch_to(CLOUD) fires before decide() enters, local is skipped immediately."""
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(return_value=[])
+    mock_agent.last_reasoning = ""
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.reset_session = AsyncMock()
+    mock_agent.inject_handoff_context = AsyncMock()
+    mock_agent._pending_handoff = None
+    mock_agent.msg_history = MessageHistory()
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    cloud = _make_mock_backend("cloud")
+    cloud.decide = AsyncMock(return_value=[])
+    type(cloud).last_reasoning = PropertyMock(return_value="cloud ok")
+
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
+
+    # Simulate: switch_to(CLOUD) already happened before decide() is called
+    await sb.switch_to(BackendType.CLOUD, reason="cloud recovered")
+
+    # Now call decide — it should go to cloud, not local
+    snap = _idle_snap()
+    await sb.decide(snap)
+
+    # Local decide should NOT have been called
+    mock_agent.decide.assert_not_awaited()
+    # Cloud decide should have been called
+    cloud.decide.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preempt_cleared_after_round_trip():
+    """LOCAL→CLOUD→LOCAL round-trip must not leave a stale preempt latch."""
+    from unittest.mock import patch
+
+    from halo.cognitive.compactor import MessageHistory
+    from halo.cognitive.local_backend import LocalCognitiveBackend
+
+    mock_agent = MagicMock()
+    mock_agent.decide = AsyncMock(return_value=[])
+    mock_agent.last_reasoning = "local ok"
+    mock_agent.reset_loop_state = MagicMock()
+    mock_agent.reset_session = AsyncMock()
+    mock_agent.inject_handoff_context = AsyncMock()
+    mock_agent.inject_compaction_state = AsyncMock()
+    mock_agent._pending_handoff = None
+    mock_agent.msg_history = MessageHistory()
+
+    with (
+        patch("halo.cognitive.local_backend.PlannerAgent", return_value=mock_agent),
+        patch("halo.cognitive.local_backend.make_vlm_fn", return_value=AsyncMock()),
+    ):
+        local = LocalCognitiveBackend()
+
+    cloud = _make_mock_backend("cloud")
+    config = CognitiveConfig(active=BackendType.LOCAL, enable_failover=True)
+    sb = Switchboard(config=config, local=local, cloud=cloud, max_retries=1, retry_delays=(0.0,))
+
+    # Round-trip: LOCAL → CLOUD → LOCAL (no decide in-flight)
+    await sb.switch_to(BackendType.CLOUD, reason="cloud ok")
+    assert not sb._decide_preempt.is_set(), "latch should be clear after switch completes"
+
+    await sb.switch_to(BackendType.LOCAL, reason="prefer local")
+    assert sb.active_type == BackendType.LOCAL
+    assert not sb._decide_preempt.is_set(), "latch should still be clear"
+
+    # First local decide after round-trip should run normally on LOCAL
+    snap = _idle_snap()
+    await sb.decide(snap)
+    mock_agent.decide.assert_awaited_once()

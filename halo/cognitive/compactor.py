@@ -111,5 +111,9 @@ class MessageHistory:
         """Replace all records (used for cross-backend mirroring)."""
         self._records = list(records)
 
+    def truncate(self, count: int) -> None:
+        """Truncate history to the first *count* records (rollback)."""
+        self._records = self._records[:count]
+
     def clear(self) -> None:
         self._records.clear()

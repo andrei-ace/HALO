@@ -32,6 +32,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Sentinel returned by _decide_with_preempt when the local call was preempted.
+_PREEMPTED: list = []  # unique identity — checked with ``is``, never mutated
+
 CONSECUTIVE_FAILURES_BEFORE_SWITCH = 3
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAYS = (0.5, 1.0, 2.0)
@@ -99,6 +102,14 @@ class Switchboard:
         self._active_type: BackendType = config.active
         self._lease_mgr.grant(self._active_type)
 
+        # In-flight decide() cancellation: set by switch_to() to preempt slow local inference
+        self._decide_preempt: asyncio.Event = asyncio.Event()
+
+        # Wall-clock ms of the most recent switch *to* CLOUD.  Set at the top
+        # of switch_to() so consumers (e.g. TUI LiveAgent gating) can read it
+        # immediately — before the BACKEND_SWITCHED event is even published.
+        self.cloud_switch_ts_ms: int = 0
+
         # Wire compaction callback on cloud backend (if it supports it)
         if hasattr(cloud, "set_on_compaction"):
             cloud.set_on_compaction(self._sync_compaction_to_inactive)
@@ -128,7 +139,14 @@ class Switchboard:
         snap: PlannerSnapshot,
         operator_cmd: str | None = None,
     ) -> list[CommandEnvelope]:
-        """Delegate to active backend.decide() with retry on transient errors."""
+        """Delegate to active backend.decide() with retry on transient errors.
+
+        When running on LOCAL, the call is raced against ``_decide_preempt``.
+        If ``switch_to(CLOUD)`` fires while the local model is still thinking,
+        the local inference is cancelled, message history is rolled back to the
+        pre-decide state, and the call is retried on cloud via a recursive
+        ``decide()`` that gets the full retry/empty-response/failover handling.
+        """
         # Record operator instruction eagerly so it survives failover
         if operator_cmd:
             self._context_store.append(
@@ -138,14 +156,23 @@ class Switchboard:
                 summary=operator_cmd,
             )
 
+        return await self._decide_inner(snap, operator_cmd)
+
+    async def _decide_inner(
+        self,
+        snap: PlannerSnapshot,
+        operator_cmd: str | None,
+    ) -> list[CommandEnvelope]:
+        """Core decide loop with retry, empty-response detection, and failover."""
         last_exc: Exception | None = None
         for attempt in range(self._max_retries):
             try:
-                commands = await self.active_backend.decide(
-                    snap,
-                    operator_cmd=operator_cmd,
-                    epoch=self._lease_mgr.current_epoch,
-                )
+                commands = await self._decide_with_preempt(snap, operator_cmd)
+
+                # Preempted — switch already happened, re-enter with full
+                # retry/empty-response/failover handling on the new backend.
+                if commands is _PREEMPTED:
+                    return await self._decide_inner(snap, operator_cmd)
 
                 # Detect empty responses (no reasoning, no commands)
                 reasoning = self.active_backend.last_reasoning
@@ -197,34 +224,72 @@ class Switchboard:
         self._consecutive_failures = CONSECUTIVE_FAILURES_BEFORE_SWITCH - 1
         await self._on_failure(reason=str(last_exc) if last_exc else "unknown error")
 
-        # If we switched, replay the call on the new backend
+        # If we switched, replay with full handling on the new backend
         if self._active_type != old_type:
-            try:
-                commands = await self.active_backend.decide(
-                    snap,
-                    operator_cmd=operator_cmd,
-                    epoch=self._lease_mgr.current_epoch,
-                )
-                self._on_success()
-                self._mirror_history_to_inactive()
-                from dataclasses import replace as _dc_replace
-
-                epoch = self._lease_mgr.current_epoch
-                token = self._lease_mgr.current_token
-                if token is not None:
-                    commands = [_dc_replace(c, epoch=epoch, lease_token=token) for c in commands]
-                reasoning = self.active_backend.last_reasoning
-                if reasoning:
-                    self._context_store.append(
-                        epoch=self._lease_mgr.current_epoch,
-                        backend=self._active_type,
-                        entry_type="decision",
-                        summary=reasoning,
-                    )
-                return commands
-            except Exception as replay_exc:
-                logger.warning("decide() replay on %s also failed: %s", self._active_type, replay_exc)
+            return await self._decide_inner(snap, operator_cmd)
         return []
+
+    async def _decide_with_preempt(
+        self,
+        snap: PlannerSnapshot,
+        operator_cmd: str | None,
+    ) -> list[CommandEnvelope]:
+        """Run decide on the active backend, racing against preemption when on LOCAL.
+
+        Returns ``_PREEMPTED`` sentinel if the local call was preempted by a
+        backend switch to CLOUD.  In that case the local message history is
+        rolled back to the state before this call.
+        """
+        backend = self.active_backend
+        epoch = self._lease_mgr.current_epoch
+
+        # Only race local calls — cloud calls complete fast or fail
+        if self._active_type != BackendType.LOCAL:
+            return await backend.decide(snap, operator_cmd=operator_cmd, epoch=epoch)
+
+        # Snapshot local message history count so we can rollback on preempt
+        from halo.cognitive.local_backend import LocalCognitiveBackend
+
+        history_count_before: int | None = None
+        if isinstance(backend, LocalCognitiveBackend):
+            history_count_before = backend.agent.msg_history.count()
+
+        # If preempt was already signaled (switch_to fired before we entered),
+        # skip the local call entirely.  switch_to() clears the latch after
+        # completing, so no consumption needed here.
+        if self._decide_preempt.is_set():
+            logger.info("Local decide() preempted before starting (preempt already set)")
+            return _PREEMPTED  # type: ignore[return-value]
+
+        # Event is not set — switch_to() will .set() this same object if it
+        # fires during the race below (no replacement, no lost signals).
+
+        decide_task = asyncio.create_task(backend.decide(snap, operator_cmd=operator_cmd, epoch=epoch))
+        preempt_task = asyncio.create_task(self._decide_preempt.wait())
+
+        done, pending = await asyncio.wait(
+            {decide_task, preempt_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        if decide_task in done and preempt_task not in done:
+            # Normal completion — preempt didn't fire
+            return decide_task.result()
+
+        # Preempted (or both finished in the same loop turn — prefer preemption
+        # so we don't return commands stamped under a revoked local lease).
+        # Rollback local message history to pre-decide state.
+        logger.info("Local decide() preempted by backend switch to CLOUD, rolling back history")
+        if isinstance(backend, LocalCognitiveBackend) and history_count_before is not None:
+            backend.agent.msg_history.truncate(history_count_before)
+        return _PREEMPTED  # type: ignore[return-value]
 
     async def vlm_scene(
         self,
@@ -333,6 +398,16 @@ class Switchboard:
 
         logger.info("Switching backend: %s -> %s (reason: %s)", old_type, target, reason)
 
+        # 0a. Record cloud-switch timestamp *before* anything is published
+        #     so TUI LiveAgent gating can read it ahead of queued events.
+        if target == BackendType.CLOUD:
+            self.cloud_switch_ts_ms = int(time.time() * 1000)
+
+        # 0b. Signal any in-flight local decide() to abort so we don't wait
+        #     for a slow local inference when cloud is back.
+        if old_type == BackendType.LOCAL:
+            self._decide_preempt.set()
+
         # 1. Build handoff context (while old backend is still active)
         old_epoch = self._lease_mgr.current_epoch
         handoff_text = self._context_store.get_handoff_context(old_epoch)
@@ -369,6 +444,12 @@ class Switchboard:
                 data=switch_data,
             )
             await self._bus.publish(event)
+
+        # 7. Clear preempt latch so it doesn't leak into future local calls
+        #    (e.g. a later CLOUD→LOCAL failback).  Any in-flight race has
+        #    already observed the .set() by now — the await in step 5/6
+        #    guaranteed at least one event-loop turn.
+        self._decide_preempt.clear()
 
         logger.info("Backend switched to %s (epoch %d)", target, self._lease_mgr.current_epoch)
 

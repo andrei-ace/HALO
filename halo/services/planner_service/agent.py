@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import dataclasses
 import json
@@ -434,6 +435,7 @@ class PlannerAgent:
         self._litellm_nonce = uuid.uuid4().hex
         _decide_nonce.set(self._litellm_nonce)
 
+        cancelled = False
         try:
             async for event in self._runner.run_async(
                 user_id=_USER_ID,
@@ -466,24 +468,30 @@ class PlannerAgent:
                 "Stopping to avoid runaway costs. Awaiting operator intervention."
             )
             self._ctx.commands.clear()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        finally:
+            # Always clean up per-invocation state — even when the task is
+            # cancelled (e.g. preempted by Switchboard cloud failback).
+            # Without this, a later failback to LOCAL would inherit stale
+            # _litellm_nonce and deferred compaction state.
+            self._litellm_nonce = ""
+            if not token_usage and self._litellm_usage:
+                token_usage = dict(self._litellm_usage)
 
-        # Deactivate capture; fall back to litellm data if ADK provided nothing.
-        self._litellm_nonce = ""
-        if not token_usage and self._litellm_usage:
-            token_usage = dict(self._litellm_usage)
+            self._last_reasoning = last_text
+            self._last_token_usage = token_usage
 
-        self._last_reasoning = last_text
-        self._last_token_usage = token_usage
+            if not cancelled and last_text:
+                # Only track model response when the call completed normally —
+                # on cancellation the switchboard rolls back msg_history itself.
+                self._msg_history.append("model", last_text)
 
-        # Track model response
-        if last_text:
-            self._msg_history.append("model", last_text)
-
-        # Apply deferred MessageHistory compaction now that both user and
-        # model messages are tracked — ensures the overlap window contains
-        # complete invocations (user + model pairs).
-        self._compaction_plugin.apply_deferred_history_compaction()
-        self._last_compaction = self._compaction_plugin.last_compaction
+            # Apply deferred compaction regardless so the plugin doesn't carry
+            # stale state into the next invocation.
+            self._compaction_plugin.apply_deferred_history_compaction()
+            self._last_compaction = self._compaction_plugin.last_compaction
 
         commands = list(self._ctx.commands)
 

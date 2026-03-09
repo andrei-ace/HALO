@@ -1147,6 +1147,7 @@ class HALOApp(App):
             self._run_logger = RunLogger(_RUNS_DIR, arm_id) if runtime is not None else None
         self._last_operator_msg: str | None = None
         self._agent_queue: asyncio.Queue[str] | None = None
+        self._live_agent_event_gate_ms: int = 0  # skip LiveAgent events before this ts
         self._feed_viewer: object | None = None  # FeedViewer instance (lazy import)
         self._cmd_route_queue: object | None = None  # for command routing
         self._pending_commands: dict[str, object] = {}  # intercepted commands by id
@@ -1797,14 +1798,29 @@ class HALOApp(App):
                         await events_panel.append_event(evt)
                     except Exception:
                         pass  # DOM error must not kill the listener
-                # Forward notable events to Live Agent for narration
-                if self._live_agent is not None and evt_type_name in self._LIVE_AGENT_NARRATION_EVENTS:
+                # Read the LiveAgent event gate directly from the switchboard.
+                # cloud_switch_ts_ms is set at the *start* of switch_to(),
+                # before BACKEND_SWITCHED is even published, so stale events
+                # already queued in the EventBus FIFO are correctly suppressed.
+                if self._cognitive_stack is not None:
+                    self._live_agent_event_gate_ms = self._cognitive_stack.switchboard.cloud_switch_ts_ms
+                # Forward notable events to Live Agent for narration (skip pre-reconnect events)
+                evt_ts = getattr(evt, "ts_ms", 0) or 0
+                if (
+                    self._live_agent is not None
+                    and evt_type_name in self._LIVE_AGENT_NARRATION_EVENTS
+                    and evt_ts >= self._live_agent_event_gate_ms
+                ):
                     summary = _format_event(evt)
                     asyncio.create_task(
                         self._live_agent.send_monitor_update("event", summary)  # type: ignore[union-attr]
                     )
                 # Forward full scene description to Live Agent
-                if self._live_agent is not None and evt_type_name == "SCENE_DESCRIBED":
+                if (
+                    self._live_agent is not None
+                    and evt_type_name == "SCENE_DESCRIBED"
+                    and evt_ts >= self._live_agent_event_gate_ms
+                ):
                     evt_data = getattr(evt, "data", {}) or {}
                     scene_text = evt_data.get("scene", "")
                     if scene_text:

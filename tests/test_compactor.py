@@ -137,3 +137,23 @@ def test_message_record_defaults():
 
     r2 = MessageRecord(msg_id="y", role="model", text="summary", ts_ms=200, is_summary=True)
     assert r2.is_summary is True
+
+
+def test_message_history_truncate():
+    h = MessageHistory()
+    h.append("user", "a")
+    h.append("model", "b")
+    h.append("user", "c")
+    assert h.count() == 3
+
+    h.truncate(1)
+    assert h.count() == 1
+    assert h.get_all()[0].role == "user"
+    assert h.get_all()[0].text == "a"
+
+
+def test_message_history_truncate_to_zero():
+    h = MessageHistory()
+    h.append("user", "a")
+    h.truncate(0)
+    assert h.count() == 0

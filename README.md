@@ -63,7 +63,30 @@ graph LR
 ```bash
 # Install dependencies
 make install
+```
 
+### Ollama setup (local inference)
+
+Live-local and integration tests require [Ollama](https://ollama.com). Install it, then pull the two models:
+
+```bash
+# macOS / Linux — install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull the planner LLM and the perception VLM
+ollama pull gpt-oss:20b        # 20B planner (used by PlannerService)
+ollama pull qwen2.5vl:3b       # 3B VLM (used by TargetPerceptionService)
+```
+
+Verify Ollama is running and models are available:
+
+```bash
+ollama list   # should show both models
+```
+
+### Running
+
+```bash
 # Launch TUI in mock mode (no external services needed)
 make tui-mock
 
