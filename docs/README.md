@@ -166,7 +166,7 @@ Uses the generic FSM engine to execute skills defined as Mermaid diagrams. Key e
 
 Dual-mode: ACT (chunk_fn/push_fn) or Sim (start_pick_fn/sim_phase_fn). In sim mode, `sync_phase()` performs forward-only transitions based on SimServer telemetry.
 
-`held_object_handle` in the state store tracks what's in the gripper after a successful pick. The planner prompt enforces: if held_object_handle is set, never start another PICK.
+`held_object_handle` in the state store tracks what's in the gripper after a successful pick. If the planner starts a PICK for an object that's already held, `SelectGraspHandler` detects this and succeeds immediately — the skill skips to DONE without opening the gripper.
 
 ### ControlService
 

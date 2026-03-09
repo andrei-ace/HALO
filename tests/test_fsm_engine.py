@@ -232,3 +232,39 @@ def test_reacquire_failed_guard():
     assert old == PhaseId.MOVE_PREGRASP
     assert run.current_node == "DONE"
     assert run.failure_code == SkillFailureCode.PERCEPTION_LOST
+
+
+def test_already_held_guard_skips_to_done():
+    """If the target object is already held, PICK should succeed immediately."""
+    e = _pick_engine()
+    run = _started_run(e)
+    assert run.current_node == "SELECT_GRASP"
+
+    # First advance with held_object_handle matching target
+    old = e.advance(run, T0 + 1, _target(), _perception(), _act(), held_object_handle="obj-1")
+    assert old == PhaseId.SELECT_GRASP
+    assert run.current_node == "DONE"
+    assert run.outcome == SkillOutcomeState.SUCCESS
+    assert run.failure_code is None
+
+
+def test_already_held_guard_ignores_different_object():
+    """If a different object is held, PICK should proceed normally."""
+    e = _pick_engine()
+    run = _started_run(e)
+
+    # Holding a different object — guard should not fire
+    old = e.advance(run, T0 + 1, _target(), _perception(), _act(), held_object_handle="other-obj")
+    # Normal SELECT_GRASP → PLAN_APPROACH transition (tracking is ok)
+    assert old == PhaseId.SELECT_GRASP
+    assert run.current_node == "PLAN_APPROACH"
+
+
+def test_already_held_guard_ignores_none():
+    """If nothing is held, PICK should proceed normally."""
+    e = _pick_engine()
+    run = _started_run(e)
+
+    old = e.advance(run, T0 + 1, _target(), _perception(), _act(), held_object_handle=None)
+    assert old == PhaseId.SELECT_GRASP
+    assert run.current_node == "PLAN_APPROACH"

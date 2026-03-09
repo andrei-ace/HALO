@@ -335,6 +335,7 @@ stateDiagram-v2
     [*] --> IDLE
     IDLE --> SELECT_GRASP
     SELECT_GRASP --> PLAN_APPROACH
+    SELECT_GRASP --> DONE : already held
     PLAN_APPROACH --> MOVE_PREGRASP
 
     MOVE_PREGRASP --> VISUAL_ALIGN : position reached
@@ -353,6 +354,8 @@ stateDiagram-v2
 ```
 
 `CLOSE_GRIPPER` is triggered deterministically when distance stays below threshold for `grasp_persistence_ms`. The planner never commands gripper actions directly.
+
+**Already-held shortcut:** If the target object is already in the gripper (`held_object_handle == target_handle`), `SelectGraspHandler` succeeds immediately on the first tick — the skill skips straight to DONE without opening the gripper.
 
 ## Perception Pipeline
 

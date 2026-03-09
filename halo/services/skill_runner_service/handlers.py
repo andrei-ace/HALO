@@ -125,6 +125,8 @@ def _check_target_loss(ctx: StateContext) -> HandlerResult | None:
 
 class SelectGraspHandler:
     def evaluate(self, ctx: StateContext) -> HandlerResult:
+        if ctx.held_object_handle and ctx.held_object_handle == ctx.target_handle:
+            return HandlerResult.done(trigger="already_held")
         if ctx.elapsed_ms >= ctx.config.select_grasp_timeout_ms:
             return HandlerResult.fail(SkillFailureCode.PERCEPTION_LOST, trigger="timeout")
         if ctx.perception.tracking_status != TrackingStatus.TRACKING:

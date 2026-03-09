@@ -77,7 +77,7 @@ Recovery: TRANSIT_PREPLACE/DESCEND_PLACE → RECOVER_RETRY_APPROACH → TRANSIT_
 
 | Handler | Phase | Logic |
 |---------|-------|-------|
-| `SelectGraspHandler` | SELECT_GRASP | Waits for `TRACKING` + correct handle; timeout → `PERCEPTION_LOST` |
+| `SelectGraspHandler` | SELECT_GRASP | Already held → DONE (success); waits for `TRACKING` + correct handle; timeout → `PERCEPTION_LOST` |
 | `PlanApproachHandler` | PLAN_APPROACH | Pass-through (v0); timeout → `NO_PROGRESS` |
 | `MovePregraspHandler` | MOVE_PREGRASP | Distance < `approach_align_threshold_m` → VISUAL_ALIGN; target loss → recovery |
 | `VisualAlignHandler` | VISUAL_ALIGN | Distance < `execute_approach_threshold_m` → EXECUTE_APPROACH; target loss → recovery |

@@ -1,6 +1,7 @@
 stateDiagram-v2
     [*] --> SELECT_GRASP
     SELECT_GRASP --> PLAN_APPROACH : tracking_ok
+    SELECT_GRASP --> DONE : already_held
     SELECT_GRASP --> DONE : timeout
     PLAN_APPROACH --> MOVE_PREGRASP : pass_through
     MOVE_PREGRASP --> VISUAL_ALIGN : close_enough
