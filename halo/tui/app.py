@@ -724,11 +724,19 @@ class AudioPanel(Container):
     ) -> None:
         mic_text = Text()
         mic_text.append("Mic: ", style="bold white")
-        mic_text.append(mic_status, style="bright_green" if "Listening" in mic_status else "#9e9e9e")
-        if mic_status == "Listening":
-            bars = int(mic_level * 20)
+        if "Speaking" in mic_status:
+            mic_text.append(mic_status, style="bold bright_yellow")
+        elif "Listening" in mic_status:
+            mic_text.append(mic_status, style="bright_green")
+        else:
+            mic_text.append(mic_status, style="#9e9e9e")
+        if mic_status in ("Listening", "Speaking"):
+            # Perceptual boost: power curve makes normal speech visible on VU bars
+            boosted = min(mic_level**0.4 * 1.2, 1.0)
+            bars = int(boosted * 20)
+            vu_style = "bright_yellow" if "Speaking" in mic_status else "bright_green"
             mic_text.append("  ")
-            mic_text.append("█" * bars, style="bright_green")
+            mic_text.append("█" * bars, style=vu_style)
             mic_text.append("░" * (20 - bars), style="#3a4060")
         self.query_one("#audio-mic", Static).update(mic_text)
 
@@ -741,7 +749,8 @@ class AudioPanel(Container):
         else:
             spk_text.append(speaker_status, style="#9e9e9e")
         if speaker_level > 0.001:
-            bars = int(speaker_level * 20)
+            boosted_spk = min(speaker_level**0.4 * 1.2, 1.0)
+            bars = int(boosted_spk * 20)
             spk_text.append("  ")
             spk_text.append("█" * bars, style="#66bb6a")
             spk_text.append("░" * (20 - bars), style="#3a4060")
@@ -1535,7 +1544,12 @@ class HALOApp(App):
             if not client_state.connected:
                 mic_status = "Disconnected"
             elif capture is not None:
-                mic_status = "Muted" if capture.muted else "Listening"
+                if capture.muted:
+                    mic_status = "Muted"
+                elif capture.state.input_level > 0.01:
+                    mic_status = "Speaking"
+                else:
+                    mic_status = "Listening"
             else:
                 mic_status = "Text-only"
 
