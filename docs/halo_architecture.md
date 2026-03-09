@@ -20,26 +20,28 @@ An operator can interact with the system through voice and text via a **Live Age
 
 ## System Architecture
 
-Five services with strict role separation, coordinated through a shared runtime:
-
-| Service | Rate | Owns |
-|---|---|---|
-| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM via Ollama or Gemini. |
-| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence, failure codes. |
-| **SkillRunnerService** | 10-20 Hz | Skill FSMs, phase transitions, ACT chunk buffering, dual-mode (ACT + sim). |
-| **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping. |
-| **SafetyGuard / ReflexLayer** | Hard real-time | Delta limits, hint freshness gating, immediate overrides. |
-
-The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It exposes two APIs: `get_latest_runtime_snapshot(arm_id)` for the planner to read state, and `submit_command(cmd)` for the planner to issue actions.
-
 ```mermaid
 graph LR
     subgraph Interaction["Operator Interaction"]
         Op["Operator"] <-.->|voice / text| LA["Live Agent<br/>(Gemini Live API)"]
     end
 
+    subgraph Cloud["Cloud Backend"]
+        LA <-->|"WebSocket<br/>(proxy tools)"| CS_SVC["Cloud Service<br/>(Cloud Run)"]
+        CS_SVC -->|"Gemini LLM + VLM"| CS_SVC
+    end
+
+    subgraph Cognitive["Cognitive Layer"]
+        SB["Switchboard<br/>(failover / failback)"]
+        LOCAL["Local Backend<br/>(Ollama)"]
+        SB -->|active| LOCAL
+        SB -.->|standby| CS_SVC
+        LM["LeaseManager<br/>(epoch + token)"] --> SB
+    end
+
     subgraph Decision["Decision Layer"]
-        LA -->|intents| PS["PlannerService<br/>(LLM)"]
+        SB -->|"decide / vlm_scene"| PS["PlannerService<br/>(LLM)"]
+        LA -->|intents| PS
         PS <-->|"commands / snapshots"| CR["CommandRouter"]
         CR <-->|"route / ack"| SS["RuntimeStateStore"]
         SS -->|urgent events| EB["EventBus"]
@@ -52,146 +54,24 @@ graph LR
 
     subgraph Execution["Execution Layer"]
         SS -->|read hints| SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
-        SRS -->|action_chunks| CS["ControlService<br/>(50-100 Hz)"]
-        SG["SafetyGuard<br/>(Reflex Layer)"] -->|reflex override| CS
+        SRS -->|action_chunks| CTRL["ControlService<br/>(50-100 Hz)"]
+        SG["SafetyGuard<br/>(Reflex Layer)"] -->|reflex override| CTRL
         SG -->|reflex events| EB
-        CS -->|clamped actions| Robot["Robot / Sim"]
+        CTRL -->|clamped actions| Robot["Robot / Sim"]
     end
 ```
 
-## Dataflows
+Five services with strict role separation, coordinated through a shared runtime:
 
-The system has two independent paths that never block each other.
+| Service | Rate | Owns |
+|---|---|---|
+| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM via Ollama or Gemini. |
+| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence, failure codes. |
+| **SkillRunnerService** | 10-20 Hz | Skill FSMs, phase transitions, ACT chunk buffering, dual-mode (ACT + sim). |
+| **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping. |
+| **SafetyGuard / ReflexLayer** | Hard real-time | Delta limits, hint freshness gating, immediate overrides. |
 
-### Control Path (machine-to-machine, no LLM)
-
-Numeric control hints flow directly between services. The SkillRunner reads target hints from the RuntimeStateStore — they never pass through the planner.
-
-```mermaid
-flowchart LR
-    CAM["Cameras + RobotState"] --> TPS["TargetPerception<br/>Service"]
-    TPS -->|"target_hint_vec<br/>(robot frame + EE deltas)"| SS["RuntimeState<br/>Store"]
-    SS -->|"read hints directly"| SRS["SkillRunner<br/>Service"]
-    SRS -->|"ACT inference<br/>(10-20 Hz)"| CS["ControlService<br/>(50-100 Hz)"]
-    CS -->|"clamped deltas → IK/OSC"| R["Robot"]
-```
-
-### Decision Path (LLM, low frequency)
-
-The planner reads the latest compact snapshot, reasons about it, and issues async commands. Results appear in subsequent snapshots and events.
-
-```mermaid
-flowchart LR
-    SS["RuntimeState<br/>Store"] -->|"get_latest_runtime_snapshot()"| PS["PlannerService<br/>(LLM)"]
-    PS -->|"async commands<br/>(start_skill, abort, etc.)"| CR["Command<br/>Router"]
-    CR -->|"acks + state updates"| SS
-    CR -->|"events"| EB["EventBus"]
-    EB -->|"urgent events"| PS
-```
-
-## Skills and FSM Engine
-
-Skills are defined as **Mermaid stateDiagram-v2** files in `configs/skills/`. A generic FSM engine parses these diagrams into executable state machines with handler-based execution. This means skill topology is authored visually and the runtime engine is skill-agnostic.
-
-Three skills are implemented: **PICK**, **PLACE**, and **TRACK**. The SkillRunnerService operates in two modes:
-- **ACT mode**: uses chunk inference + ControlService for end-effector delta control
-- **Sim mode**: triggers autonomous trajectories on the MuJoCo SimServer and monitors progress via telemetry
-
-The planner has three tools: `start_skill`, `abort_skill`, and `describe_scene`. It starts and monitors skills but never times micro-actions like "close gripper now".
-
-### Pick Skill FSM
-
-```mermaid
-stateDiagram-v2
-    [*] --> IDLE
-    IDLE --> SELECT_GRASP
-    SELECT_GRASP --> PLAN_APPROACH
-    PLAN_APPROACH --> MOVE_PREGRASP
-
-    MOVE_PREGRASP --> VISUAL_ALIGN : position reached
-    MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : timeout
-
-    VISUAL_ALIGN --> EXECUTE_APPROACH : aligned
-    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance held for persistence_ms
-    CLOSE_GRIPPER --> VERIFY_GRASP : dwell complete
-    VERIFY_GRASP --> LIFT : grasp confirmed
-    VERIFY_GRASP --> RECOVER_REGRASP : grasp failed
-    LIFT --> DONE : lift complete
-
-    RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry
-    RECOVER_REGRASP --> MOVE_PREGRASP : retry
-    DONE --> [*]
-```
-
-`CLOSE_GRIPPER` is triggered deterministically when distance stays below threshold for `grasp_persistence_ms`. The planner never commands gripper actions directly.
-
-## MuJoCo Simulation
-
-MuJoCo is the primary development and validation environment for HALO. It provides a physics-accurate SO-101 arm (5-DOF + 1-DOF gripper) with two cameras (scene 1280x720, wrist 640x480), contact dynamics tuned for reliable grasping, and an autonomous sim server that runs the full pick-and-place pipeline without human teleoperation.
-
-The sim is used for rapid iteration on the entire stack — from trajectory planning through FSM execution to planner integration — before moving to real hardware. The HALO runtime connects to the sim server over ZMQ and treats it as a real robot: same command protocol, same telemetry stream, same skill lifecycle.
-
-### Teacher Model and Trajectory Planning
-
-Instead of human teleoperation, HALO uses an **analytic teacher** to generate expert demonstrations for training an ACT (Action Chunking Transformer) imitation learning policy. The teacher pre-computes a full trajectory on the first step, then samples actions in real time at the control rate:
-
-```mermaid
-flowchart TB
-    GP["Grasp Planner<br/>64 candidates<br/>geometric filter + IK scoring"] --> KP["Keyframe Planner<br/>5 SE(3) keyframes"]
-    KP --> WG["Waypoint Generator<br/>IK per keyframe"]
-    WG --> TJ["Trajectory<br/>jerk-limited ruckig"]
-    TJ --> PT["Teacher step()<br/>→ action, phase_id, done"]
-```
-
-**Grasp planner**: enumerates 64 candidates across 4 cube side faces, filters by geometric feasibility (pregrasp above table, no gripper-body collision), scores by a weighted combination of IK position error, joint margin, orientation error, manipulability, and tilt penalty. Falls back to expanded search with relaxed tolerances if no valid grasp is found.
-
-**Trajectory planning**: converts scored grasps into SE(3) keyframes, solves IK at each keyframe with yaw-retry (0, 90, -90, 180 degrees), then generates jerk-limited ruckig profiles with per-joint velocity/acceleration/jerk limits. All segments start and end at rest. Clearance validation rejects trajectories that come too close to the table.
-
-**Teacher phase sequence**: `IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation. A place teacher handles `SELECT_PLACE → TRANSIT_PREPLACE → DESCEND_PLACE → OPEN → RETREAT → DONE`.
-
-### Episode Generation and Dataset
-
-Teacher demonstrations are recorded as HDF5 episodes with phase-labeled timesteps:
-
-```
-ep_000000.hdf5
-├── obs/
-│   ├── rgb_scene      (T, 720, 1280, 3)    scene camera
-│   ├── rgb_wrist      (T, 480, 640, 3)     wrist camera
-│   ├── joint_pos      (T, 6)               actuated joint positions
-│   ├── ee_pose        (T, 7)               end-effector pose (xyz + quat)
-│   ├── gripper        (T,)                 gripper joint angle
-│   ├── phase_id       (T,) int32           FSM phase label per timestep
-│   ├── object_pose    (T, 7)               ground-truth object pose
-│   └── ...
-├── action             (T, 6)               joint-position targets
-└── attrs: seed, control_freq=20, robot="SO101", success
-```
-
-Episodes are generated with `make generate-episodes` (configurable: `EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0`). Each run: reset with seeded randomization → 5 s physics stabilization → teacher loop → write HDF5 → verify lift success (cube Z must rise >= 5 mm). Pick-and-place episodes chain both skills in sequence.
-
-### From Teacher Demos to ACT
-
-The dataset is designed to train a skill-conditioned **ACT** (Action Chunking Transformer) policy:
-
-1. **Generate** 10k-50k clean teacher episodes (100% success rate with current tuning)
-2. **Train** skill-conditioned ACT: input `(wrist_rgb, proprio, phase_token)` → output `chunk_len x action_dim`
-3. **Evaluate** closed-loop: FSM orchestrator + ACT-predicted actions replace teacher actions
-4. **Scale** with domain randomization (lighting, textures, object placement)
-5. **Transfer** to real hardware with identical dataset schema
-
-The action space is intentionally different between sim teacher (6D joint-position targets) and HALO runtime ACT (7D EE-frame deltas). Conversion is handled by the `apply_fn` factory. Dataset schema stays identical between sim and real — same observation keys, same chunking, same phase labels.
-
-### SimServer Architecture
-
-The SimServer runs physics autonomously at 20 Hz and communicates with the HALO runtime over two ZMQ channels:
-
-| Channel | ZMQ Pattern | Port | Direction | Purpose |
-|---------|-------------|------|-----------|---------|
-| TelemetryStream | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
-| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, start_place, configure, shutdown |
-
-The server is single-threaded (macOS OpenGL constraint). On `start_pick(target_body)`, it pre-computes the full trajectory and begins autonomous execution. The HALO runtime monitors progress via telemetry — phase IDs, joint state, camera frames — and the SkillRunnerService syncs its FSM via forward-only `sync_phase()` transitions. No env resets between skills; the arm stays at its final position and sim runs continuously.
+The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It exposes two APIs: `get_latest_runtime_snapshot(arm_id)` for the planner to read state, and `submit_command(cmd)` for the planner to issue actions.
 
 ## Live Agent
 
@@ -377,6 +257,86 @@ The cloud service deploys to Cloud Run via Terraform. The infrastructure include
 
 See `cloud_service/README.md` for the service and `infra/README.md` for Terraform configuration.
 
+## Dataflows
+
+The system has two independent paths that never block each other.
+
+### Decision Path (LLM, low frequency)
+
+The planner reads the latest compact snapshot, reasons about it, and issues async commands. Results appear in subsequent snapshots and events. The Live Agent can also inject commands directly — its `abort()` tool submits an abort command to the CommandRouter without going through the planner, providing an immediate operator-initiated emergency stop.
+
+```mermaid
+flowchart LR
+    SS["RuntimeState<br/>Store"] -->|"get_latest_runtime_snapshot()"| PS["PlannerService<br/>(LLM)"]
+    PS -->|"async commands<br/>(start_skill, describe_scene)"| CR["Command<br/>Router"]
+    LA["Live Agent<br/>(abort tool)"] -->|"abort command"| CR
+    CR -->|"acks + state updates"| SS
+    CR -->|"events"| EB["EventBus"]
+    EB -->|"urgent events"| PS
+```
+
+### Control Path (machine-to-machine, no LLM)
+
+Numeric control hints flow directly between services. The SkillRunner reads target hints from the RuntimeStateStore — they never pass through the planner.
+
+The SkillRunnerService operates in two modes with different control paths:
+
+**Sim mode (current — MuJoCo):** The SimServer owns physics and trajectory execution. SkillRunnerService triggers a skill (`start_pick_fn`) and monitors progress via telemetry (`sim_phase_fn`). No action chunks flow through ControlService — the server writes joint targets directly.
+
+```mermaid
+flowchart LR
+    SRS["SkillRunner<br/>Service"] -->|start_pick / start_place| SIM["SimServer<br/>(20 Hz physics)"]
+    SIM -->|"telemetry<br/>(phase, joints, frames)"| SRS
+    SIM -->|"data.ctrl[:] directly"| Robot["Robot<br/>(MuJoCo)"]
+```
+
+**ACT mode (future — real hardware):** ACT inference produces action chunks, ControlService applies temporal ensembling and safety clamping, then maps to IK/OSC.
+
+```mermaid
+flowchart LR
+    CAM["Cameras + RobotState"] --> TPS["TargetPerception<br/>Service"]
+    TPS -->|target_hint_vec| SS["RuntimeState<br/>Store"]
+    SS -->|read hints| SRS["SkillRunner<br/>Service"]
+    SRS -->|"action_chunks<br/>(10-20 Hz)"| CS["ControlService<br/>(50-100 Hz)"]
+    CS -->|"clamped deltas → IK/OSC"| R["Robot"]
+```
+
+## Skills and FSM Engine
+
+Skills are defined as **Mermaid stateDiagram-v2** files in `configs/skills/`. A generic FSM engine parses these diagrams into executable state machines with handler-based execution. This means skill topology is authored visually and the runtime engine is skill-agnostic.
+
+Three skills are implemented: **PICK**, **PLACE**, and **TRACK**. The SkillRunnerService operates in two modes:
+- **ACT mode**: uses chunk inference + ControlService for end-effector delta control
+- **Sim mode**: triggers autonomous trajectories on the MuJoCo SimServer and monitors progress via telemetry
+
+The planner has three tools: `start_skill`, `abort_skill`, and `describe_scene`. It starts and monitors skills but never times micro-actions like "close gripper now".
+
+### Pick Skill FSM
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> SELECT_GRASP
+    SELECT_GRASP --> PLAN_APPROACH
+    PLAN_APPROACH --> MOVE_PREGRASP
+
+    MOVE_PREGRASP --> VISUAL_ALIGN : position reached
+    MOVE_PREGRASP --> RECOVER_RETRY_APPROACH : timeout
+
+    VISUAL_ALIGN --> EXECUTE_APPROACH : aligned
+    EXECUTE_APPROACH --> CLOSE_GRIPPER : distance held for persistence_ms
+    CLOSE_GRIPPER --> VERIFY_GRASP : dwell complete
+    VERIFY_GRASP --> LIFT : grasp confirmed
+    VERIFY_GRASP --> RECOVER_REGRASP : grasp failed
+    LIFT --> DONE : lift complete
+
+    RECOVER_RETRY_APPROACH --> MOVE_PREGRASP : retry
+    RECOVER_REGRASP --> MOVE_PREGRASP : retry
+    DONE --> [*]
+```
+
+`CLOSE_GRIPPER` is triggered deterministically when distance stays below threshold for `grasp_persistence_ms`. The planner never commands gripper actions directly.
+
 ## Perception Pipeline
 
 Two loops with very different timing characteristics:
@@ -418,6 +378,74 @@ The **async VLM loop** handles initial acquisition, reacquisition after tracking
 - Coarse collision checks
 
 The planner handles recovery only after the reflex has stabilized the robot. Safety events are surfaced in the snapshot and event stream.
+
+## MuJoCo Simulation
+
+MuJoCo is the primary development and validation environment for HALO. It provides a physics-accurate SO-101 arm (5-DOF + 1-DOF gripper) with two cameras (scene 1280x720, wrist 640x480), contact dynamics tuned for reliable grasping, and an autonomous sim server that runs the full pick-and-place pipeline without human teleoperation.
+
+The sim is used for rapid iteration on the entire stack — from trajectory planning through FSM execution to planner integration — before moving to real hardware. The HALO runtime connects to the sim server over ZMQ and treats it as a real robot: same command protocol, same telemetry stream, same skill lifecycle.
+
+### Teacher Model and Trajectory Planning
+
+Instead of human teleoperation, HALO uses an **analytic teacher** to generate expert demonstrations for training an ACT (Action Chunking Transformer) imitation learning policy. The teacher pre-computes a full trajectory on the first step, then samples actions in real time at the control rate:
+
+```mermaid
+flowchart TB
+    GP["Grasp Planner<br/>64 candidates<br/>geometric filter + IK scoring"] --> KP["Keyframe Planner<br/>5 SE(3) keyframes"]
+    KP --> WG["Waypoint Generator<br/>IK per keyframe"]
+    WG --> TJ["Trajectory<br/>jerk-limited ruckig"]
+    TJ --> PT["Teacher step()<br/>→ action, phase_id, done"]
+```
+
+**Grasp planner**: enumerates 64 candidates across 4 cube side faces, filters by geometric feasibility (pregrasp above table, no gripper-body collision), scores by a weighted combination of IK position error, joint margin, orientation error, manipulability, and tilt penalty. Falls back to expanded search with relaxed tolerances if no valid grasp is found.
+
+**Trajectory planning**: converts scored grasps into SE(3) keyframes, solves IK at each keyframe with yaw-retry (0, 90, -90, 180 degrees), then generates jerk-limited ruckig profiles with per-joint velocity/acceleration/jerk limits. All segments start and end at rest. Clearance validation rejects trajectories that come too close to the table.
+
+**Teacher phase sequence**: `IDLE → MOVE_PREGRASP → EXECUTE_APPROACH → CLOSE_GRIPPER → LIFT → DONE`. Planning-only phases (SELECT_GRASP, PLAN_APPROACH, VISUAL_ALIGN) are folded into the initial computation. A place teacher handles `SELECT_PLACE → TRANSIT_PREPLACE → DESCEND_PLACE → OPEN → RETREAT → DONE`.
+
+### Episode Generation and Dataset
+
+Teacher demonstrations are recorded as HDF5 episodes with phase-labeled timesteps:
+
+```
+ep_000000.hdf5
+├── obs/
+│   ├── rgb_scene      (T, 720, 1280, 3)    scene camera
+│   ├── rgb_wrist      (T, 480, 640, 3)     wrist camera
+│   ├── joint_pos      (T, 6)               actuated joint positions
+│   ├── ee_pose        (T, 7)               end-effector pose (xyz + quat)
+│   ├── gripper        (T,)                 gripper joint angle
+│   ├── phase_id       (T,) int32           FSM phase label per timestep
+│   ├── object_pose    (T, 7)               ground-truth object pose
+│   └── ...
+├── action             (T, 6)               joint-position targets
+└── attrs: seed, control_freq=20, robot="SO101", success
+```
+
+Episodes are generated with `make generate-episodes` (configurable: `EPISODES=10 EPISODE_DIR=episodes SEED_BASE=0`). Each run: reset with seeded randomization → 5 s physics stabilization → teacher loop → write HDF5 → verify lift success (cube Z must rise >= 5 mm). Pick-and-place episodes chain both skills in sequence.
+
+### From Teacher Demos to ACT
+
+The dataset is designed to train a skill-conditioned **ACT** (Action Chunking Transformer) policy:
+
+1. **Generate** 10k-50k clean teacher episodes (100% success rate with current tuning)
+2. **Train** skill-conditioned ACT: input `(wrist_rgb, proprio, phase_token)` → output `chunk_len x action_dim`
+3. **Evaluate** closed-loop: FSM orchestrator + ACT-predicted actions replace teacher actions
+4. **Scale** with domain randomization (lighting, textures, object placement)
+5. **Transfer** to real hardware with identical dataset schema
+
+The action space is intentionally different between sim teacher (6D joint-position targets) and HALO runtime ACT (7D EE-frame deltas). Conversion is handled by the `apply_fn` factory. Dataset schema stays identical between sim and real — same observation keys, same chunking, same phase labels.
+
+### SimServer Architecture
+
+The SimServer runs physics autonomously at 20 Hz and communicates with the HALO runtime over two ZMQ channels:
+
+| Channel | ZMQ Pattern | Port | Direction | Purpose |
+|---------|-------------|------|-----------|---------|
+| TelemetryStream | PUB/SUB | 5560 | Sim → HALO | Frames + state @ 10 Hz |
+| CommandRPC | REQ/REP | 5561 | HALO → Sim | step, reset, start_pick, start_place, configure, shutdown |
+
+The server is single-threaded (macOS OpenGL constraint). On `start_pick(target_body)`, it pre-computes the full trajectory and begins autonomous execution. The HALO runtime monitors progress via telemetry — phase IDs, joint state, camera frames — and the SkillRunnerService syncs its FSM via forward-only `sync_phase()` transitions. No env resets between skills; the arm stays at its final position and sim runs continuously.
 
 ## Timing Budgets
 

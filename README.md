@@ -28,18 +28,21 @@ graph LR
         Op["Operator"] <-.->|voice / text| LA["Live Agent<br/>(Gemini Live API)"]
     end
 
-    subgraph Planning
-        LA -->|intents| PS["PlannerService<br/>(LLM)"]
-        PS <-->|commands / events| RT["HALORuntime<br/>(StateStore + EventBus<br/>+ CommandRouter)"]
+    subgraph Cognitive["Cognitive Layer"]
+        LA <-->|"WebSocket<br/>(proxy tools)"| CLOUD["Cloud Backend<br/>(Gemini via Cloud Run)"]
+        SB["Switchboard"] -->|active| LOCAL["Local Backend<br/>(Ollama)"]
+        SB -.->|standby| CLOUD
     end
 
-    subgraph Perception
-        TPS["TargetPerceptionService<br/>(VLM + Tracker)"] -->|target_hint_vec| RT
+    subgraph Planning
+        SB -->|"decide / vlm_scene"| PS["PlannerService"]
+        LA -->|intents| PS
+        PS <-->|commands / events| RT["HALORuntime<br/>(StateStore + EventBus<br/>+ CommandRouter)"]
     end
 
     subgraph Execution
         RT -->|read hints| SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
-        SRS -->|action_chunks| CS["ControlService<br/>(50-100 Hz)"]
+        SRS -->|action_chunks| CS["ControlService"]
         SG["SafetyGuard"] -->|reflex override| CS
         CS -->|clamped actions| Robot["Robot / Sim"]
     end
@@ -58,9 +61,12 @@ make tui-mock
 make run-sim           # terminal 1: MuJoCo sim server
 make tui-live          # terminal 2: TUI with Ollama planner + VLM
 
-# Cloud mode (requires HALO_CLOUD_URL or local cloud service)
-make run-cloud-service          # terminal 1: cloud service (needs GOOGLE_API_KEY)
+# Cloud mode — local cloud service (requires GOOGLE_API_KEY)
+make run-cloud-service          # terminal 1: cloud service
 make tui-live-cloud-local       # terminal 2: TUI against local cloud service
+
+# Cloud mode — deployed Cloud Run (reads URL + SA from terraform outputs)
+make tui-live-cloud              # TUI against deployed cloud service
 ```
 
 ## GCP Deployment

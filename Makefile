@@ -39,11 +39,11 @@ tui-live:
 		--base-url $(OLLAMA_URL) \
 		--source mujoco
 
-HALO_CLOUD_URL ?= http://localhost:8080
-
-SA_EMAIL ?=
+HALO_CLOUD_URL ?= $(shell cd infra && terraform output -raw service_url 2>/dev/null)
+SA_EMAIL       ?= $(shell cd infra && terraform output -raw invoker_sa_email 2>/dev/null)
 
 tui-live-cloud:
+	@if [ -z "$(HALO_CLOUD_URL)" ]; then echo "Error: HALO_CLOUD_URL is empty. Set it or run 'terraform apply' in infra/."; exit 1; fi
 	uv run python -m halo.tui.app --live \
 		--arm $(ARM_ID) \
 		--cloud-url $(HALO_CLOUD_URL) \
