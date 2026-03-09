@@ -32,3 +32,13 @@ def test_prompt_includes_scene_only_regression_example() -> None:
     assert "green_cube_01" in prompt
     assert "beige_tray_01" in prompt
     assert "Scene received, awaiting operator instruction." in prompt
+
+
+def test_prompt_says_operator_requested_abort_must_not_resume_task() -> None:
+    prompt = _prompt_text()
+
+    assert "Operator-requested abort clears authorization." in prompt
+    assert "If a skill or task was aborted because the operator asked to stop" in prompt
+    assert "do NOT retry or resume that action" in prompt
+    assert "After an operator-requested abort, stay stopped." in prompt
+    assert "Do not re-queue it from follow-up events, retries, or prior task context" in prompt
