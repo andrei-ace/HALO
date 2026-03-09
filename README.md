@@ -30,6 +30,7 @@ graph LR
 
     subgraph Cognitive["Cognitive Layer"]
         LA <-->|"WebSocket<br/>(proxy tools)"| CLOUD["Cloud Backend<br/>(Gemini via Cloud Run)"]
+        CLOUD <-->|sessions| FS[("Firestore")]
         SB["Switchboard"] -->|active| LOCAL["Local Backend<br/>(Ollama)"]
         SB -.->|standby| CLOUD
     end

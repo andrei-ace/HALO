@@ -29,6 +29,7 @@ graph LR
     subgraph Cloud["Cloud Backend"]
         LA <-->|"WebSocket<br/>(proxy tools)"| CS_SVC["Cloud Service<br/>(Cloud Run)"]
         CS_SVC -->|"Gemini LLM + VLM"| CS_SVC
+        CS_SVC <-->|sessions| FS[("Firestore")]
     end
 
     subgraph Cognitive["Cognitive Layer"]
@@ -126,9 +127,9 @@ This pattern ensures tool actions are always based on the latest robot state, el
 | `describe_scene(reason)` | TUI: submits DescribeSceneCommand to runtime | Trigger VLM scene analysis |
 | `submit_user_intent(intent)` | TUI: enqueues intent to planner's operator message queue | Forward operator instruction to planner |
 | `abort()` | TUI: submits AbortSkillCommand to runtime | Emergency stop |
-| `monitor()` | Cloud: ADK-executed async generator | Receive streaming robot state updates |
+| `monitor()` | Cloud: ADK [streaming tool](https://google.github.io/adk-docs/streaming/streaming-tools/) (async generator) | Receive streaming robot state updates |
 
-The `monitor()` tool is the only tool executed directly by ADK on the cloud side. It yields a continuous stream of robot state updates — events (SKILL_STARTED, SKILL_FAILED, SAFETY_REFLEX_TRIGGERED), planner decisions, and scene descriptions — enabling Gemini to narrate the robot's progress in real time without polling.
+The `monitor()` tool is the only tool executed directly by ADK on the cloud side. It is implemented as an ADK [streaming tool](https://google.github.io/adk-docs/streaming/streaming-tools/) — an async generator that continuously yields robot state updates (events, planner decisions, scene descriptions) back to Gemini, enabling it to narrate the robot's progress in real time without polling.
 
 ### Voice Interaction Flow
 
@@ -171,10 +172,10 @@ sequenceDiagram
 
 The Gemini Live API supports barge-in through Automatic Activity Detection (AAD). When the operator starts speaking while the agent is responding:
 
-1. Gemini signals `event.interrupted = True`
-2. The cloud service sends an `interrupt` message over WebSocket
+1. Gemini fires an ADK `LlmResponse` event with `interrupted=True`
+2. The cloud service detects the interrupted event and sends an `interrupt` message over WebSocket
 3. The TUI calls `AudioPlayback.clear()` — the speaker stops immediately
-4. Gemini processes the new utterance, resuming its turn with the operator's input
+4. Gemini discards its in-progress response and processes the new utterance
 
 AAD is configured with high sensitivity for both start and end of speech, 150 ms prefix padding, and 500 ms silence threshold for end-of-utterance detection.
 
