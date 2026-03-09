@@ -137,6 +137,7 @@ class PlannerAgent:
             model=model,
             instruction=system_prompt,
             tools=self._tools,
+            generate_content_config=types.GenerateContentConfig(temperature=0.2),
         )
         self._session_service = InMemorySessionService()
         self._msg_history = MessageHistory()
