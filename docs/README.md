@@ -142,13 +142,13 @@ Shared data types used across all services.
 
 ### PlannerService
 
-Event-driven LLM agent using ADK ReAct. Uses `gpt-oss:20b` (local) or Gemini 2.5 Flash (cloud) — small models that are fast enough for real-time skill orchestration. Ticks fire on urgent events (`SKILL_SUCCEEDED`, `SKILL_FAILED`, `SAFETY_REFLEX_TRIGGERED`, `PERCEPTION_FAILURE`, `SCENE_DESCRIBED`, `TARGET_ACQUIRED`, `COMMAND_REJECTED`) plus a 30 s watchdog. Ticks are serialized — `decide_fn` is awaited before the next event is processed.
+Event-driven LLM agent using ADK ReAct. Uses `gpt-oss:20b` (local) or Gemini 3.1 Flash-Lite (cloud) — small models that are fast enough for real-time skill orchestration. Ticks fire on urgent events (`SKILL_SUCCEEDED`, `SKILL_FAILED`, `SAFETY_REFLEX_TRIGGERED`, `PERCEPTION_FAILURE`, `SCENE_DESCRIBED`, `TARGET_ACQUIRED`, `COMMAND_REJECTED`) plus a 30 s watchdog. Ticks are serialized — `decide_fn` is awaited before the next event is processed.
 
 Three planner tools: `start_skill` (PICK/PLACE/TRACK), `abort_skill`, `describe_scene`. The `before_model_callback` replaces the previous snapshot in LLM context with the latest one (never appends).
 
 ### TargetPerceptionService
 
-Fast loop (10 Hz default) + async VLM reacquisition. Uses `qwen2.5vl:3b` (local) or Gemini 2.5 Flash (cloud) — a 3B-parameter VLM is sufficient for scene grounding and object detection. Accepts injected `ObserveFn` (tracker) and optional `VlmFn` (scene analysis). At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`.
+Fast loop (10 Hz default) + async VLM reacquisition. Uses `qwen2.5vl:3b` (local) or Gemini 3.1 Flash-Lite (cloud) — a 3B-parameter VLM is sufficient for scene grounding and object detection. Accepts injected `ObserveFn` (tracker) and optional `VlmFn` (scene analysis). At most one VLM task at a time; result stored as `_vlm_seed`, consumed by `tick()` when `observe_fn` returns `None`.
 
 VLM handle dedup: `dedupe_detection_handles()` renames duplicates to `{handle}_dup2`, `{handle}_dup3`. All coordinates normalised 0..1 throughout; denormalisation only at OpenCV boundaries.
 
@@ -190,7 +190,7 @@ Conversion is the responsibility of the `apply_fn` factory.
 
 **CompactionPlugin** (`compaction_plugin.py`): ADK-native event compaction callback. Detects compaction boundaries and propagates summaries to the inactive backend for concise failback context.
 
-**Backends**: `LocalCognitiveBackend` wraps PlannerAgent (ADK + LiteLLM/Ollama `gpt-oss:20b`) + Ollama VLM (`qwen2.5vl:3b`). `RemoteCognitiveBackend` is an HTTP client to Cloud Run (Gemini 2.5 Flash for both LLM and VLM). All models are deliberately small and fast — sub-second inference for real-time robotics.
+**Backends**: `LocalCognitiveBackend` wraps PlannerAgent (ADK + LiteLLM/Ollama `gpt-oss:20b`) + Ollama VLM (`qwen2.5vl:3b`). `RemoteCognitiveBackend` is an HTTP client to Cloud Run (Gemini 3.1 Flash-Lite for both LLM and VLM). All models are deliberately small and fast — sub-second inference for real-time robotics.
 
 **Live Agent**: `LivePlannerSession` manages Gemini Live API sessions. `LiveAgentClient` is the TUI-side WebSocket client with `send_tool_result()` and `set_audio_callbacks()`. `AudioCapture` (16 kHz) and `AudioPlayback` (24 kHz) via sounddevice.
 
