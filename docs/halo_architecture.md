@@ -20,47 +20,7 @@ An operator can interact with the system through voice and text via a **Live Age
 
 ## System Architecture
 
-```mermaid
-graph LR
-    subgraph Interaction["Operator Interaction"]
-        Op["Operator"] <-.->|voice / text| LA["Live Agent<br/>(Gemini Live API)"]
-    end
-
-    subgraph Cloud["Cloud Backend"]
-        LA <-->|"WebSocket<br/>(proxy tools)"| CS_SVC["Cloud Service<br/>(Cloud Run)"]
-        CS_SVC -->|"Gemini Flash<br/>(LLM + VLM)"| CS_SVC
-        CS_SVC <-->|sessions| FS[("Firestore")]
-    end
-
-    subgraph Cognitive["Cognitive Layer"]
-        SB["Switchboard<br/>(failover / failback)"]
-        LOCAL["Local Backend<br/>(Ollama)"]
-        SB -->|active| LOCAL
-        SB -.->|standby| CS_SVC
-        LM["LeaseManager<br/>(epoch + token)"] --> SB
-    end
-
-    subgraph Decision["Decision Layer"]
-        SB -->|"decide / vlm_scene"| PS["PlannerService<br/>(LLM)"]
-        LA -->|intents| PS
-        PS <-->|"commands / snapshots"| CR["CommandRouter"]
-        CR <-->|"route / ack"| SS["RuntimeStateStore"]
-        SS -->|urgent events| EB["EventBus"]
-        EB -->|wake| PS
-    end
-
-    subgraph Perception["Perception Layer"]
-        TPS["TargetPerceptionService<br/>(VLM + Tracker)"] -->|target_hint_vec| SS
-    end
-
-    subgraph Execution["Execution Layer"]
-        SS -->|read hints| SRS["SkillRunnerService<br/>(FSM + ACT/Sim)"]
-        SRS -->|action_chunks| CTRL["ControlService<br/>(50-100 Hz)"]
-        SG["SafetyGuard<br/>(Reflex Layer)"] -->|reflex override| CTRL
-        SG -->|reflex events| EB
-        CTRL -->|clamped actions| Robot["Robot / Sim"]
-    end
-```
+![HALO System Architecture](imgs/architecture.svg)
 
 ![TUI showing all runtime panels during a pick-place sequence — services, perception, joints, planner, events](imgs/tui-live-place-complete.png)
 
@@ -68,8 +28,8 @@ Five services with strict role separation, coordinated through a shared runtime:
 
 | Service | Rate | Owns |
 |---|---|---|
-| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM: `gpt-oss:20b` (local) or Gemini Flash (cloud). |
-| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence. VLM: `qwen2.5vl:3b` (local) or Gemini Flash (cloud). |
+| **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM: `gpt-oss:20b` (local) or Gemini 3.1 Flash-Lite (cloud). |
+| **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence. VLM: `qwen2.5vl:3b` (local) or Gemini 3.1 Flash-Lite (cloud). |
 | **SkillRunnerService** | 10-20 Hz | Skill FSMs, phase transitions, ACT chunk buffering, dual-mode (ACT + sim). |
 | **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping. |
 | **SafetyGuard / ReflexLayer** | Hard real-time | Delta limits, hint freshness gating, immediate overrides. |
@@ -213,15 +173,15 @@ The `LiveAgentManager` manages per-arm Live Agent sessions with idle eviction (6
 
 ## Cognitive Backend Switching
 
-HALO deliberately uses **small, fast models** rather than large frontier models. A 20B-parameter LLM handles task planning, a 3B-parameter VLM handles scene understanding, and Gemini Flash handles cloud inference and voice interaction. These models are fast enough for real-time robotics (sub-second decisions), cheap enough to run locally on consumer hardware or at minimal cloud cost, and fully capable of the structured reasoning HALO requires — skill sequencing, failure recovery, and scene grounding don't need a 400B model.
+HALO deliberately uses **small, fast models** rather than large frontier models. A 20B-parameter LLM handles task planning, a 3B-parameter VLM handles scene understanding, and Gemini 3.1 Flash-Lite handles cloud inference while Gemini 2.5 Flash handles voice interaction. These models are fast enough for real-time robotics (sub-second decisions), cheap enough to run locally on consumer hardware or at minimal cloud cost, and fully capable of the structured reasoning HALO requires — skill sequencing, failure recovery, and scene grounding don't need a 400B model.
 
 | Role | Local (Ollama) | Cloud (Gemini) |
 |---|---|---|
-| **Planner LLM** | `gpt-oss:20b` (20B params) | Gemini 2.5 Flash |
-| **Scene VLM** | `qwen2.5vl:3b` (3B params) | Gemini 2.5 Flash |
+| **Planner LLM** | `gpt-oss:20b` (20B params) | Gemini 3.1 Flash-Lite |
+| **Scene VLM** | `qwen2.5vl:3b` (3B params) | Gemini 3.1 Flash-Lite |
 | **Live Agent** | — | `gemini-2.5-flash-native-audio-preview` |
 
-The **Switchboard** transparently routes planner (LLM) and perception (VLM) calls to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini Flash via Cloud Run). Services call `switchboard.decide()` and `switchboard.vlm_scene()` as drop-in replacements, unaware of which backend is active.
+The **Switchboard** transparently routes planner (LLM) and perception (VLM) calls to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini 3.1 Flash-Lite via Cloud Run). Services call `switchboard.decide()` and `switchboard.vlm_scene()` as drop-in replacements, unaware of which backend is active.
 
 ```mermaid
 flowchart TB
@@ -234,7 +194,7 @@ flowchart TB
 
     subgraph Backends["Backends"]
         LOCAL["LocalCognitiveBackend<br/>(Ollama: gpt-oss 20B + qwen2.5vl 3B)"]
-        CLOUD["RemoteCognitiveBackend<br/>(Cloud Run → Gemini Flash)"]
+        CLOUD["RemoteCognitiveBackend<br/>(Cloud Run → Gemini 3.1 Flash-Lite)"]
     end
 
     PS -->|"decide(snapshot)"| SB
