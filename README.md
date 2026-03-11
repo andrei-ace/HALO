@@ -121,7 +121,7 @@ Each episode records joint-position trajectories, gripper commands, and observat
 
 ## GCP Deployment
 
-The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3.1 Flash-Lite** for both planner decisions and VLM scene analysis, plus `gemini-2.5-flash-native-audio-preview` for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal.
+The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3.1 Flash-Lite** for both planner decisions and VLM scene analysis, plus **Gemini 2.5 Flash Live Preview** for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal.
 
 ### Steps
 

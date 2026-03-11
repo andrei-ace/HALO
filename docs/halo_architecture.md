@@ -165,7 +165,7 @@ The `LiveAgentManager` manages per-arm Live Agent sessions with idle eviction (6
 
 | Setting | Default | Purpose |
 |---|---|---|
-| Model | `gemini-2.5-flash-native-audio-preview` | Gemini model for Live API |
+| Model | `gemini-2.5-flash-native-audio-preview-12-2025` | Gemini model for Live API |
 | Voice | `Kore` | Voice preset (also: `Aoede`) |
 | Response modalities | AUDIO + TEXT | Multimodal output |
 | Session resumption | Enabled | Transparent reconnection |
@@ -173,13 +173,13 @@ The `LiveAgentManager` manages per-arm Live Agent sessions with idle eviction (6
 
 ## Cognitive Backend Switching
 
-HALO deliberately uses **small, fast models** rather than large frontier models. A 20B-parameter LLM handles task planning, a 3B-parameter VLM handles scene understanding, and Gemini 3.1 Flash-Lite handles cloud inference while Gemini 2.5 Flash handles voice interaction. These models are fast enough for real-time robotics (sub-second decisions), cheap enough to run locally on consumer hardware or at minimal cloud cost, and fully capable of the structured reasoning HALO requires — skill sequencing, failure recovery, and scene grounding don't need a 400B model.
+HALO deliberately uses **small, fast models** rather than large frontier models. A 20B-parameter LLM handles task planning, a 3B-parameter VLM handles scene understanding, and Gemini 3.1 Flash-Lite handles cloud inference while Gemini 2.5 Flash Live Preview handles voice interaction. These models are fast enough for real-time robotics (sub-second decisions), cheap enough to run locally on consumer hardware or at minimal cloud cost, and fully capable of the structured reasoning HALO requires — skill sequencing, failure recovery, and scene grounding don't need a 400B model.
 
 | Role | Local (Ollama) | Cloud (Gemini) |
 |---|---|---|
 | **Planner LLM** | `gpt-oss:20b` (20B params) | Gemini 3.1 Flash-Lite |
 | **Scene VLM** | `qwen2.5vl:3b` (3B params) | Gemini 3.1 Flash-Lite |
-| **Live Agent** | — | `gemini-2.5-flash-native-audio-preview` |
+| **Live Agent** | — | Gemini 2.5 Flash Live Preview |
 
 The **Switchboard** transparently routes planner (LLM) and perception (VLM) calls to one of two backends — **LOCAL** (Ollama) or **CLOUD** (Gemini 3.1 Flash-Lite via Cloud Run). Services call `switchboard.decide()` and `switchboard.vlm_scene()` as drop-in replacements, unaware of which backend is active.
 
@@ -287,7 +287,7 @@ flowchart TB
 Three Gemini models serve distinct roles:
 
 - **`gemini-3.1-flash-lite-preview`** — powers both the Planner (ADK ReAct agent with `start_skill`, `abort_skill`, `describe_scene` tools) and VLM scene analysis (structured JSON output with bounding boxes and object labels). Chosen for low latency and cost efficiency.
-- **`gemini-2.5-flash-native-audio-preview`** — powers the Live Agent for bidirectional audio streaming. The TUI sends 16 kHz PCM via WebSocket; the cloud service pipes it to Gemini's native audio endpoint via ADK `run_live()` / `send_realtime()`. Audio responses stream back at 24 kHz.
+- **`gemini-2.5-flash-native-audio-preview-12-2025`** — powers the Live Agent for bidirectional audio streaming. The TUI sends 16 kHz PCM via WebSocket; the cloud service pipes it to Gemini's native audio endpoint via ADK `run_live()` / `send_realtime()`. Audio responses stream back at 24 kHz.
 - **Proxy-tool architecture** — Live Agent tools (`start_skill`, `abort_skill`, `describe_scene`) are dummy stubs on the cloud side. `before_tool_callback` intercepts calls and serializes them over WebSocket to the TUI, which executes locally with fresh runtime state and returns results. This keeps all robot control local while leveraging cloud LLM reasoning.
 
 ## Dataflows
