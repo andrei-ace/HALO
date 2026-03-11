@@ -32,11 +32,8 @@ FastAPI service that runs the HALO planner (ADK ReAct agent) and VLM (Gemini) on
    # Terminal 1: start the cloud service
    GOOGLE_API_KEY=<your-key> make run-cloud-service
 
-   # Terminal 2: start the MuJoCo sim server
-   make sim-server
-
-   # Terminal 3: connect TUI to cloud service + sim
-   make tui-live-cloud
+   # Terminal 2: connect TUI (sim server starts automatically)
+   make tui-live-cloud-local
    ```
 
 5. **Test commands:**

@@ -65,17 +65,13 @@ ollama list   # should show both models
 
 ### Running
 
-#### Mock mode (no external services needed)
+#### Cloud mode — deployed Cloud Run (recommended)
 
 ```bash
-make tui-mock
+make tui-live-cloud    # reads URL + SA from terraform outputs
 ```
 
-#### Local mode (Ollama + MuJoCo sim)
-
-```bash
-make tui-live          # starts sim server automatically, connects to local Ollama
-```
+See [GCP Deployment](#gcp-deployment) below for setup.
 
 #### Cloud mode — local development (2 terminals)
 
@@ -84,13 +80,84 @@ GOOGLE_API_KEY=<key> make run-cloud-service   # terminal 1: cloud service (Gemin
 make tui-live-cloud-local                      # terminal 2: TUI (sim server auto-started)
 ```
 
-#### Cloud mode — deployed Cloud Run
+#### Local mode (Ollama + MuJoCo sim)
 
 ```bash
-make tui-live-cloud    # reads URL + SA from terraform outputs
+make tui-live          # starts sim server automatically, connects to local Ollama
+```
+
+#### Mock mode (no external services needed)
+
+```bash
+make tui-mock
 ```
 
 The MuJoCo sim server is spawned automatically by the TUI in managed mode (`--source mujoco`). Use `make sim-server` only if you need to run it standalone.
+
+## GCP Deployment
+
+The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3.1 Flash-Lite** for both planner decisions and VLM scene analysis, plus **Gemini 2.5 Flash Live Preview** for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal.
+
+### Prerequisites
+
+- GCP account with billing enabled, [gcloud CLI](https://cloud.google.com/sdk/docs/install), [Terraform >= 1.5](https://developer.hashicorp.com/terraform/install)
+- A [Gemini API key](https://aistudio.google.com/apikey)
+- GCP permissions: **Owner**, or at minimum `serviceUsageAdmin`, `iam.serviceAccountAdmin`, `artifactregistry.admin`, `secretmanager.admin`, `run.admin`, `datastore.owner`
+
+Authenticate and enable the bootstrap API (required before Terraform can manage the rest):
+
+```bash
+gcloud auth application-default login
+
+PROJECT_ID=your-project-id
+gcloud services enable serviceusage.googleapis.com    --project=$PROJECT_ID
+gcloud services enable artifactregistry.googleapis.com --project=$PROJECT_ID
+gcloud services enable run.googleapis.com              --project=$PROJECT_ID
+gcloud services enable secretmanager.googleapis.com    --project=$PROJECT_ID
+gcloud services enable firestore.googleapis.com        --project=$PROJECT_ID
+gcloud services enable iam.googleapis.com              --project=$PROJECT_ID
+```
+
+### Deploy
+
+```bash
+# 1. Configure Terraform variables
+cp infra/terraform.tfvars.example infra/terraform.tfvars
+# Edit terraform.tfvars — set project_id (and optionally invoker_impersonators)
+
+# 2. Bootstrap infrastructure (registry, secrets, SAs, Firestore — no Cloud Run yet)
+make tf-init
+make tf-bootstrap
+
+# 3. Configure Docker auth for Artifact Registry (one-time)
+gcloud auth configure-docker $(cd infra && terraform output -raw artifact_registry | cut -d/ -f1)
+
+# 4. Add your Gemini API key to Secret Manager (one-time)
+echo -n "YOUR_GEMINI_KEY" | gcloud secrets versions add google-api-key \
+  --project=$(cd infra && terraform output -raw project_id) --data-file=-
+
+# 5. Build image, push to registry, deploy Cloud Run service
+make deploy-cloud
+```
+
+Subsequent deploys only need `make deploy-cloud`. To rotate the API key, repeat step 4.
+
+### Connect the TUI
+
+The TUI authenticates to Cloud Run by impersonating the invoker service account. Add your email to `invoker_impersonators` in `infra/terraform.tfvars`:
+
+```hcl
+invoker_impersonators = ["user:you@example.com"]
+```
+
+Then apply and connect:
+
+```bash
+cd infra && terraform apply && cd ..
+make tui-live-cloud    # reads URL + SA from terraform outputs
+```
+
+See [cloud_service/README.md](cloud_service/README.md) for endpoints, env vars, local testing, and key-file auth. See [infra/README.md](infra/README.md) for Terraform variables and resource details.
 
 ## Generating Training Data
 
@@ -118,48 +185,6 @@ make generate-episodes EPISODES=100 SEED_BASE=0 EPISODE_DIR=data/episodes
 - `EPISODE_DIR` — output directory (default: `data/episodes`)
 
 Each episode records joint-position trajectories, gripper commands, and observations in a consistent dataset schema shared across sim and real hardware. See [mujoco_sim/CLAUDE.md](mujoco_sim/CLAUDE.md) for dataset format details.
-
-## GCP Deployment
-
-The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3.1 Flash-Lite** for both planner decisions and VLM scene analysis, plus **Gemini 2.5 Flash Live Preview** for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal.
-
-### Steps
-
-1. **Prerequisites**: GCP account, [gcloud CLI](https://cloud.google.com/sdk/docs/install), [Terraform >= 1.5](https://developer.hashicorp.com/terraform/install)
-
-2. **Configure variables**:
-   ```bash
-   cp infra/terraform.tfvars.example infra/terraform.tfvars
-   # Edit terraform.tfvars — set project_id at minimum
-   ```
-
-3. **Bootstrap infrastructure** (registry + secrets, no Cloud Run yet):
-   ```bash
-   make tf-init
-   make tf-bootstrap
-   ```
-
-4. **Configure Docker auth** for Artifact Registry:
-   ```bash
-   gcloud auth configure-docker <region>-docker.pkg.dev
-   ```
-
-5. **Populate the API key secret**:
-   ```bash
-   echo -n "<your-google-api-key>" | gcloud secrets versions add google-api-key --data-file=-
-   ```
-
-6. **Build, push, and deploy**:
-   ```bash
-   make deploy-cloud    # builds image, pushes to registry, deploys Cloud Run
-   ```
-
-7. **Connect TUI**:
-   ```bash
-   make tui-live-cloud
-   ```
-
-For detailed configuration (GCP API enablement, IAM, models), see [cloud_service/README.md](cloud_service/README.md) and [infra/README.md](infra/README.md).
 
 ## Project Status
 
