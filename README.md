@@ -33,10 +33,14 @@ Operators interact with the robot through **natural voice and text conversation*
 
 ![TUI during a place skill — arm carrying cube to tray](docs/imgs/tui-live-place-transit.png)
 
+## Prerequisites
+
+- **Python 3.13+** and [**uv**](https://docs.astral.sh/uv/) package manager
+- `make install` — installs all dependencies (including MuJoCo)
+
 ## Quickstart
 
 ```bash
-# Install dependencies
 make install
 ```
 
@@ -61,25 +65,101 @@ ollama list   # should show both models
 
 ### Running
 
+#### Mock mode (no external services needed)
+
 ```bash
-# Launch TUI in mock mode (no external services needed)
 make tui-mock
-
-# Launch with local Ollama + MuJoCo sim (3 terminals)
-make run-sim           # terminal 1: MuJoCo sim server
-make tui-live          # terminal 2: TUI with Ollama planner + VLM
-
-# Cloud mode — local cloud service (requires GOOGLE_API_KEY)
-make run-cloud-service          # terminal 1: cloud service
-make tui-live-cloud-local       # terminal 2: TUI against local cloud service
-
-# Cloud mode — deployed Cloud Run (reads URL + SA from terraform outputs)
-make tui-live-cloud              # TUI against deployed cloud service
 ```
+
+#### Local mode (Ollama + MuJoCo sim, 2 terminals)
+
+```bash
+make sim-server        # terminal 1: MuJoCo sim server
+make tui-live          # terminal 2: TUI with Ollama planner + VLM
+```
+
+#### Cloud mode — local development (3 terminals)
+
+```bash
+GOOGLE_API_KEY=<key> make run-cloud-service   # terminal 1: cloud service (Gemini)
+make sim-server                                # terminal 2: MuJoCo sim server
+make tui-live-cloud-local                      # terminal 3: TUI against local cloud service
+```
+
+#### Cloud mode — deployed Cloud Run
+
+```bash
+make tui-live-cloud    # reads URL + SA from terraform outputs
+```
+
+## Generating Training Data
+
+Teacher episodes are generated in MuJoCo using trajectory-planned demonstrations. These produce the dataset that ACT (Action Chunking with Transformers) will train on.
+
+```bash
+# Generate 16 pick episodes (default)
+make generate-episodes
+
+# Generate with video previews (requires opencv)
+make generate-episodes-video
+
+# Generate pick-and-place episodes with video
+make generate-episodes-place
+```
+
+Tune with environment variables:
+
+```bash
+make generate-episodes EPISODES=100 SEED_BASE=0 EPISODE_DIR=data/episodes
+```
+
+- `EPISODES` — number of episodes to generate (default: 16)
+- `SEED_BASE` — starting random seed for reproducibility (default: 0)
+- `EPISODE_DIR` — output directory (default: `data/episodes`)
+
+Each episode records joint-position trajectories, gripper commands, and observations in a consistent dataset schema shared across sim and real hardware. See [mujoco_sim/CLAUDE.md](mujoco_sim/CLAUDE.md) for dataset format details.
 
 ## GCP Deployment
 
-The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3.1 Flash-Lite** for both planner decisions and VLM scene analysis, plus `gemini-2.5-flash-native-audio-preview` for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal. See [cloud_service/README.md](cloud_service/README.md) for the service itself and [infra/README.md](infra/README.md) for Terraform configuration.
+The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3.1 Flash-Lite** for both planner decisions and VLM scene analysis, plus `gemini-2.5-flash-native-audio-preview` for the Live Agent's bidirectional audio — fast, cheap models that keep latency low and costs minimal.
+
+### Steps
+
+1. **Prerequisites**: GCP account, [gcloud CLI](https://cloud.google.com/sdk/docs/install), [Terraform >= 1.5](https://developer.hashicorp.com/terraform/install)
+
+2. **Configure variables**:
+   ```bash
+   cp infra/terraform.tfvars.example infra/terraform.tfvars
+   # Edit terraform.tfvars — set project_id at minimum
+   ```
+
+3. **Bootstrap infrastructure** (registry + secrets, no Cloud Run yet):
+   ```bash
+   make tf-init
+   make tf-bootstrap
+   ```
+
+4. **Configure Docker auth** for Artifact Registry:
+   ```bash
+   gcloud auth configure-docker <region>-docker.pkg.dev
+   ```
+
+5. **Populate the API key secret**:
+   ```bash
+   echo -n "<your-google-api-key>" | gcloud secrets versions add google-api-key --data-file=-
+   ```
+
+6. **Build, push, and deploy**:
+   ```bash
+   make deploy-cloud    # builds image, pushes to registry, deploys Cloud Run
+   ```
+
+7. **Connect TUI**:
+   ```bash
+   make tui-live-cloud
+   ```
+
+For detailed configuration (GCP API enablement, IAM, models), see [cloud_service/README.md](cloud_service/README.md) and [infra/README.md](infra/README.md).
 
 ## Project Status
 
