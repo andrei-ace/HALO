@@ -71,19 +71,17 @@ ollama list   # should show both models
 make tui-mock
 ```
 
-#### Local mode (Ollama + MuJoCo sim, 2 terminals)
+#### Local mode (Ollama + MuJoCo sim)
 
 ```bash
-make sim-server        # terminal 1: MuJoCo sim server
-make tui-live          # terminal 2: TUI with Ollama planner + VLM
+make tui-live          # starts sim server automatically, connects to local Ollama
 ```
 
-#### Cloud mode — local development (3 terminals)
+#### Cloud mode — local development (2 terminals)
 
 ```bash
 GOOGLE_API_KEY=<key> make run-cloud-service   # terminal 1: cloud service (Gemini)
-make sim-server                                # terminal 2: MuJoCo sim server
-make tui-live-cloud-local                      # terminal 3: TUI against local cloud service
+make tui-live-cloud-local                      # terminal 2: TUI (sim server auto-started)
 ```
 
 #### Cloud mode — deployed Cloud Run
@@ -91,6 +89,8 @@ make tui-live-cloud-local                      # terminal 3: TUI against local c
 ```bash
 make tui-live-cloud    # reads URL + SA from terraform outputs
 ```
+
+The MuJoCo sim server is spawned automatically by the TUI in managed mode (`--source mujoco`). Use `make sim-server` only if you need to run it standalone.
 
 ## Generating Training Data
 
