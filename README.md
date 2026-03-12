@@ -1,5 +1,7 @@
 ![HALO — Hierarchical Adaptive LLM-Operated Robot](docs/imgs/Logo.png)
 
+[![HALO Demo Video](https://img.youtube.com/vi/hIvHln6MW2w/maxresdefault.jpg)](https://www.youtube.com/watch?v=hIvHln6MW2w)
+
 HALO is a robotic manipulation system that decouples continuous motor control from LLM-based task reasoning. The robot never pauses motion waiting for the planner — perception and control run machine-to-machine at 10-100 Hz, while an LLM agent orchestrates skills asynchronously. Safety-critical decisions live outside the LLM loop entirely.
 
 The architecture is robot-agnostic — any 5+ DOF arm with a gripper can be integrated by providing an IK solver and controller mapping. The current development target is the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) (5-DOF + 1-DOF gripper), validated in MuJoCo simulation.
@@ -32,10 +34,6 @@ Operators interact with the robot through **natural voice and text conversation*
 ![TUI during a pick skill with embedded sim view and FSM progress](docs/imgs/tui-live-pick-lift.png)
 
 ![TUI during a place skill — arm carrying cube to tray](docs/imgs/tui-live-place-transit.png)
-
-## Demo
-
-[![HALO Demo Video](https://img.youtube.com/vi/hIvHln6MW2w/maxresdefault.jpg)](https://www.youtube.com/watch?v=hIvHln6MW2w)
 
 ## Prerequisites
 
