@@ -33,6 +33,10 @@ Operators interact with the robot through **natural voice and text conversation*
 
 ![TUI during a place skill — arm carrying cube to tray](docs/imgs/tui-live-place-transit.png)
 
+## Demo
+
+[![HALO Demo Video](https://img.youtube.com/vi/hIvHln6MW2w/maxresdefault.jpg)](https://www.youtube.com/watch?v=hIvHln6MW2w)
+
 ## Prerequisites
 
 - **Python 3.13+** and [**uv**](https://docs.astral.sh/uv/) package manager
