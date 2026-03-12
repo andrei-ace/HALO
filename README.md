@@ -159,9 +159,19 @@ make tui-live-cloud    # reads URL + SA from terraform outputs
 
 See [cloud_service/README.md](cloud_service/README.md) for endpoints, env vars, local testing, and key-file auth. See [infra/README.md](infra/README.md) for Terraform variables and resource details.
 
-## Generating Training Data
+## Training Pipeline
 
-Teacher episodes are generated in MuJoCo using trajectory-planned demonstrations. These produce the dataset that ACT (Action Chunking with Transformers) will train on.
+Adding a new skill to HALO follows a repeatable workflow:
+
+1. **Define the FSM** — author a Mermaid stateDiagram-v2 in `configs/skills/<skill>/default.mmd`
+2. **Write a teacher** — MuJoCo solver that produces trajectories and signals the FSM phase per timestep
+3. **Generate episodes** — run the teacher across randomised scenes to produce HDF5 datasets
+4. **Train ACT** — train an Action Chunking with Transformers model on the episodes
+5. **Build detectors** — replace teacher phase signals with sensor-based detectors for runtime FSM transitions
+
+### Teacher Episodes
+
+Teacher episodes are generated in MuJoCo using trajectory-planned demonstrations. The teacher solves the full trajectory (grasp planning → IK → jerk-limited motion profiles) and labels each timestep with the corresponding FSM `phase_id`.
 
 ```bash
 # Generate 16 pick episodes (default)
@@ -184,7 +194,68 @@ make generate-episodes EPISODES=100 SEED_BASE=0 EPISODE_DIR=data/episodes
 - `SEED_BASE` — starting random seed for reproducibility (default: 0)
 - `EPISODE_DIR` — output directory (default: `data/episodes`)
 
-Each episode records joint-position trajectories, gripper commands, and observations in a consistent dataset schema shared across sim and real hardware. See [mujoco_sim/CLAUDE.md](mujoco_sim/CLAUDE.md) for dataset format details.
+### Episode Format
+
+All episode sources share the same observation and action schema:
+
+```
+ep_NNNNNN.hdf5
+├── obs/
+│   ├── rgb_scene     (T, H, W, 3) uint8   — scene camera image
+│   ├── rgb_wrist     (T, H, W, 3) uint8   — wrist camera image
+│   ├── qpos          (T, nq)      float64 — full joint positions (arm + objects)
+│   ├── qvel          (T, nv)      float64 — joint velocities
+│   ├── gripper       (T,)         float64 — gripper angle
+│   ├── ee_pose       (T, 7)       float64 — end-effector [x,y,z, qx,qy,qz,qw]
+│   ├── joint_pos     (T, 6)       float64 — actuated arm joints (optional)
+│   ├── phase_id      (T,)         int32   — FSM state label per timestep (optional)
+│   ├── object_pose   (T, 7)       float64 — target object pose (optional)
+│   ├── bbox_xywh     (T, 4)       int32   — tracker bounding box (optional)
+│   ├── tracker_ok    (T,)         bool    — tracker status (optional)
+│   └── contacts/                          — per-step contact data (optional, sparse)
+├── action            (T, 6)       float64 — joint-position targets (see below)
+└── attrs: seed, env_name, robot, control_freq, num_steps, created_at
+```
+
+**Action format:** `(T, 6)` — joint-position targets `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]`. The same 6D joint-position action space is used everywhere: MuJoCo teacher episodes, ACT training, runtime inference, and temporal ensembling.
+
+RGB datasets use gzip-4 compression. All poses are position + quaternion (scipy convention). See [mujoco_sim/CLAUDE.md](mujoco_sim/CLAUDE.md) for full field details.
+
+### Teleoperation Recording (planned)
+
+An operator will drive the robot via keyboard or gamepad through the ZMQ bridge, recording episodes in the same HDF5 format as teacher demos. The `phase_id` field is left blank during recording and annotated post-hoc using VCR (below) or with live hotkeys. Combining teacher and teleop episodes produces richer training data with more diverse strategies.
+
+### VCR — Episode Replay & Annotation (planned)
+
+VCR is a Textual TUI tool for replaying and annotating recorded episodes:
+
+- **Replay** — scrub through episodes frame-by-frame with scene camera, wrist camera, joint states, gripper position, and phase timeline
+- **Annotate** — label FSM phase boundaries on each timestep; annotations are stored in a sidecar JSON file (HDF5 stays immutable)
+- **Use cases** — review and correct teacher labels, annotate teleop episodes, create detector training data
+
+### ACT Model Training (planned)
+
+[Action Chunking with Transformers](https://tonyzhaozh.github.io/aloha/) (ACT) is the imitation learning backbone:
+
+- **Inputs**: wrist camera + scene camera + proprioception (joint positions + gripper)
+- **Output**: action chunks — a sequence of future joint-position targets
+- **Training data**: teacher + teleop episodes in the HDF5 format above
+- **v0 config**: 6D joint-space actions, chunk length 10 at 20 Hz (0.5 s horizon)
+
+### Phase Detectors (planned)
+
+During teacher episodes, `phase_id` comes from the teacher solver (ground truth). During ACT inference, **detectors** replace teacher signals to drive FSM state transitions at runtime:
+
+- **Gripper current/position** — gripping something? Fully closed on air?
+- **Wrist camera** — object visible? Grip looks successful?
+- **Joint state** — reached target position within tolerance?
+- **Contact forces** — touching the object? (sim only initially)
+
+Heuristic detectors first, learned detectors later (trained on VCR-annotated episodes).
+
+### Closed-Loop Evaluation (planned)
+
+Run ACT + detectors in MuJoCo sim with the FSM engine orchestrating phase transitions from detector signals. Measure pick success rate, place accuracy, and cycle time against the teacher baseline.
 
 ## Project Status
 
@@ -200,7 +271,10 @@ Each episode records joint-position trajectories, gripper commands, and observat
 | ZMQ bridge to MuJoCo sim | Done |
 | MuJoCo sim (SO-101 env, teachers, grasp planner, SimServer) | Done |
 | Integration tests (Ollama-backed) | Done |
-| ACT model training (imitation learning from teacher demos) | Planned |
+| ACT model + training pipeline | Planned |
+| Phase detectors (runtime FSM state detection) | Planned |
+| VCR (episode replay + annotation tool) | Planned |
+| Teleoperation recording | Planned |
 | Isaac Lab extension (GPU-accelerated parallel envs) | Planned |
 | Sim-to-real transfer + real hardware deployment | Planned |
 
@@ -215,7 +289,11 @@ halo/                  # Core runtime, services, contracts, TUI
   bridge/              # ZMQ 2-channel bridge to MuJoCo sim
   tui/                 # Textual TUI app + RunLogger
   configs/             # Planner/perception prompts, Mermaid FSM definitions
+  models/              # ACT model, training, inference (planned)
+  detectors/           # Phase detectors for runtime FSM state detection (planned)
+vcr/                   # Episode replay + annotation TUI (planned)
 mujoco_sim/            # MuJoCo + SO-101 sim (env, teachers, SimServer)
+  teleop/              # Teleoperation recording (planned)
 cloud_service/         # Cloud Run service (Gemini planner + VLM + Live Agent)
 infra/                 # Terraform GCP configuration
 tests/                 # Unit tests (~740 HALO + 116 sim + 20 cloud)

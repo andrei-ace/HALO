@@ -6,6 +6,7 @@ target → planner issues start_skill(PICK) → FSM runs through phases → skil
 
 import asyncio
 
+from halo.contracts.actions import ZERO_JOINT_ACTION
 from halo.contracts.commands import (
     CommandEnvelope,
     DescribeScenePayload,
@@ -118,6 +119,7 @@ async def test_full_pick_scenario(latency: LatencyProfile):
         tracker_factory_fn=make_mock_tracker_factory_fn_with_latency(latency),
         chunk_fn=make_mock_chunk_fn(latency),
         apply_fn=make_mock_apply_fn(latency, applied),
+        initial_joint_state=ZERO_JOINT_ACTION,
     )
 
     def done():

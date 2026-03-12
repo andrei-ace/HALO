@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 from halo.contracts.commands import CommandEnvelope, StartSkillPayload
 from halo.contracts.enums import CommandType, PhaseId
 from halo.contracts.events import EventEnvelope, EventType
@@ -32,9 +32,9 @@ logger = logging.getLogger(__name__)
 
 # Type aliases matching service constructor signatures
 DecideFn = Callable[[PlannerSnapshot], Awaitable[list]]
-ApplyFn = Callable[[str, Action], Awaitable[None]]
-ChunkFn = Callable[[str, PhaseId, object], Awaitable[ActionChunk | None]]
-PushFn = Callable[[ActionChunk], Awaitable[None]]
+ApplyFn = Callable[[str, JointPositionAction], Awaitable[None]]
+ChunkFn = Callable[[str, PhaseId, object], Awaitable[JointPositionChunk | None]]
+PushFn = Callable[[JointPositionChunk], Awaitable[None]]
 ObserveFn = Callable[[str, str], Awaitable[object | None]]
 VlmFn = Callable[..., Awaitable[object]]
 CaptureFn = Callable[[str], Awaitable[object]]
@@ -95,6 +95,7 @@ class HeadlessRunner:
         sim_phase_fn: SimPhaseFn | None = None,
         # Control
         apply_fn: ApplyFn | None = None,
+        initial_joint_state: JointPositionAction | None = None,
     ) -> None:
         self._config = config
         arm_id = config.arm_id
@@ -119,10 +120,13 @@ class HeadlessRunner:
         if config.enable_control and not _sim_mode:
             if apply_fn is None:
                 raise ValueError("apply_fn is required when enable_control=True")
+            if initial_joint_state is None:
+                raise ValueError("initial_joint_state is required when enable_control=True")
             self.control_svc = ControlService(
                 arm_id=arm_id,
                 runtime=self.runtime,
                 apply_fn=apply_fn,
+                initial_state=initial_joint_state,
                 config=config.control_config,
             )
 

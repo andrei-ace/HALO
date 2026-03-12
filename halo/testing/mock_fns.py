@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 from halo.contracts.commands import CommandEnvelope, CommandPayload
 from halo.contracts.enums import CommandType, PhaseId
 from halo.contracts.snapshots import PlannerSnapshot
@@ -144,7 +144,7 @@ def make_mock_apply_fn(
     *log*: if provided, each applied (arm_id, action) is appended.
     """
 
-    async def apply_fn(arm_id: str, action: Action) -> None:
+    async def apply_fn(arm_id: str, action: JointPositionAction) -> None:
         await _delay(latency.apply_s)
         if log is not None:
             log.append((arm_id, action))
@@ -158,23 +158,40 @@ def make_mock_apply_fn(
 def make_mock_chunk_fn(
     latency: LatencyProfile = LatencyProfile.instant(),
     n_actions: int = 10,
+    step_rad: float = 0.002,
+    limit_rad: float = 1.5,
 ):
     """Return a ``chunk_fn`` compatible with SkillRunnerService.
 
-    Produces ActionChunks with *n_actions* small forward motions.
+    Produces JointPositionChunks with *n_actions* joint targets that
+    progress along a triangle-wave trajectory on joint 0 (shoulder_pan).
+    The position oscillates between ``-limit_rad`` and ``+limit_rad``
+    (default ±1.5, well within the SO-101 ±1.92 limit) so long-running
+    sessions never trip absolute joint-limit safety reflexes.
     """
     seq = 0
+    position = 0.0  # current shoulder_pan target
+    direction = 1.0  # +1 or -1
 
-    async def chunk_fn(arm_id: str, phase: PhaseId, snapshot: object) -> ActionChunk | None:
-        nonlocal seq
+    async def chunk_fn(arm_id: str, phase: PhaseId, snapshot: object) -> JointPositionChunk | None:
+        nonlocal seq, position, direction
         await _delay(latency.chunk_s)
         seq += 1
-        actions = tuple(Action(0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(n_actions))
-        return ActionChunk(
+        actions = []
+        for _ in range(n_actions):
+            position += step_rad * direction
+            if position >= limit_rad:
+                position = limit_rad
+                direction = -1.0
+            elif position <= -limit_rad:
+                position = -limit_rad
+                direction = 1.0
+            actions.append(JointPositionAction(values=(position, 0.0, 0.0, 0.0, 0.0, 0.0)))
+        return JointPositionChunk(
             chunk_id=f"mock-chunk-{seq}",
             arm_id=arm_id,
             phase_id=phase,
-            actions=actions,
+            actions=tuple(actions),
             ts_ms=int(time.monotonic() * 1000),
         )
 

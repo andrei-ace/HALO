@@ -179,10 +179,11 @@ async def test_terminal_tick_does_not_schedule_chunk_for_queued(rt: HALORuntime)
 
     async def tracking_chunk(arm_id, phase, snap):
         # Should never be called for TRACK skill
-        from halo.contracts.actions import ZERO_ACTION, ActionChunk
+        from halo.contracts.actions import ZERO_JOINT_ACTION, JointPositionChunk
 
         chunks_pushed.append(phase)
-        return ActionChunk(chunk_id="c", arm_id=arm_id, phase_id=phase, actions=(ZERO_ACTION,) * 10, ts_ms=0)
+        actions = (ZERO_JOINT_ACTION,) * 10
+        return JointPositionChunk(chunk_id="c", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)
 
     async def noop_push(chunk):
         pass

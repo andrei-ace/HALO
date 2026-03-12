@@ -4,40 +4,21 @@ from dataclasses import dataclass
 
 from halo.contracts.enums import PhaseId
 
-
-@dataclass(frozen=True)
-class Action:
-    """Per-timestep EE-frame delta command."""
-
-    dx: float
-    dy: float
-    dz: float
-    droll: float
-    dpitch: float
-    dyaw: float
-    gripper_cmd: float  # 0.0=open  1.0=close
-
-
-ZERO_ACTION = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # safe hold
-
-
-@dataclass(frozen=True)
-class ActionChunk:
-    chunk_id: str
-    arm_id: str
-    phase_id: PhaseId
-    actions: tuple[Action, ...]  # ordered, oldest first
-    ts_ms: int  # generation timestamp
+SO101_DOF = 6  # 5 arm joints + 1 gripper
 
 
 @dataclass(frozen=True)
 class JointPositionAction:
     """Joint-position targets (radians). Last element is gripper."""
 
-    values: tuple[float, ...]  # (N_DOF,) e.g. (6,) for SO-101
+    values: tuple[float, ...]  # (SO101_DOF,)
+
+    def __post_init__(self) -> None:
+        if len(self.values) != SO101_DOF:
+            raise ValueError(f"JointPositionAction requires exactly {SO101_DOF} values, got {len(self.values)}")
 
 
-ZERO_JOINT_ACTION = JointPositionAction(values=(0.0,) * 6)
+ZERO_JOINT_ACTION = JointPositionAction(values=(0.0,) * SO101_DOF)
 
 
 @dataclass(frozen=True)

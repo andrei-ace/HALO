@@ -1,12 +1,12 @@
 """System test: safety reflex during active skill → recovery.
 
-Scenario: skill running → control receives over-limit chunk → safety reflex
+Scenario: skill running → control receives out-of-range chunk → safety reflex
 fires → SAFETY_REFLEX_TRIGGERED event → subsequent clean tick → SAFETY_RECOVERED.
 """
 
 import asyncio
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import ZERO_JOINT_ACTION, JointPositionAction, JointPositionChunk
 from halo.contracts.enums import SafetyState, SkillName
 from halo.contracts.events import EventType
 from halo.services.skill_runner_service.config import SkillRunnerConfig
@@ -21,23 +21,23 @@ ARM = "arm0"
 
 
 async def test_safety_reflex_and_recovery(latency: LatencyProfile):
-    """Safety reflex fires on over-limit action, then recovers on clean tick."""
+    """Safety reflex fires on out-of-range action, then recovers on clean tick."""
     applied = []
 
-    # Custom chunk_fn that produces one over-limit chunk then normal chunks
+    # Custom chunk_fn that produces one out-of-range chunk then normal chunks
     seq = 0
 
     async def danger_then_safe_chunk_fn(arm_id, phase, snap):
         nonlocal seq
         seq += 1
         if seq == 1:
-            # Over-limit action
-            bad = Action(dx=0.1, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
-            return ActionChunk(chunk_id=f"chunk-{seq}", arm_id=arm_id, phase_id=phase, actions=(bad,), ts_ms=0)
+            # Out-of-range action (shoulder_pan=3.0 >> ±1.92 limit)
+            bad = JointPositionAction(values=(3.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+            return JointPositionChunk(chunk_id=f"chunk-{seq}", arm_id=arm_id, phase_id=phase, actions=(bad,), ts_ms=0)
         # Normal safe action
-        safe = Action(dx=0.001, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
+        safe = JointPositionAction(values=(0.001, 0.0, 0.0, 0.0, 0.0, 0.5))
         actions = tuple(safe for _ in range(10))
-        return ActionChunk(chunk_id=f"chunk-{seq}", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)
+        return JointPositionChunk(chunk_id=f"chunk-{seq}", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)
 
     skill_cfg = SkillRunnerConfig(
         grasp_persistence_ms=0,
@@ -65,6 +65,7 @@ async def test_safety_reflex_and_recovery(latency: LatencyProfile):
         config=config,
         chunk_fn=danger_then_safe_chunk_fn,
         apply_fn=make_mock_apply_fn(latency, applied),
+        initial_joint_state=ZERO_JOINT_ACTION,
     )
 
     await runner.start()

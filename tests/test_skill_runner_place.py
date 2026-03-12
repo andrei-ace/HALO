@@ -2,7 +2,7 @@
 
 import pytest
 
-from halo.contracts.actions import ActionChunk
+from halo.contracts.actions import JointPositionChunk
 from halo.contracts.enums import (
     ActStatus,
     PerceptionFailureCode,
@@ -81,7 +81,7 @@ def _make_svc(
     rt: HALORuntime,
     cfg: SkillRunnerConfig | None = None,
 ) -> SkillRunnerService:
-    async def push_fn(chunk: ActionChunk) -> None:
+    async def push_fn(chunk: JointPositionChunk) -> None:
         pass
 
     return SkillRunnerService(

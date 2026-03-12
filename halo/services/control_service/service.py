@@ -6,7 +6,7 @@ import time
 from typing import Awaitable, Callable
 
 from halo.bridge import BridgeTransportError
-from halo.contracts.actions import ZERO_ACTION, Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 from halo.contracts.enums import WRIST_ACTIVE_PHASES, ActStatus, PhaseId, SafetyReflexReason, SafetyState
 from halo.contracts.events import EventEnvelope, EventType
 from halo.contracts.snapshots import ActInfo, PlannerSnapshot, SafetyInfo
@@ -17,7 +17,7 @@ from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
 
 logger = logging.getLogger(__name__)
 
-ApplyFn = Callable[[str, Action], Awaitable[None]]
+ApplyFn = Callable[[str, JointPositionAction], Awaitable[None]]
 
 
 class ControlService:
@@ -26,13 +26,13 @@ class ControlService:
     guard, and reflex state. Never blocks on LLM/VLM.
 
     Lifecycle:
-        svc = ControlService(arm_id, runtime, apply_fn)
+        svc = ControlService(arm_id, runtime, apply_fn, initial_state)
         await svc.start()          # spawns background task
         await svc.push_chunk(chunk)
         await svc.stop()
 
     The apply_fn is the only coupling to the robot/sim:
-        async def apply_fn(arm_id: str, action: Action) -> None: ...
+        async def apply_fn(arm_id: str, action: JointPositionAction) -> None: ...
     """
 
     def __init__(
@@ -40,6 +40,7 @@ class ControlService:
         arm_id: str,
         runtime: HALORuntime,
         apply_fn: ApplyFn,
+        initial_state: JointPositionAction,
         config: ControlServiceConfig = ControlServiceConfig(),
     ) -> None:
         self._arm_id = arm_id
@@ -54,6 +55,7 @@ class ControlService:
         self._reflex_active: bool = False
         self._reflex_reasons: list[SafetyReflexReason] = []
         self._last_phase: PhaseId | None = None
+        self._last_applied: JointPositionAction = self._guard.clamp(initial_state)
 
         self._stop_event = asyncio.Event()
         self._loop_task: asyncio.Task | None = None
@@ -85,8 +87,8 @@ class ControlService:
             self._runtime.bus.unsubscribe(self._arm_id, self._phase_queue)
             self._phase_queue = None
 
-    async def push_chunk(self, chunk: ActionChunk) -> None:
-        """Enqueue an ActionChunk. Raises ValueError if arm_id mismatches."""
+    async def push_chunk(self, chunk: JointPositionChunk) -> None:
+        """Enqueue a JointPositionChunk. Raises ValueError if arm_id mismatches."""
         if chunk.arm_id != self._arm_id:
             raise ValueError(f"chunk.arm_id {chunk.arm_id!r} != service arm_id {self._arm_id!r}")
         async with self._lock:
@@ -101,7 +103,7 @@ class ControlService:
 
     # --- Testable internal ---
 
-    async def tick(self) -> Action | None:
+    async def tick(self) -> JointPositionAction | None:
         """
         One control tick. Callable directly in tests.
         1. Check hint freshness → hold if stale
@@ -117,10 +119,10 @@ class ControlService:
         target = snap.target
         wrist = self._wrist_enabled(snap)
 
-        if not self._guard.check_hint_freshness(target, self._config):
-            # Stale hint — hold position, no reflex
+        if not self._guard.check_hint_freshness(target):
+            # Stale hint — hold current position, no reflex
             try:
-                await self._apply_fn(self._arm_id, ZERO_ACTION)
+                await self._apply_fn(self._arm_id, self._last_applied)
             except BridgeTransportError:
                 logger.warning("ControlService: bridge transport failed during stale-hint hold")
             async with self._lock:
@@ -145,13 +147,14 @@ class ControlService:
             )
             return None
 
-        # 3. Safety check
+        # 3. Safety check (absolute joint limits only — velocity is clamped, not faulted)
         violations = self._guard.check(action)
         if violations:
             if not self._reflex_active:
                 await self._trigger_reflex(violations)
+            # Hold current position during reflex
             try:
-                await self._apply_fn(self._arm_id, ZERO_ACTION)
+                await self._apply_fn(self._arm_id, self._last_applied)
             except BridgeTransportError:
                 logger.warning("ControlService: bridge transport failed during safety reflex hold")
             await self._runtime.store.update_act(
@@ -169,8 +172,8 @@ class ControlService:
         if self._reflex_active:
             await self._recover_from_reflex()
 
-        # 4. Clamp
-        clamped = self._guard.clamp(action)
+        # 4. Clamp (absolute limits + per-tick velocity)
+        clamped = self._guard.clamp(action, self._last_applied)
 
         # 5. Apply
         try:
@@ -182,6 +185,9 @@ class ControlService:
                 ActInfo(status=ActStatus.STALE, buffer_fill_ms=fill, buffer_low=low, wrist_enabled=wrist),
             )
             return None
+
+        # Track last applied for hold and velocity limiting
+        self._last_applied = clamped
 
         # 6. Update store
         status = ActStatus.BUFFER_LOW if low else ActStatus.RUNNING

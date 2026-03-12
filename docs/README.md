@@ -11,7 +11,7 @@ halo/
     snapshots.py                     # PlannerSnapshot, TargetInfo, ActInfo, SafetyInfo
     commands.py                      # StartSkillCommand, AbortSkillCommand, DescribeSceneCommand, etc.
     events.py                        # Event types (SKILL_SUCCEEDED, PHASE_ENTER, etc.)
-    actions.py                       # Action, ActionChunk, ZERO_ACTION
+    actions.py                       # JointPositionAction, JointPositionChunk, ZERO_JOINT_ACTION, SO101_DOF
     *.json                           # JSON schemas for enums, commands, events, snapshot
   runtime/
     state_store.py                   # RuntimeStateStore — single source of truth, partitioned by arm_id
@@ -170,13 +170,9 @@ Dual-mode: ACT (chunk_fn/push_fn) or Sim (start_pick_fn/sim_phase_fn). In sim mo
 
 ### ControlService
 
-Streams actions at the target rate using temporal ensembling to blend overlapping action chunks. The TemporalEnsemblingBuffer blends per-timestep — overlapping predicted deltas become a single commanded delta sequence before IK/OSC mapping. On phase transition, the buffer is trimmed to ~50-100 ms.
+Streams actions at the target rate using temporal ensembling to blend overlapping action chunks. The TemporalEnsemblingBuffer blends per-timestep — overlapping predicted joint-position targets become a single commanded sequence. On phase transition, the buffer is trimmed to ~50-100 ms.
 
-Action spaces are intentionally different between core and sim:
-- **HALO core**: `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas
-- **MuJoCo sim**: `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint positions
-
-Conversion is the responsibility of the `apply_fn` factory.
+Action space: `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets, unified across sim and runtime.
 
 ---
 

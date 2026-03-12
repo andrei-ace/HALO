@@ -10,7 +10,7 @@ Canonical type definitions, enums, and serialization for the HALO runtime. Defin
 | `snapshots.py` | Frozen dataclasses: `PlannerSnapshot` and its components (`SkillInfo`, `TargetInfo`, `PerceptionInfo`, `ActInfo`, `ProgressInfo`, `OutcomeInfo`, `SafetyInfo`, `QueuedSkillInfo`) |
 | `commands.py` | `CommandEnvelope`, payload dataclasses (`StartSkillPayload`, `AbortSkillPayload`, `OverrideTargetPayload`, `DescribeScenePayload`), `CommandAck` |
 | `events.py` | `EventType` enum, `EventEnvelope` dataclass |
-| `actions.py` | `Action` (7D EE-frame deltas), `ActionChunk`, `JointPositionAction` (6D SO-101), `JointPositionChunk`, `ZERO_ACTION`, `ZERO_JOINT_ACTION` |
+| `actions.py` | `JointPositionAction` (6D SO-101), `JointPositionChunk`, `ZERO_JOINT_ACTION`, `SO101_DOF` |
 | `serde.py` | Round-trip serialization: `snapshot_to_dict/from_dict`, `snapshot_to_text`, `command_envelope_to/from_dict`, `vlm_scene_to/from_dict`, `context_entry_to/from_dict`, `cognitive_state_to/from_dict`, `message_record_to/from_dict` |
 | `enums.json` | JSON Schema for all enum values |
 | `commands.json` | JSON Schema for command contracts |
@@ -62,10 +62,11 @@ PlannerSnapshot
 
 All coordinates (center_px, bbox_xywh) are normalised 0..1. Snapshot is **replaced** (never appended) in planner context.
 
-## Action Spaces
+## Action Space
 
-- **HALO core (runtime/bridge):** `Action` — `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas per timestep
-- **MuJoCo sim:** `JointPositionAction` — `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets
+Single unified action space everywhere (sim, training, runtime):
+
+`JointPositionAction` — `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets (`SO101_DOF = 6`). `JointPositionChunk` groups ordered sequences for temporal ensembling. `ZERO_JOINT_ACTION` is the safe hold action.
 
 ## Serde Round-Trip Pattern
 

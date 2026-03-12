@@ -1,8 +1,8 @@
-"""Tests for SafetyGuard: check, clamp, check_hint_freshness."""
+"""Tests for SafetyGuard: joint-limit check, velocity check, clamp, check_hint_freshness."""
 
 import pytest
 
-from halo.contracts.actions import ZERO_ACTION, Action
+from halo.contracts.actions import ZERO_JOINT_ACTION, JointPositionAction
 from halo.contracts.enums import SafetyReflexReason
 from halo.contracts.snapshots import TargetInfo
 from halo.services.control_service.config import ControlServiceConfig
@@ -12,8 +12,6 @@ from halo.services.control_service.safety_guard import SafetyGuard
 @pytest.fixture
 def cfg() -> ControlServiceConfig:
     return ControlServiceConfig(
-        max_linear_delta_m=0.01,
-        max_angular_delta_rad=0.02,
         max_obs_age_ms=200,
     )
 
@@ -35,112 +33,173 @@ def _target(hint_valid: bool = True, obs_age_ms: int = 100) -> TargetInfo:
     )
 
 
-# --- check ---
+# --- check: absolute joint limits ---
 
 
 def test_check_safe_zero_action(guard: SafetyGuard):
-    assert guard.check(ZERO_ACTION) == []
+    assert guard.check(ZERO_JOINT_ACTION) == []
 
 
-def test_check_safe_sub_limit(guard: SafetyGuard):
-    a = Action(0.005, 0.005, 0.005, 0.01, 0.01, 0.01, 0.5)
+def test_check_safe_within_limits(guard: SafetyGuard):
+    a = JointPositionAction(values=(0.5, -0.5, 0.3, 0.1, 0.2, 1.0))
     assert guard.check(a) == []
 
 
-def test_check_over_limit_linear_dx(guard: SafetyGuard):
-    a = Action(dx=0.02, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
+def test_check_out_of_range_shoulder_pan(guard: SafetyGuard):
+    # shoulder_pan limit is ±1.92; 3.0 is out of range
+    a = JointPositionAction(values=(3.0, 0.0, 0.0, 0.0, 0.0, 0.0))
     assert SafetyReflexReason.JOINT_LIMIT in guard.check(a)
 
 
-def test_check_over_limit_linear_dy(guard: SafetyGuard):
-    a = Action(dx=0.0, dy=0.02, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
+def test_check_out_of_range_shoulder_lift(guard: SafetyGuard):
+    # shoulder_lift limit is ±1.75; -2.0 is out of range
+    a = JointPositionAction(values=(0.0, -2.0, 0.0, 0.0, 0.0, 0.0))
     assert SafetyReflexReason.JOINT_LIMIT in guard.check(a)
 
 
-def test_check_over_limit_linear_dz(guard: SafetyGuard):
-    a = Action(dx=0.0, dy=0.0, dz=0.02, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
+def test_check_out_of_range_gripper(guard: SafetyGuard):
+    # gripper upper limit is 1.75; 2.0 is out of range
+    a = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 2.0))
     assert SafetyReflexReason.JOINT_LIMIT in guard.check(a)
 
 
-def test_check_over_limit_angular_droll(guard: SafetyGuard):
-    a = Action(dx=0.0, dy=0.0, dz=0.0, droll=0.05, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
+def test_check_negative_out_of_range(guard: SafetyGuard):
+    # shoulder_pan lower limit is -1.92; -2.5 is out of range
+    a = JointPositionAction(values=(-2.5, 0.0, 0.0, 0.0, 0.0, 0.0))
     assert SafetyReflexReason.JOINT_LIMIT in guard.check(a)
 
 
-def test_check_over_limit_angular_dpitch(guard: SafetyGuard):
-    a = Action(dx=0.0, dy=0.0, dz=0.0, droll=0.0, dpitch=0.05, dyaw=0.0, gripper_cmd=0.0)
-    assert SafetyReflexReason.JOINT_LIMIT in guard.check(a)
+# --- check: velocity violations are NOT faulted (handled by clamp) ---
 
 
-def test_check_over_limit_angular_dyaw(guard: SafetyGuard):
-    a = Action(dx=0.0, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.05, gripper_cmd=0.0)
-    assert SafetyReflexReason.JOINT_LIMIT in guard.check(a)
+def test_check_large_velocity_jump_not_faulted(guard: SafetyGuard):
+    """Large delta within absolute limits is NOT faulted — clamp handles it."""
+    action = JointPositionAction(values=(1.5, 0.0, 0.0, 0.0, 0.0, 0.0))
+    assert guard.check(action) == []
 
 
-def test_check_no_duplicate_violations(guard: SafetyGuard):
-    """Both linear and angular exceed limits → only one JOINT_LIMIT entry."""
-    a = Action(dx=0.05, dy=0.0, dz=0.0, droll=0.1, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
-    violations = guard.check(a)
-    assert violations.count(SafetyReflexReason.JOINT_LIMIT) == 1
+# --- clamp: absolute limits ---
 
 
-# --- clamp ---
-
-
-def test_clamp_leaves_sub_limit_untouched(guard: SafetyGuard):
-    a = Action(0.005, -0.005, 0.003, 0.01, -0.01, 0.01, 0.5)
-    assert guard.clamp(a) == a
-
-
-def test_clamp_linear_to_limit(guard: SafetyGuard, cfg: ControlServiceConfig):
-    a = Action(dx=0.1, dy=-0.1, dz=0.1, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.5)
+def test_clamp_within_range_unchanged(guard: SafetyGuard):
+    a = JointPositionAction(values=(0.5, -0.5, 0.3, 0.1, 0.2, 1.0))
     clamped = guard.clamp(a)
-    assert clamped.dx == pytest.approx(cfg.max_linear_delta_m)
-    assert clamped.dy == pytest.approx(-cfg.max_linear_delta_m)
-    assert clamped.dz == pytest.approx(cfg.max_linear_delta_m)
+    assert clamped.values == a.values
 
 
-def test_clamp_angular_to_limit(guard: SafetyGuard, cfg: ControlServiceConfig):
-    a = Action(0.0, 0.0, 0.0, 0.5, -0.5, 0.5, 0.0)
+def test_clamp_out_of_range(guard: SafetyGuard, cfg: ControlServiceConfig):
+    a = JointPositionAction(values=(3.0, -3.0, 0.0, 0.0, 0.0, 2.0))
     clamped = guard.clamp(a)
-    assert clamped.droll == pytest.approx(cfg.max_angular_delta_rad)
-    assert clamped.dpitch == pytest.approx(-cfg.max_angular_delta_rad)
-    assert clamped.dyaw == pytest.approx(cfg.max_angular_delta_rad)
+    assert clamped.values[0] == cfg.joint_limits_upper[0]  # 1.92
+    assert clamped.values[1] == cfg.joint_limits_lower[1]  # -1.75
+    assert clamped.values[5] == cfg.joint_limits_upper[5]  # 1.75 (gripper)
 
 
-def test_clamp_gripper_below_zero(guard: SafetyGuard):
-    a = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5)
-    assert guard.clamp(a).gripper_cmd == pytest.approx(0.0)
+def test_clamp_all_joints_clamped(guard: SafetyGuard, cfg: ControlServiceConfig):
+    """All joints beyond limits get clamped to their respective bounds."""
+    a = JointPositionAction(values=(10.0, 10.0, 10.0, 10.0, 10.0, 10.0))
+    clamped = guard.clamp(a)
+    for i in range(6):
+        assert clamped.values[i] == pytest.approx(cfg.joint_limits_upper[i])
 
 
-def test_clamp_gripper_above_one(guard: SafetyGuard):
-    a = Action(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.5)
-    assert guard.clamp(a).gripper_cmd == pytest.approx(1.0)
+# --- clamp: per-tick velocity limit ---
+
+
+def test_clamp_velocity_limits_large_jump(guard: SafetyGuard):
+    """Large jump is clamped to max_joint_delta_rad from prev."""
+    prev = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    action = JointPositionAction(values=(1.5, 0.0, 0.0, 0.0, 0.0, 0.0))
+    clamped = guard.clamp(action, prev)
+    assert clamped.values[0] == pytest.approx(0.5)  # max_joint_delta_rad
+
+
+def test_clamp_velocity_limits_negative_jump(guard: SafetyGuard):
+    """Large negative jump is clamped to -max_joint_delta_rad from prev."""
+    prev = JointPositionAction(values=(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    action = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    clamped = guard.clamp(action, prev)
+    assert clamped.values[0] == pytest.approx(0.5)  # 1.0 - 0.5
+
+
+def test_clamp_velocity_no_effect_without_prev(guard: SafetyGuard):
+    """Without prev, only absolute clamp applies."""
+    action = JointPositionAction(values=(1.5, 0.0, 0.0, 0.0, 0.0, 0.0))
+    clamped = guard.clamp(action)
+    assert clamped.values[0] == pytest.approx(1.5)
+
+
+def test_clamp_gripper_uses_max_gripper_delta():
+    """Gripper velocity clamp uses max_gripper_delta, not max_joint_delta_rad."""
+    cfg = ControlServiceConfig(max_joint_delta_rad=0.1, max_gripper_delta=1.0)
+    guard = SafetyGuard(cfg)
+    prev = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    # Gripper jumps 0.9 — within max_gripper_delta, should not be clamped
+    action = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 0.9))
+    clamped = guard.clamp(action, prev)
+    assert clamped.values[5] == pytest.approx(0.9)
+
+
+def test_clamp_gripper_clamped_to_max_gripper_delta():
+    """Gripper beyond max_gripper_delta is clamped to it."""
+    cfg = ControlServiceConfig(max_joint_delta_rad=0.1, max_gripper_delta=0.5)
+    guard = SafetyGuard(cfg)
+    prev = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    action = JointPositionAction(values=(0.0, 0.0, 0.0, 0.0, 0.0, 1.5))
+    clamped = guard.clamp(action, prev)
+    assert clamped.values[5] == pytest.approx(0.5)
+
+
+# --- clamp: re-clamp after velocity step (out-of-range prev) ---
+
+
+def test_clamp_reclamps_after_velocity_step_from_out_of_range_prev():
+    """When prev is out-of-range, velocity step can produce out-of-range output; re-clamp fixes it."""
+    cfg = ControlServiceConfig(max_joint_delta_rad=0.5)
+    guard = SafetyGuard(cfg)
+    # prev is beyond upper shoulder_pan limit (1.92)
+    prev = JointPositionAction(values=(2.5, 0.0, 0.0, 0.0, 0.0, 0.0))
+    # Target is in-range but velocity step from 2.5 toward 1.0 → 2.5 - 0.5 = 2.0, still > 1.92
+    action = JointPositionAction(values=(1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    clamped = guard.clamp(action, prev)
+    # Re-clamp ensures output is within absolute limits
+    assert clamped.values[0] == pytest.approx(1.92)
+
+
+def test_clamp_reclamps_negative_out_of_range_prev():
+    """Re-clamp works for negative out-of-range prev too."""
+    cfg = ControlServiceConfig(max_joint_delta_rad=0.5)
+    guard = SafetyGuard(cfg)
+    prev = JointPositionAction(values=(-2.5, 0.0, 0.0, 0.0, 0.0, 0.0))
+    action = JointPositionAction(values=(-1.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+    clamped = guard.clamp(action, prev)
+    # -2.5 + 0.5 = -2.0, still < -1.92 → re-clamp to -1.92
+    assert clamped.values[0] == pytest.approx(-1.92)
 
 
 # --- check_hint_freshness ---
 
 
-def test_freshness_true_when_target_none(guard: SafetyGuard, cfg: ControlServiceConfig):
-    assert guard.check_hint_freshness(None, cfg) is True
+def test_freshness_true_when_target_none(guard: SafetyGuard):
+    assert guard.check_hint_freshness(None) is True
 
 
-def test_freshness_true_when_hint_valid_and_age_ok(guard: SafetyGuard, cfg: ControlServiceConfig):
+def test_freshness_true_when_hint_valid_and_age_ok(guard: SafetyGuard):
     t = _target(hint_valid=True, obs_age_ms=100)
-    assert guard.check_hint_freshness(t, cfg) is True
+    assert guard.check_hint_freshness(t) is True
 
 
-def test_freshness_false_when_hint_invalid(guard: SafetyGuard, cfg: ControlServiceConfig):
+def test_freshness_false_when_hint_invalid(guard: SafetyGuard):
     t = _target(hint_valid=False, obs_age_ms=50)
-    assert guard.check_hint_freshness(t, cfg) is False
+    assert guard.check_hint_freshness(t) is False
 
 
-def test_freshness_false_when_obs_age_at_threshold(guard: SafetyGuard, cfg: ControlServiceConfig):
+def test_freshness_false_when_obs_age_at_threshold(guard: SafetyGuard):
     # obs_age_ms == max_obs_age_ms → not strictly less than → False
     t = _target(hint_valid=True, obs_age_ms=200)
-    assert guard.check_hint_freshness(t, cfg) is False
+    assert guard.check_hint_freshness(t) is False
 
 
-def test_freshness_false_when_obs_age_exceeds_threshold(guard: SafetyGuard, cfg: ControlServiceConfig):
+def test_freshness_false_when_obs_age_exceeds_threshold(guard: SafetyGuard):
     t = _target(hint_valid=True, obs_age_ms=300)
-    assert guard.check_hint_freshness(t, cfg) is False
+    assert guard.check_hint_freshness(t) is False

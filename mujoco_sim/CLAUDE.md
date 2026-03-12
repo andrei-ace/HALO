@@ -337,9 +337,9 @@ Supported by `generate_episodes --pick-and-place`: pick cube → switch tracker 
 5. DAgger-like corrections from teacher
 6. Optional: remove phase conditioning (end-to-end)
 
-### ACT action space (for HALO runtime, different from sim teacher)
+### ACT action space
 
-`[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas. 10 Hz control, 10-step chunks (1 s horizon, v0). Training loss: Huber/MSE on deltas + BCE for gripper.
+`[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets (`JointPositionAction`). Same action space in sim teacher, ACT training, and runtime inference. 10 Hz control, 10-step chunks (1 s horizon, v0). Training loss: Huber/MSE on joint targets + BCE for gripper.
 
 ### Dataset schema alignment
 

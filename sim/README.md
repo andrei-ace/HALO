@@ -14,7 +14,7 @@ This directory previously contained scaffolded stubs for an Isaac Lab extension 
 
 - `envs/pick_env.py` — DirectRLEnv stub for PICK skill
 - `teacher/teacher_fsm.py` — analytic teacher FSM (mirrors HALO PickFSM phases using privileged sim state)
-- `teacher/ik_teacher.py` — target EE pose to EE-frame delta action converter
+- `teacher/ik_teacher.py` — target EE pose to joint-position action converter
 - `data/schema.py` + `recorder.py` — dataset field definitions + sharded HDF5 recorder
 - `bridge/protocol.py` + `sim_server.py` — ZeroMQ message schema + sim-side server
 - `cfg/` — env, robot (SO-101 placeholder), scene, teacher, domain randomization configs
@@ -29,7 +29,7 @@ After the MuJoCo pipeline is validated end-to-end (teacher demos → ACT trainin
 
 - Isaac Sim 4.5.0 + Isaac Lab 2.1.0 (or latest stable)
 - 64 parallel envs on A6000 48GB for batched demo generation
-- Same action space: `[dx, dy, dz, droll, dpitch, dyaw, gripper_cmd]` EE-frame deltas at 10 Hz
+- Same action space: `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` 6D joint-position targets at 10 Hz
 - Wrist camera gating (black image when phase not in WRIST_ACTIVE_PHASES)
 - ZeroMQ bridge reusing `halo/bridge/` adapters (SimClient, SimSource)
 - Sharded HDF5 dataset recording with manifest
@@ -38,5 +38,5 @@ After the MuJoCo pipeline is validated end-to-end (teacher demos → ACT trainin
 
 The contracts that the Isaac Lab extension must satisfy are defined in:
 - `halo/contracts/enums.py` — PhaseId, WRIST_ACTIVE_PHASES
-- `halo/contracts/actions.py` — Action, ActionChunk, ZERO_ACTION
+- `halo/contracts/actions.py` — JointPositionAction, JointPositionChunk, ZERO_JOINT_ACTION, SO101_DOF
 - `halo/bridge/` — ZeroMQ transport protocol (config, apply, observe, chunk, transforms)

@@ -9,27 +9,25 @@ Real-time (50–100 Hz) action-streaming service. Never waits on LLM or VLM.
 | `config.py` | `ControlServiceConfig` dataclass — rate, limits, thresholds |
 | `te_buffer.py` | `TemporalEnsemblingBuffer` — blends overlapping ACT chunks with exponential decay |
 | `action_buffer.py` | `ActionBuffer` — legacy FIFO deque (kept, not used by default) |
-| `safety_guard.py` | `SafetyGuard` — per-timestep constraint checks + clamping |
-| `joint_safety_guard.py` | `JointSafetyGuard` — joint-level angle + velocity limits for SO-101 |
-| `joint_service.py` | `JointService` — monitors joint state from telemetry, enforces joint limits, publishes metrics |
+| `safety_guard.py` | `SafetyGuard` — joint-limit checks + clamping |
 | `service.py` | `ControlService` — asyncio loop, event drain, applies actions to robot |
 
 ## Key Types
 
 ```python
-ApplyFn = Callable[[str, Action], Awaitable[None]]   # (arm_id, action) → robot/sim
+ApplyFn = Callable[[str, JointPositionAction], Awaitable[None]]   # (arm_id, action) → robot/sim
 
-ControlService(arm_id, runtime, apply_fn, config=ControlServiceConfig())
+ControlService(arm_id, runtime, apply_fn, initial_state, config=ControlServiceConfig())
 ```
 
 ## tick() Order (critical path)
 
 1. Get latest snapshot from runtime; derive `wrist_enabled` from phase
-2. **Hint freshness check** — stale target (obs_age > max or hint_valid=False) → ZERO_ACTION, status=STALE, **no reflex**
+2. **Hint freshness check** — stale target (obs_age > max or hint_valid=False) → re-apply `_last_applied` (hold position), status=STALE, **no reflex**
 3. Pop blended action from `TemporalEnsemblingBuffer` (under lock)
-4. **Safety check** — violation → trigger reflex (once), apply ZERO_ACTION
+4. **Safety check** — absolute joint-limit violation → trigger reflex (once), re-apply `_last_applied` (hold position). Per-tick velocity violations are **not** faulted here — they are handled by clamp.
 5. **Reflex recovery** — first clean tick after reflex → emit SAFETY_RECOVERED
-6. Clamp via `SafetyGuard.clamp()`
+6. **Clamp** via `SafetyGuard.clamp()` — enforces absolute limits + per-tick velocity limit (`max_joint_delta_rad` for arm, `max_gripper_delta` for gripper)
 7. `apply_fn(arm_id, clamped_action)` — if `BridgeTransportError` raised, write STALE and return None
 8. Update store with `ActInfo` (status, buffer_fill_ms, buffer_low, wrist_enabled)
 
@@ -44,7 +42,7 @@ Blends overlapping chunks per-timestep: `w = exp(-temp * (current_tick - push_ti
 ## Reflex Lifecycle
 
 - **Trigger**: first tick with safety violation → publish `SAFETY_REFLEX_TRIGGERED`, set FAULT
-- **Hold**: subsequent violation ticks apply ZERO_ACTION, no re-trigger
+- **Hold**: subsequent violation ticks re-apply `_last_applied` (hold position), no re-trigger
 - **Recover**: first clean tick → publish `SAFETY_RECOVERED`, set OK
 
 ## Phase Transitions
@@ -58,11 +56,16 @@ Subscribes to `PHASE_ENTER` events from EventBus. On phase switch: trims TE buff
 | `control_rate_hz` | 50.0 | Loop frequency |
 | `buffer_low_threshold_ms` | 100 | Below this → `BUFFER_LOW` status |
 | `buffer_trim_ms` | 75 | Trim on phase switch |
-| `max_linear_delta_m` | 0.01 | ~0.5 m/s at 50 Hz |
-| `max_angular_delta_rad` | 0.02 | ~1.0 rad/s at 50 Hz |
-| `max_gripper_delta` | 1.0 | Full range jump allowed |
+| `joint_limits_lower` | SO-101 defaults | Per-joint lower bounds (rad) |
+| `joint_limits_upper` | SO-101 defaults | Per-joint upper bounds (rad) |
+| `max_joint_delta_rad` | 0.5 | Per-timestep velocity limit |
+| `max_gripper_delta` | 2.0 | Full open/close span (1.92 rad) in one tick |
 | `max_obs_age_ms` | 200 | Observation freshness limit |
 | `ensembling_temp` | 0.01 | Decay constant (0 = uniform) |
+
+## Construction
+
+`initial_state` is clamped to joint limits at construction via `SafetyGuard.clamp()`, so out-of-range hardware telemetry cannot leak into hold commands. `ControlServiceConfig.__post_init__` validates that `joint_limits_lower`/`upper` tuples have exactly `SO101_DOF` elements.
 
 ## Integration
 
