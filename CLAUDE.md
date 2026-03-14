@@ -160,10 +160,8 @@ Recovery: `RECOVER_RETRY_APPROACH`, `RECOVER_REGRASP`, `RECOVER_ABORT`
 
 Wrist camera active phases: `VISUAL_ALIGN`, `EXECUTE_APPROACH`, `CLOSE_GRIPPER`, `VERIFY_GRASP`, `LIFT` (defined as `WRIST_ACTIVE_PHASES` in `contracts/enums.py`).
 
-### ACT action space
-**HALO core (runtime/bridge):** `[Δx, Δy, Δz, Δroll, Δpitch, Δyaw, gripper_cmd]` — 7D EE-frame deltas, per-timestep servo increments. Temporal ensembling blends overlapping deltas per-timestep before IK/OSC mapping.
-
-**MuJoCo sim (`mujoco_sim/`):** `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets for SO-101 (5 arm DOF + 1 gripper DOF). Written directly to `data.ctrl[:]`.
+### Action space
+`[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` — 6D joint-position targets for SO-101 (5 arm DOF + 1 gripper DOF). The same action space is used everywhere: MuJoCo teacher episodes, ACT training, runtime inference, and temporal ensembling. `JointPositionAction(values=(...))` and `JointPositionChunk` are the sole action types. `SO101_DOF = 6` constant in `contracts/actions.py`.
 
 ### Planner snapshot fields (compact; no raw telemetry)
 `snapshot_id`, `arm_id`, `skill/phase`, `target` (hint_valid, confidence, obs_age_ms, delta_xyz_ee, distance_m, center_px, bbox_xywh — all normalised 0..1), `perception` (tracking_status, failure_code), `act` (buffer_fill_ms, buffer_low, wrist_enabled), `progress`, `outcome`, `safety`, `command_acks`, `recent_events` (ring of 8), `held_object_handle` (str|None — which object is in the gripper after a successful pick), `queued_skills` (tuple of `QueuedSkillInfo(skill_name, target_handle)` — skills waiting in the queue after the current one).

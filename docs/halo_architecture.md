@@ -2,7 +2,7 @@
 
 HALO is a robotic manipulation system that separates continuous motor control from LLM-based task planning. The core challenge it addresses: how to combine the flexibility of language model reasoning with the strict timing requirements of real-time robot control, without sacrificing either.
 
-The architecture is robot-agnostic — it works with any arm that has 5+ DOF and a gripper. The control path operates on end-effector frame deltas, so swapping robots requires only an IK solver and controller mapping. The current development target is the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) (5-DOF + 1-DOF gripper), validated end-to-end in MuJoCo simulation.
+The architecture is robot-agnostic — it works with any arm that has 5+ DOF and a gripper. The control path operates on joint-position targets, so swapping robots requires only updating joint limits and the `apply_fn` mapping. The current development target is the [SO-ARM101](https://github.com/TheRobotStudio/SO-ARM100) (5-DOF + 1-DOF gripper), validated end-to-end in MuJoCo simulation.
 
 The system uses an LLM agent to decide *what* to do (which object to pick, where to place it, when to retry) while deterministic services handle *how* to do it (motion planning, visual tracking, safety enforcement). These two paths run independently — the robot maintains smooth motion even when the LLM is mid-inference.
 
@@ -31,7 +31,7 @@ Five services with strict role separation, coordinated through a shared runtime:
 | **PlannerService** | Event-driven (30 s watchdog) | Task orchestration, skill selection, retries, recovery. LLM: `gpt-oss:20b` (local) or Gemini 3.1 Flash-Lite (cloud). |
 | **TargetPerceptionService** | 10-30 Hz (fast loop) + async VLM | Target discovery/tracking, fused target hints, validity/confidence. VLM: `qwen2.5vl:3b` (local) or Gemini 3.1 Flash-Lite (cloud). |
 | **SkillRunnerService** | 10-20 Hz | Skill FSMs, phase transitions, ACT chunk buffering, dual-mode (ACT + sim). |
-| **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, per-timestep delta clamping. |
+| **ControlService** | 50-100 Hz | Real-time action streaming, temporal ensembling, joint-limit clamping. |
 | **SafetyGuard / ReflexLayer** | Hard real-time | Delta limits, hint freshness gating, immediate overrides. |
 
 The **HALORuntime** owns the RuntimeStateStore, EventBus, and CommandRouter. It exposes two APIs: `get_latest_runtime_snapshot(arm_id)` for the planner to read state, and `submit_command(cmd)` for the planner to issue actions.
@@ -339,7 +339,7 @@ flowchart LR
 Skills are defined as **Mermaid stateDiagram-v2** files in `configs/skills/`. A generic FSM engine parses these diagrams into executable state machines with handler-based execution. This means skill topology is authored visually and the runtime engine is skill-agnostic.
 
 Three skills are implemented: **PICK**, **PLACE**, and **TRACK**. The SkillRunnerService operates in two modes:
-- **ACT mode**: uses chunk inference + ControlService for end-effector delta control
+- **ACT mode**: uses chunk inference + ControlService for joint-position control
 - **Sim mode**: triggers autonomous trajectories on the MuJoCo SimServer and monitors progress via telemetry
 
 The planner has three tools: `start_skill`, `abort_skill`, and `describe_scene`. It starts and monitors skills but never times micro-actions like "close gripper now". The planner can queue multiple skills in one response; the `queued_skills` field in the snapshot shows what's pending, preventing duplicate commands on subsequent ticks.
@@ -472,7 +472,7 @@ The dataset is designed to train a skill-conditioned **ACT** (Action Chunking Tr
 4. **Scale** with domain randomization (lighting, textures, object placement)
 5. **Transfer** to real hardware with identical dataset schema
 
-The action space is intentionally different between sim teacher (6D joint-position targets) and HALO runtime ACT (7D EE-frame deltas). Conversion is handled by the `apply_fn` factory. Dataset schema stays identical between sim and real — same observation keys, same chunking, same phase labels.
+The action space is unified: 6D joint-position targets `[shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, gripper]` everywhere — sim teacher, ACT training, runtime inference, and temporal ensembling. Dataset schema stays identical between sim and real — same observation keys, same chunking, same phase labels.
 
 ### SimServer Architecture
 
@@ -504,5 +504,5 @@ The server is single-threaded (macOS OpenGL constraint). On `start_pick(target_b
 4. VLM reacquire runs asynchronously — never on the critical path of the 10-30 Hz hint-publish loop.
 5. On phase transition, the ACT buffer is trimmed to ~50-100 ms to avoid executing old-phase tail actions.
 6. When a LeaseManager is active, every command must carry both `epoch` and `lease_token`. Stale values are rejected.
-7. Dataset schema stays identical between sim and real (same observation keys, chunking, phase labels). Action space conversion (6D joint-position ↔ 7D EE-delta) is handled by the `apply_fn` factory.
+7. Dataset schema stays identical between sim and real (same observation keys, same chunking, same 6D joint-position action space, same phase labels).
 8. All state is namespaced by `arm_id` from day one.

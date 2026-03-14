@@ -27,6 +27,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 async def _run_mock(args: argparse.Namespace) -> None:
+    from halo.contracts.actions import ZERO_JOINT_ACTION
     from halo.testing.mock_fns import (
         LatencyProfile,
         make_mock_apply_fn,
@@ -54,6 +55,7 @@ async def _run_mock(args: argparse.Namespace) -> None:
         tracker_factory_fn=make_mock_tracker_factory_fn_with_latency(latency),
         chunk_fn=make_mock_chunk_fn(latency),
         apply_fn=make_mock_apply_fn(latency, applied),
+        initial_joint_state=ZERO_JOINT_ACTION,  # mock arm starts at zeros
     )
 
     print(f"HALO headless runner (mock, latency={'fast' if args.fast else 'instant'}, arm={args.arm})")
@@ -70,6 +72,7 @@ async def _run_mock(args: argparse.Namespace) -> None:
 async def _run_live(args: argparse.Namespace) -> None:
     from pathlib import Path
 
+    from halo.contracts.actions import ZERO_JOINT_ACTION
     from halo.services.planner_service.agent import PlannerAgent
     from halo.services.target_perception_service.ollama_vlm_fn import make_ollama_vlm_fn
     from halo.services.target_perception_service.tracker_fn import make_tracker_factory_fn
@@ -93,6 +96,10 @@ async def _run_live(args: argparse.Namespace) -> None:
     )
 
     applied: list = []
+    # TODO: read initial joint state from real robot/sim when available.
+    # With real hardware, use the measured joint pose so that velocity
+    # limiting and hold-position behaviour start from the true arm state.
+    initial_state = ZERO_JOINT_ACTION
     runner = HeadlessRunner(
         config=config,
         decide_fn=agent.decide,
@@ -101,6 +108,7 @@ async def _run_live(args: argparse.Namespace) -> None:
         tracker_factory_fn=tracker_factory_fn,
         chunk_fn=make_mock_chunk_fn(),  # ACT not available yet
         apply_fn=make_mock_apply_fn(log=applied),  # No real robot yet
+        initial_joint_state=initial_state,
     )
 
     print(f"HALO headless runner (live, model={args.model}, arm={args.arm})")

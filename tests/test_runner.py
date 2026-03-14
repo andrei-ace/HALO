@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from halo.contracts.actions import ZERO_JOINT_ACTION
 from halo.contracts.events import EventType
 from halo.testing.mock_fns import (
     make_mock_apply_fn,
@@ -52,6 +53,7 @@ def _make_runner(
         capture_fn=capture_fn or (make_mock_capture_fn_with_latency() if enable_perception else None),
         tracker_factory_fn=tracker_factory_fn
         or (make_mock_tracker_factory_fn_with_latency() if enable_perception else None),
+        initial_joint_state=ZERO_JOINT_ACTION if enable_control else None,
         **kwargs,
     )
 
@@ -120,13 +122,21 @@ def test_missing_decide_fn_raises():
 def test_missing_apply_fn_raises():
     config = RunnerConfig(enable_planner=False, enable_perception=False, enable_skill_runner=False, enable_control=True)
     with pytest.raises(ValueError, match="apply_fn"):
-        HeadlessRunner(config=config, apply_fn=None)
+        HeadlessRunner(config=config, apply_fn=None, initial_joint_state=ZERO_JOINT_ACTION)
+
+
+def test_missing_initial_joint_state_raises():
+    config = RunnerConfig(enable_planner=False, enable_perception=False, enable_skill_runner=False, enable_control=True)
+    with pytest.raises(ValueError, match="initial_joint_state"):
+        HeadlessRunner(config=config, apply_fn=make_mock_apply_fn(), initial_joint_state=None)
 
 
 def test_missing_chunk_fn_raises():
     config = RunnerConfig(enable_planner=False, enable_perception=False, enable_skill_runner=True, enable_control=True)
     with pytest.raises(ValueError, match="chunk_fn"):
-        HeadlessRunner(config=config, chunk_fn=None, apply_fn=make_mock_apply_fn())
+        HeadlessRunner(
+            config=config, chunk_fn=None, apply_fn=make_mock_apply_fn(), initial_joint_state=ZERO_JOINT_ACTION
+        )
 
 
 def test_missing_push_fn_raises_when_control_disabled():

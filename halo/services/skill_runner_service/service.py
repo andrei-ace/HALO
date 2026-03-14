@@ -6,7 +6,7 @@ import time
 from typing import Awaitable, Callable
 
 from halo.bridge import BridgeTransportError
-from halo.contracts.actions import ActionChunk
+from halo.contracts.actions import JointPositionChunk
 from halo.contracts.enums import (
     WRIST_ACTIVE_PHASES,
     ActStatus,
@@ -46,9 +46,9 @@ def _resolve_failure_node(run: SkillRun) -> str:
 # Injected callables — decoupled from ACT model and ControlService instance
 ChunkFn = Callable[
     [str, PhaseId, object],  # (arm_id, phase, PlannerSnapshot)
-    Awaitable[ActionChunk | None],
+    Awaitable[JointPositionChunk | None],
 ]
-PushFn = Callable[[ActionChunk], Awaitable[None]]
+PushFn = Callable[[JointPositionChunk], Awaitable[None]]
 
 
 # --- Sim mode types ---

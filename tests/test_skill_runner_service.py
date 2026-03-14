@@ -2,7 +2,7 @@
 
 import pytest
 
-from halo.contracts.actions import ZERO_ACTION, ActionChunk
+from halo.contracts.actions import ZERO_JOINT_ACTION, JointPositionChunk
 from halo.contracts.enums import (
     ActStatus,
     PerceptionFailureCode,
@@ -78,9 +78,9 @@ def _act(fill_ms: int = 0) -> ActInfo:
     )
 
 
-def _make_chunk(phase: PhaseId) -> ActionChunk:
-    actions = tuple(ZERO_ACTION for _ in range(10))
-    return ActionChunk(
+def _make_chunk(phase: PhaseId) -> JointPositionChunk:
+    actions = tuple(ZERO_JOINT_ACTION for _ in range(10))
+    return JointPositionChunk(
         chunk_id="chunk-test",
         arm_id=ARM,
         phase_id=phase,
@@ -93,7 +93,7 @@ async def _null_chunk_fn(arm_id: str, phase: PhaseId, snap: object) -> None:
     return None
 
 
-async def _fixed_chunk_fn(arm_id: str, phase: PhaseId, snap: object) -> ActionChunk:
+async def _fixed_chunk_fn(arm_id: str, phase: PhaseId, snap: object) -> JointPositionChunk:
     return _make_chunk(phase)
 
 
@@ -110,15 +110,15 @@ def _make_svc(
     push_fn=None,
     cfg: SkillRunnerConfig | None = None,
     registry: SkillRegistry | None = None,
-) -> tuple[SkillRunnerService, list[ActionChunk]]:
-    chunks_pushed: list[ActionChunk] = []
+) -> tuple[SkillRunnerService, list[JointPositionChunk]]:
+    chunks_pushed: list[JointPositionChunk] = []
 
     if chunk_fn is None:
         chunk_fn = _fixed_chunk_fn
 
     if push_fn is None:
 
-        async def push_fn(chunk: ActionChunk) -> None:
+        async def push_fn(chunk: JointPositionChunk) -> None:
             chunks_pushed.append(chunk)
 
     svc = SkillRunnerService(

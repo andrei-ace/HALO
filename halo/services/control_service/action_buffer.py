@@ -2,23 +2,23 @@ from __future__ import annotations
 
 from collections import deque
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 
 
 class ActionBuffer:
     """
-    Ordered deque of actions fed from ActionChunks.
+    Ordered deque of actions fed from JointPositionChunks.
     Not thread-safe on its own — callers must serialise via asyncio.Lock.
     """
 
     def __init__(self) -> None:
-        self._deque: deque[Action] = deque()
+        self._deque: deque[JointPositionAction] = deque()
 
-    def push_chunk(self, chunk: ActionChunk) -> None:
+    def push_chunk(self, chunk: JointPositionChunk) -> None:
         """Append all actions from chunk to the right of the deque."""
         self._deque.extend(chunk.actions)
 
-    def pop_action(self) -> Action | None:
+    def pop_action(self) -> JointPositionAction | None:
         """Pop leftmost (oldest) action; returns None if empty."""
         if not self._deque:
             return None

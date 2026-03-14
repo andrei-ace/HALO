@@ -3,12 +3,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 
 
 @dataclass
 class _ChunkEntry:
-    chunk: ActionChunk
+    chunk: JointPositionChunk
     push_tick: int
 
 
@@ -30,12 +30,12 @@ class TemporalEnsemblingBuffer:
 
     # --- Public API ---
 
-    def push_chunk(self, chunk: ActionChunk) -> None:
+    def push_chunk(self, chunk: JointPositionChunk) -> None:
         """Append chunk tracked at the current tick."""
         self._entries.append(_ChunkEntry(chunk=chunk, push_tick=self._tick))
         self._prune()
 
-    def pop_action(self) -> Action | None:
+    def pop_action(self) -> JointPositionAction | None:
         """
         Blend all chunks that cover the current tick, advance tick, return blended action.
         Returns None if no chunk covers the current tick.
@@ -44,7 +44,7 @@ class TemporalEnsemblingBuffer:
         if not self._entries:
             return None
 
-        weighted: list[tuple[Action, float]] = []
+        weighted: list[tuple[JointPositionAction, float]] = []
         for entry in self._entries:
             offset = self._tick - entry.push_tick
             if 0 <= offset < len(entry.chunk.actions):
@@ -56,15 +56,9 @@ class TemporalEnsemblingBuffer:
             return None
 
         total_w = sum(w for _, w in weighted)
-        blended = Action(
-            dx=sum(a.dx * w for a, w in weighted) / total_w,
-            dy=sum(a.dy * w for a, w in weighted) / total_w,
-            dz=sum(a.dz * w for a, w in weighted) / total_w,
-            droll=sum(a.droll * w for a, w in weighted) / total_w,
-            dpitch=sum(a.dpitch * w for a, w in weighted) / total_w,
-            dyaw=sum(a.dyaw * w for a, w in weighted) / total_w,
-            gripper_cmd=sum(a.gripper_cmd * w for a, w in weighted) / total_w,
-        )
+        n = len(weighted[0][0].values)
+        blended_vals = tuple(sum(a.values[j] * w for a, w in weighted) / total_w for j in range(n))
+        blended = JointPositionAction(values=blended_vals)
         self._tick += 1
         return blended
 
@@ -86,7 +80,7 @@ class TemporalEnsemblingBuffer:
                 # discard entire entry
             elif keep_len < len(entry.chunk.actions):
                 removed += len(entry.chunk.actions) - keep_len
-                new_chunk = ActionChunk(
+                new_chunk = JointPositionChunk(
                     chunk_id=entry.chunk.chunk_id,
                     arm_id=entry.chunk.arm_id,
                     phase_id=entry.chunk.phase_id,

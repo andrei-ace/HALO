@@ -2,21 +2,18 @@
 
 import math
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 from halo.contracts.enums import PhaseId
 from halo.services.control_service.te_buffer import TemporalEnsemblingBuffer
 
 RATE = 10.0  # Hz
 
 
-def _chunk(n: int, dx_start: float = 0.0, arm: str = "arm0") -> ActionChunk:
-    """Create an ActionChunk with n actions; dx increments from dx_start."""
-    actions = tuple(
-        Action(dx=float(dx_start + i), dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
-        for i in range(n)
-    )
-    return ActionChunk(
-        chunk_id=f"c-{n}-{dx_start}",
+def _chunk(n: int, v0_start: float = 0.0, arm: str = "arm0") -> JointPositionChunk:
+    """Create a JointPositionChunk with n actions; values[0] increments from v0_start."""
+    actions = tuple(JointPositionAction(values=(v0_start + i, 0.0, 0.0, 0.0, 0.0, 0.0)) for i in range(n))
+    return JointPositionChunk(
+        chunk_id=f"c-{n}-{v0_start}",
         arm_id=arm,
         phase_id=PhaseId.MOVE_PREGRASP,
         actions=actions,
@@ -24,11 +21,11 @@ def _chunk(n: int, dx_start: float = 0.0, arm: str = "arm0") -> ActionChunk:
     )
 
 
-def _const_chunk(n: int, dx: float, arm: str = "arm0") -> ActionChunk:
-    """Create an ActionChunk with n actions all having the same dx."""
-    actions = tuple(Action(dx=dx, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0) for _ in range(n))
-    return ActionChunk(
-        chunk_id=f"const-{n}-{dx}",
+def _const_chunk(n: int, v0: float, arm: str = "arm0") -> JointPositionChunk:
+    """Create a JointPositionChunk with n actions all having the same values[0]."""
+    actions = tuple(JointPositionAction(values=(v0, 0.0, 0.0, 0.0, 0.0, 0.0)) for _ in range(n))
+    return JointPositionChunk(
+        chunk_id=f"const-{n}-{v0}",
         arm_id=arm,
         phase_id=PhaseId.MOVE_PREGRASP,
         actions=actions,
@@ -48,9 +45,9 @@ def _buf(temp: float = 0.0) -> TemporalEnsemblingBuffer:
 def test_single_chunk_pops_in_order():
     buf = _buf()
     buf.push_chunk(_chunk(3))
-    assert buf.pop_action().dx == 0.0
-    assert buf.pop_action().dx == 1.0
-    assert buf.pop_action().dx == 2.0
+    assert buf.pop_action().values[0] == 0.0
+    assert buf.pop_action().values[0] == 1.0
+    assert buf.pop_action().values[0] == 2.0
 
 
 def test_pop_empty_returns_none():
@@ -102,22 +99,22 @@ def test_size_decrements_after_pop():
 def test_two_chunks_same_tick_blend_equal_weight():
     """Two chunks pushed at the same tick get equal weight → 50/50 blend."""
     buf = _buf(temp=0.0)
-    buf.push_chunk(_const_chunk(3, dx=0.0))
-    buf.push_chunk(_const_chunk(3, dx=1.0))
+    buf.push_chunk(_const_chunk(3, v0=0.0))
+    buf.push_chunk(_const_chunk(3, v0=1.0))
     result = buf.pop_action()
     assert result is not None
-    assert abs(result.dx - 0.5) < 1e-9
+    assert abs(result.values[0] - 0.5) < 1e-9
 
 
 def test_three_chunks_blend_average():
     """Three equal-weight chunks → simple mean."""
     buf = _buf(temp=0.0)
-    buf.push_chunk(_const_chunk(3, dx=0.0))
-    buf.push_chunk(_const_chunk(3, dx=1.0))
-    buf.push_chunk(_const_chunk(3, dx=2.0))
+    buf.push_chunk(_const_chunk(3, v0=0.0))
+    buf.push_chunk(_const_chunk(3, v0=1.0))
+    buf.push_chunk(_const_chunk(3, v0=2.0))
     result = buf.pop_action()
     assert result is not None
-    assert abs(result.dx - 1.0) < 1e-9
+    assert abs(result.values[0] - 1.0) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -132,21 +129,21 @@ def test_newer_chunk_gets_higher_weight():
     Blend is biased toward chunk_B.
     """
     buf = _buf(temp=1.0)
-    chunk_a = _const_chunk(3, dx=0.0)
+    chunk_a = _const_chunk(3, v0=0.0)
     buf.push_chunk(chunk_a)
     buf.pop_action()  # consume tick 0; _tick advances to 1
 
-    chunk_b = _const_chunk(3, dx=1.0)
+    chunk_b = _const_chunk(3, v0=1.0)
     buf.push_chunk(chunk_b)
     result = buf.pop_action()  # blend at tick 1
 
     assert result is not None
-    # chunk_A: offset=1, w=exp(-1)≈0.368, dx=0.0
-    # chunk_B: offset=0, w=1.0, dx=1.0
+    # chunk_A: offset=1, w=exp(-1)≈0.368, v0=0.0
+    # chunk_B: offset=0, w=1.0, v0=1.0
     # blend = 1.0 / (1.0 + 0.368) ≈ 0.731
     expected = 1.0 / (1.0 + math.exp(-1.0))
-    assert abs(result.dx - expected) < 1e-9
-    assert result.dx > 0.5  # biased toward newer chunk_B
+    assert abs(result.values[0] - expected) < 1e-9
+    assert result.values[0] > 0.5  # biased toward newer chunk_B
 
 
 # ---------------------------------------------------------------------------
@@ -170,25 +167,25 @@ def test_second_chunk_fills_after_first_expires():
     Pop 3 → only chunk_B.
     """
     buf = _buf(temp=0.0)
-    chunk_a = _const_chunk(1, dx=10.0)
-    chunk_b = _const_chunk(3, dx=20.0)
+    chunk_a = _const_chunk(1, v0=10.0)
+    chunk_b = _const_chunk(3, v0=20.0)
     buf.push_chunk(chunk_a)
     buf.push_chunk(chunk_b)
 
     r0 = buf.pop_action()
     assert r0 is not None
     # both contribute equally at tick=0
-    assert abs(r0.dx - 15.0) < 1e-9
+    assert abs(r0.values[0] - 15.0) < 1e-9
 
     r1 = buf.pop_action()
     assert r1 is not None
     # only chunk_B at offset=1
-    assert abs(r1.dx - 20.0) < 1e-9
+    assert abs(r1.values[0] - 20.0) < 1e-9
 
     r2 = buf.pop_action()
     assert r2 is not None
     # only chunk_B at offset=2
-    assert abs(r2.dx - 20.0) < 1e-9
+    assert abs(r2.values[0] - 20.0) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -236,8 +233,8 @@ def test_trim_multiple_chunks():
     fill_ms = 200 ms.
     """
     buf = _buf()
-    buf.push_chunk(_chunk(5, dx_start=0.0))
-    buf.push_chunk(_chunk(5, dx_start=10.0))
+    buf.push_chunk(_chunk(5, v0_start=0.0))
+    buf.push_chunk(_chunk(5, v0_start=10.0))
     buf.trim_to_ms(200, RATE)
     assert buf.fill_ms(RATE) == 200
 
@@ -257,21 +254,21 @@ def test_trim_returns_removed_count():
 
 def test_phase_switch_discards_tail_preserves_near_term():
     """
-    Push chunk(10, dx=i); pop 2 times to advance tick to 2.
+    Push chunk(10, v0=i); pop 2 times to advance tick to 2.
     trim_to_ms(100, 10) → target_ticks=1, cutoff_tick=3 → keep 3 actions.
-    Next pop (tick=2) returns actions[2].dx = 2.0.
+    Next pop (tick=2) returns actions[2].values[0] = 2.0.
     """
     buf = _buf(temp=0.0)
-    buf.push_chunk(_chunk(10, dx_start=0.0))
+    buf.push_chunk(_chunk(10, v0_start=0.0))
 
-    r0 = buf.pop_action()  # tick=0 → dx=0.0; tick→1
-    r1 = buf.pop_action()  # tick=1 → dx=1.0; tick→2
-    assert r0.dx == 0.0
-    assert r1.dx == 1.0
+    r0 = buf.pop_action()  # tick=0 → v0=0.0; tick→1
+    r1 = buf.pop_action()  # tick=1 → v0=1.0; tick→2
+    assert r0.values[0] == 0.0
+    assert r1.values[0] == 1.0
 
     buf.trim_to_ms(100, RATE)  # target=1 tick, cutoff=3; chunk[:3] kept
     assert buf.size == 1  # ticks 2 is the only remaining one (3-2=1)
 
     r2 = buf.pop_action()
     assert r2 is not None
-    assert abs(r2.dx - 2.0) < 1e-9
+    assert abs(r2.values[0] - 2.0) < 1e-9

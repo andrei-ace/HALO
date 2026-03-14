@@ -2,7 +2,7 @@
 
 import asyncio
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import ZERO_JOINT_ACTION, JointPositionAction, JointPositionChunk
 from halo.contracts.enums import ActStatus, PhaseId
 from halo.contracts.events import EventType
 from halo.testing.mock_fns import LatencyProfile, make_mock_apply_fn
@@ -22,6 +22,7 @@ def _runner(latency: LatencyProfile, applied: list) -> HeadlessRunner:
             enable_control=True,
         ),
         apply_fn=make_mock_apply_fn(latency, applied),
+        initial_joint_state=ZERO_JOINT_ACTION,
     )
 
 
@@ -35,8 +36,8 @@ async def test_action_streaming(latency: LatencyProfile):
         await seed_store(runner.runtime, ARM, target=make_target(), perception=make_perception())
 
         # Push a chunk and tick several times
-        actions = tuple(Action(0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(5))
-        chunk = ActionChunk(chunk_id="c1", arm_id=ARM, phase_id=PhaseId.MOVE_PREGRASP, actions=actions, ts_ms=0)
+        actions = tuple(JointPositionAction(values=(0.001, 0.0, 0.0, 0.0, 0.0, 0.5)) for _ in range(5))
+        chunk = JointPositionChunk(chunk_id="c1", arm_id=ARM, phase_id=PhaseId.MOVE_PREGRASP, actions=actions, ts_ms=0)
         await runner.control_svc.push_chunk(chunk)
 
         for _ in range(5):
@@ -48,16 +49,18 @@ async def test_action_streaming(latency: LatencyProfile):
 
 
 async def test_safety_reflex(latency: LatencyProfile):
-    """ControlService triggers safety reflex on over-limit action."""
+    """ControlService triggers safety reflex on out-of-range joint action."""
     applied = []
     runner = _runner(latency, applied)
     await runner.start()
     try:
         await seed_store(runner.runtime, ARM, target=make_target(), perception=make_perception())
 
-        # Push a chunk with over-limit action (dx=0.1 >> 0.01 limit)
-        bad_action = Action(dx=0.1, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, gripper_cmd=0.0)
-        chunk = ActionChunk(chunk_id="bad", arm_id=ARM, phase_id=PhaseId.MOVE_PREGRASP, actions=(bad_action,), ts_ms=0)
+        # Push a chunk with out-of-range action (shoulder_pan=3.0 >> ±1.92 limit)
+        bad_action = JointPositionAction(values=(3.0, 0.0, 0.0, 0.0, 0.0, 0.0))
+        chunk = JointPositionChunk(
+            chunk_id="bad", arm_id=ARM, phase_id=PhaseId.MOVE_PREGRASP, actions=(bad_action,), ts_ms=0
+        )
         await runner.control_svc.push_chunk(chunk)
         await runner.control_svc.tick()
 
@@ -68,8 +71,8 @@ async def test_safety_reflex(latency: LatencyProfile):
         await runner.stop()
 
 
-async def test_stale_hint_yields_zero_action(latency: LatencyProfile):
-    """ControlService applies ZERO_ACTION when target hint is stale."""
+async def test_stale_hint_holds_position(latency: LatencyProfile):
+    """ControlService holds last-applied position when target hint is stale."""
     applied = []
     runner = _runner(latency, applied)
     await runner.start()
@@ -79,15 +82,14 @@ async def test_stale_hint_yields_zero_action(latency: LatencyProfile):
             runner.runtime, ARM, target=make_target(obs_age_ms=999, hint_valid=False), perception=make_perception()
         )
 
-        actions = tuple(Action(0.001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for _ in range(3))
-        chunk = ActionChunk(chunk_id="c1", arm_id=ARM, phase_id=PhaseId.MOVE_PREGRASP, actions=actions, ts_ms=0)
+        actions = tuple(JointPositionAction(values=(0.001, 0.0, 0.0, 0.0, 0.0, 0.5)) for _ in range(3))
+        chunk = JointPositionChunk(chunk_id="c1", arm_id=ARM, phase_id=PhaseId.MOVE_PREGRASP, actions=actions, ts_ms=0)
         await runner.control_svc.push_chunk(chunk)
         await runner.control_svc.tick()
 
-        # Applied action should be ZERO_ACTION
-        if applied:
-            a = applied[0][1]
-            assert a.dx == 0.0 and a.dy == 0.0 and a.dz == 0.0
+        # Hold command sent using initial_state (ZERO_JOINT_ACTION)
+        assert len(applied) >= 1
+        assert all(v == 0.0 for v in applied[-1][1].values)
 
         snap = await runner.runtime.get_latest_runtime_snapshot(ARM)
         assert snap.act.status == ActStatus.STALE

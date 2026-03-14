@@ -1,6 +1,6 @@
 """Tests for ActionBuffer: push, pop, trim, fill, is_low."""
 
-from halo.contracts.actions import Action, ActionChunk
+from halo.contracts.actions import JointPositionAction, JointPositionChunk
 from halo.contracts.enums import PhaseId
 from halo.services.control_service.action_buffer import ActionBuffer
 
@@ -11,17 +11,17 @@ def _chunk(
     n: int,
     arm_id: str = "arm0",
     phase: PhaseId = PhaseId.MOVE_PREGRASP,
-) -> ActionChunk:
-    actions = tuple(Action(float(i), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for i in range(n))
-    return ActionChunk(chunk_id=f"c-{n}", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)
+) -> JointPositionChunk:
+    actions = tuple(JointPositionAction(values=(float(i), 0.0, 0.0, 0.0, 0.0, 0.0)) for i in range(n))
+    return JointPositionChunk(chunk_id=f"c-{n}", arm_id=arm_id, phase_id=phase, actions=actions, ts_ms=0)
 
 
 def test_push_then_pop_oldest_first():
     buf = ActionBuffer()
     buf.push_chunk(_chunk(3))
-    assert buf.pop_action().dx == 0.0
-    assert buf.pop_action().dx == 1.0
-    assert buf.pop_action().dx == 2.0
+    assert buf.pop_action().values[0] == 0.0
+    assert buf.pop_action().values[0] == 1.0
+    assert buf.pop_action().values[0] == 2.0
 
 
 def test_pop_empty_returns_none():
@@ -87,10 +87,10 @@ def test_size_property():
 
 def test_multiple_chunks_appended_in_order():
     buf = ActionBuffer()
-    buf.push_chunk(_chunk(2))  # dx=0, dx=1
-    buf.push_chunk(_chunk(2))  # dx=0, dx=1 (second chunk)
+    buf.push_chunk(_chunk(2))  # v0=0, v0=1
+    buf.push_chunk(_chunk(2))  # v0=0, v0=1 (second chunk)
     assert buf.size == 4
-    assert buf.pop_action().dx == 0.0  # first chunk first
-    assert buf.pop_action().dx == 1.0
-    assert buf.pop_action().dx == 0.0  # second chunk after
-    assert buf.pop_action().dx == 1.0
+    assert buf.pop_action().values[0] == 0.0  # first chunk first
+    assert buf.pop_action().values[0] == 1.0
+    assert buf.pop_action().values[0] == 0.0  # second chunk after
+    assert buf.pop_action().values[0] == 1.0
