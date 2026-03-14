@@ -53,6 +53,7 @@ tui-live-cloud:
 
 CLOUD_PLANNER_MODEL    ?= gemini-3.1-flash-lite-preview
 CLOUD_VLM_MODEL        ?= gemini-3.1-flash-lite-preview
+LIVE_AGENT_MODEL 	   ?= gemini-2.5-flash-native-audio-preview-12-2025
 COMPACTION_INTERVAL    ?= 8
 COMPACTION_OVERLAP     ?= 4
 
@@ -88,6 +89,9 @@ run-headless-live:
 run-cloud-service:
 	HALO_COMPACTION_INTERVAL=$(COMPACTION_INTERVAL) \
 	HALO_COMPACTION_OVERLAP=$(COMPACTION_OVERLAP) \
+	HALO_LIVE_AGENT_MODEL=$(LIVE_AGENT_MODEL) \
+	HALO_LIVE_PLANNER_MODEL=$(CLOUD_PLANNER_MODEL) \
+	HALO_LIVE_VLM_MODEL=$(CLOUD_VLM_MODEL) \
 	uv run --project cloud_service uvicorn cloud_service.app:app --host 0.0.0.0 --port 8080 --reload --reload-dir .
 
 test-cloud-service:
