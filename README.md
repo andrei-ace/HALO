@@ -109,6 +109,7 @@ The cloud service deploys to Google Cloud Run with Terraform. It uses **Gemini 3
 Authenticate and enable the bootstrap API (required before Terraform can manage the rest):
 
 ```bash
+gcloud auth login
 gcloud auth application-default login
 
 PROJECT_ID=your-project-id

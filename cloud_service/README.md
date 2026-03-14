@@ -90,6 +90,7 @@ everything; otherwise you need at least:
 Authenticate so Terraform can use your credentials:
 
 ```bash
+gcloud auth login
 gcloud auth application-default login
 ```
 
